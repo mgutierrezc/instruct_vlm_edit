@@ -6,6 +6,15 @@ from typing import List, Tuple
 import numpy as np
 import torch
 
+def _accuracy(preds, gts):
+    ok = 0
+    for p, g in zip(preds, gts):
+        if p.strip().lower() == g.strip().lower():
+            ok += 1
+    return ok / len(gts)
+
+
+
 
 def _normalize_answer(s: str) -> str:
     """Lower text and remove punctuation, articles and extra whitespace (SQuAD-style)."""
