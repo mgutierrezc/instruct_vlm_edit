@@ -79,7 +79,7 @@ class FVQADataset(VLMDataset):
         super().__init__(split=split)
 
     def _load_data(self):
-        split = self.split if self.split in ("train", "val", "test") else "train"
+        split = self.split if self.split in ("train", "test") else "train"
         split_paths = data_download_parquet_splits(
             repo_id="JJoy333/RationaleVQA",
             path_in_repo="FVQA",
