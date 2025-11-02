@@ -152,10 +152,10 @@ if __name__ == "__main__":
                         help="Layer to finetune (auto-selected if empty)")
     parser.add_argument("--dataset_name", type=str, required=True, 
                         choices=["aokvqa", "fvqa"], help="Dataset name")
-    parser.add_argument("--task", type=str, default="mc", 
-                        choices=["mc", "mci", "qa"], help="Task type")
+    parser.add_argument("--task", type=str, default=None, 
+                        choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
     parser.add_argument("--with_rationale", action="store_true", 
-                        help="Include rationale in prompts")
+                        help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--n_iter", type=int, default=1, help="Inner iterations per batch")
     
@@ -180,8 +180,13 @@ if __name__ == "__main__":
     config.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     config.batch_size = args.batch_size
     config.n_iter = args.n_iter
-    config.experiment.task = args.task
-    config.experiment.with_rationale = args.with_rationale
+    # Only override task from CLI if explicitly provided (otherwise uses config.yaml)
+    if args.task is not None:
+        config.experiment.task = args.task
+    # Only override with_rationale from CLI if flag is explicitly provided
+    # If flag not provided, config.yaml value (or default False) will be used
+    if args.with_rationale:
+        config.experiment.with_rationale = True
     
     # Run finetuning
     metrics = finetune(config)
