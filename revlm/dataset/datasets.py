@@ -67,7 +67,6 @@ class VLMDataset(Dataset):
             prompts = batch.get("prompts")
             out_texts = model.generate(images, prompts, max_new_tokens=100)
             answers.extend(out_texts)
-            # answers.extend(['test'])
 
         for (ex, a) in zip(self.data, answers): # ex is a reference to the dict stored in vlmdataset.data
             self.task_engineer.eng_preds(ex, a, model)
