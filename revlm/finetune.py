@@ -2,7 +2,6 @@ import argparse
 import logging
 import os
 import torch
-from tqdm import tqdm
 import numpy as np
 
 from .models import get_model
@@ -79,16 +78,31 @@ def finetune(config):
     batch_history = []
     losses = []
     
+    # Check if editor needs batch_history (e.g., ft_ewc, ft_retrain)
+    # If so, we'll collect batches first before starting training
+    editor_name = getattr(config.editor, '_name', '')
+    needs_history = editor_name in ['ft_ewc', 'ft_retrain']
+    prefill_size = 2 if needs_history else 0  # Pre-fill with at least 2 batches for history-based editors
+    
     LOG.info("Starting finetuning...")
-    for batch_idx, batch in enumerate(tqdm(train_dataset.loader, desc="Training")):
+    total_batches = len(train_dataset.loader)
+    for batch_idx, batch in enumerate(train_dataset.loader):
         tokens = model.prepare_training_batch(batch)
+        
+        # For history-based editors, collect batches first before training
+        if needs_history and len(batch_history) < prefill_size:
+            batch_history.append(tokens)
+            if len(batch_history) == prefill_size:
+                LOG.info(f"Pre-populated batch_history with {len(batch_history)} batches for {editor_name}")
+            continue  # Skip editing until we have enough history
         
         # Edit (finetune) on this batch
         editor.edit(config, tokens, batch_history)
         
         # Track history for EWC/retrain methods
         batch_history.append(tokens)
-        max_history = getattr(config.editor, 'fisher_mem', 10) if hasattr(config.editor, 'fisher_mem') else 10
+        max_history = getattr(config.editor, 'fisher_mem', 10) if hasattr(config.editor, 'fisher_mem') else \
+                      getattr(config.editor, 'retrain_memory', 100) if hasattr(config.editor, 'retrain_memory') else 10
         if len(batch_history) > max_history:
             batch_history = batch_history[-max_history:]
         
@@ -96,18 +110,19 @@ def finetune(config):
         if hasattr(editor, 'losses') and editor.losses:
             losses.extend(editor.losses)
         
-        # Periodic logging
-        if (batch_idx + 1) % 10 == 0:
-            avg_loss = np.mean(losses[-10:]) if losses else 0.0
-            LOG.info(f"Batch {batch_idx + 1}/{len(train_dataset.loader)}, Avg loss: {avg_loss:.4f}")
+        # Periodic logging every 20 batches
+        if (batch_idx + 1) % 20 == 0:
+            recent_losses = losses[-20:] if len(losses) >= 20 else losses
+            avg_loss = np.mean(recent_losses) if recent_losses else 0.0
+            LOG.info(f"Batch {batch_idx + 1}/{total_batches}, Avg loss (last 20): {avg_loss:.4f}")
     
-    LOG.info(f"Finetuning complete. Total batches: {len(train_dataset.loader)}")
+    LOG.info(f"Finetuning complete. Total batches: {total_batches}")
     
     # Evaluation on test set
     model.model.eval()
     LOG.info("Evaluating on test set...")
     
-    for batch in tqdm(test_dataset.loader, desc="Evaluating"):
+    for batch in test_dataset.loader:
         test_dataset.task_generate(batch, model)
     
     # Compute metrics
