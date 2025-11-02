@@ -48,7 +48,7 @@ class VLMDataset(Dataset):
         
     def image_collate(self, batch):
         """Collate function that loads images and returns a batch dict.
-        Expects items with keys: 'image' (path), 'prompt' (string), 'golds' (dict).
+        Expects items with keys: 'image' (path), 'prompt' (string), 'gold' (dict).
         """
         images = [Image.open(ex["image"]).convert("RGB") for ex in batch]
         prompts = [ex["prompt"] for ex in batch]
@@ -58,7 +58,20 @@ class VLMDataset(Dataset):
             "prompts": prompts,
             "golds": golds,
         }
+    
+    def task_generate(self, model):
+        loader = self.loader
+        answers = []
+        for batch in loader:
+            images = batch.get("images")
+            prompts = batch.get("prompts")
+            out_texts = model.generate(images, prompts, max_new_tokens=100)
+            answers.extend(out_texts)
+            # answers.extend(['test'])
 
+        for (ex, a) in zip(self.data, answers): # ex is a reference to the dict stored in vlmdataset.data
+            self.task_engineer.eng_preds(ex, a, model)
+        
 
 class AOKVQADataset(VLMDataset):
     def __init__(self, split: str = "train"):

@@ -6,9 +6,20 @@
 #   - choices (if applicable)
 #   - label_letter (if applicable)
 # (3) pred
-#   - label (answer text) from VLM's answer 
-#   - label_letter (if applicable) from VLM's answer
-
+# for mc
+#   - label_text: label from model answer text, compared with choices in mc
+#   - label_scores: scores of label from model answer text, compared with choices in mc
+#   - label_maxprob: max probability of label from model answer text, compared with choices in mc
+# for mci
+#   - label_text: label from model answer text, compared with choices in mci and mc
+#   - letter_text: letter from model answer text 
+#   - label_scores: scores of label from model answer text, compared with choices in mci and mc
+#   - letter_scores: scores of letter from model answer text 
+#   - label_maxprob: max probability of label from model answer text, compared with choices in mci and mc
+#   - letter_maxprob: max probability of letter from model answer text 
+# for qa
+#   - label_text: label from model answer text, compared with choices in qa
+#   - label_scores: scores of label from model answer text, compared with choices in qa
 
 import random
 import re
@@ -57,8 +68,30 @@ class MCTaskEngineer(TaskIOEngineer):
         base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
 
-    def eng_preds(self, answer: str):
-        return answer.lower().strip()
+    def eng_preds(self, ex, a: str, model):
+        """ example s: 
+        {'cab': {'avg_nll': 3.2672276496887207,
+            'sum_nll': 3.2672276496887207,
+            'num_tokens': 1,
+            'prob': 0.8913333874394938},
+        'skateboarder': {'avg_nll': 1.5983691215515137,
+            'sum_nll': 6.393476486206055,
+            'num_tokens': 4,
+            'prob': 0.039113578901274634},...}
+        """
+        # text-based generation
+        ex['pred'] = {}
+        ex['pred']['answer'] = a
+        # label is the substring in answer(a) that matches any element of ex['gold']['choices']['ls']
+        for choice in ex['gold']['choices']['ls']:
+            if choice.lower() in a.lower().strip():
+                ex['pred']['label_text'] = choice
+                break
+        # score-based generation
+        s = model.score_choices_single(ex['image'], ex['prompt'], ex['gold']['choices']['ls'])
+        ex['pred']['label_scores'] = s
+        ex['pred']['label_maxprob'] = max(s, key=lambda k: s[k]['prob'])
+
 
 
 class MCITaskEngineer(TaskIOEngineer):
@@ -124,8 +157,31 @@ class MCITaskEngineer(TaskIOEngineer):
         base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
 
-    def eng_preds(self, answer: str):
-        return answer.lower().strip()
+    def eng_preds(self, ex, a: str, model):
+        # text-based generation
+        ex['pred'] = {}
+        ex['pred']['answer'] = a
+        ex['pred']['letter_text'] = None
+        ex['pred']['label_text'] = None
+        # label is the substring in answer(a) that matches any element of ex['gold']['choices']['ls']
+        for (ltr, _) in ex['gold']['choices']['ls']:
+            if ltr.lower() in a.lower().strip():
+                ex['pred']['letter_text'] = ltr
+                break
+        for (_, choice) in ex['gold']['choices']['ls']:
+            if choice.lower() in a.lower().strip():
+                ex['pred']['label_text'] = choice
+                break
+        
+        # score-based generation
+        label_texts = [choice for _, choice in ex['gold']['choices']['ls']]
+        label_letters = [ltr for ltr, _ in ex['gold']['choices']['ls']]
+        ex['pred']['label_scores'] = model.score_choices_single(ex['image'], ex['prompt'], label_texts)
+        ex['pred']['letter_scores'] = model.score_choices_single(ex['image'], ex['prompt'], label_letters)
+        ex['pred']['label_maxprob'] = max(ex['pred']['label_scores'], key=lambda k: ex['pred']['label_scores'][k]['prob'])
+        ex['pred']['letter_maxprob'] = max(ex['pred']['letter_scores'], key=lambda k: ex['pred']['letter_scores'][k]['prob'])
+        
+
 
 
 class QATaskEngineer(TaskIOEngineer):
@@ -144,8 +200,12 @@ class QATaskEngineer(TaskIOEngineer):
         base = f"{sys_prompt} {ex['question']}".strip()     
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
 
-    def eng_preds(self, answer: str):
-        return answer.lower().strip()
+    def eng_preds(self, ex, a: str, model):
+        ex['pred'] = {}
+        ex['pred']['answer'] = a
+        ex['pred']['label_text'] = a.lower().strip()
+        ex['pred']['label_scores'] = model.score_choices_single(ex['image'], ex['prompt'], [ex['gold']['label']])
+        
 
 
 def get_taskengineer(task: str, **kwargs):

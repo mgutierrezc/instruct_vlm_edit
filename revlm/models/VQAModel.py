@@ -95,6 +95,21 @@ class VQAModel(torch.nn.Module):
         num_tokens = max(1, num_tokens)
         return avg_nll, avg_nll * num_tokens, num_tokens
 
+    @torch.no_grad()
+    def score_choices_single(self, img, pr, lbls, use_avg: bool = False, temperature: float = 1.0):
+        inputs = self.encode(img, pr, tokenize=False)
+        scores = {}
+        for lbl in lbls:
+            avg_nll, sum_nll, ntok = self.get_loss_y(img, pr, lbl, inputs, add_special_tokens=False)
+            scores[lbl] = {
+                "avg_nll": avg_nll,
+                "sum_nll": sum_nll,
+                "num_tokens": ntok,
+            }
+        probs = nll_to_probs(scores, use_avg=use_avg, temperature=temperature)
+        for lbl, p in probs.items():
+            scores[lbl]["prob"] = float(p)
+        return scores
 
     @torch.no_grad()
     def score_choices(self, images, prompts, label_words,
@@ -102,20 +117,8 @@ class VQAModel(torch.nn.Module):
                     temperature: float = 1.0):
         all_scores = []
         for img, pr, lbls in zip(images, prompts, label_words):
-            inputs = self.encode(img, pr, tokenize=False)
-            tmp = {}
-            for lbl in lbls:
-                avg_nll, sum_nll, ntok = self.get_loss_y(img, pr, lbl, inputs, add_special_tokens=False)
-                tmp[lbl] = {
-                    "avg_nll": avg_nll,
-                    "sum_nll": sum_nll,
-                    "num_tokens": ntok,
-                }
-            probs = nll_to_probs(tmp, use_avg=use_avg, temperature=temperature)
-            for lbl, p in probs.items():
-                tmp[lbl]["prob"] = float(p)
-
-            all_scores.append(tmp)
+            scores = self.score_choices_single(img, pr, lbls, use_avg=use_avg, temperature=temperature)
+            all_scores.append(scores)
         return all_scores
 
 
