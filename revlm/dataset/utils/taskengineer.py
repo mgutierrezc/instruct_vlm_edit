@@ -23,6 +23,27 @@
 
 import random
 import re
+import numpy as np
+
+def norm(s):
+    return str(s).strip().lower() if s is not None else None
+
+
+def _acc_and_cm(y_true_idx, y_pred_idx, num_classes=4):
+    """Return (acc, n, cm) given parallel lists of class indices (or None)."""
+    cm = np.zeros((num_classes, num_classes), dtype=int)
+    total = 0
+    correct = 0
+    for gt, pr in zip(y_true_idx, y_pred_idx):
+        if gt is None or pr is None:
+            continue
+        cm[gt, pr] += 1
+        total += 1
+        if gt == pr:
+            correct += 1
+    acc = (correct / total) if total > 0 else 0.0
+    return acc, total, cm
+
 
 class TaskIOEngineer:
     def __init__(self):
@@ -91,6 +112,53 @@ class MCTaskEngineer(TaskIOEngineer):
         s = model.score_choices_single(ex['image'], ex['prompt'], ex['gold']['choices']['ls'])
         ex['pred']['label_scores'] = s
         ex['pred']['label_maxprob'] = max(s, key=lambda k: s[k]['prob'])
+
+    def eval(self, vlmdataset):
+        """Evaluate MC task using ex['pred'] and ex['gold'].
+        Returns dict with accuracies and counts for text extraction and max-prob methods.
+        """
+        y_true_idx = []
+        y_pred_text_idx = []
+        y_pred_max_idx = []
+
+        def find_choice_index(pred_val, choices_ls):
+            pred_norm = norm(pred_val)
+            for j, c in enumerate(choices_ls):
+                if norm(c) == pred_norm:
+                    return j
+            return None
+
+        for ex in vlmdataset.data:
+            gold = ex.get("gold", {})
+            pred = ex.get("pred", {})
+            g_label = gold.get("label")
+            choices_ls = gold.get("choices", {}).get("ls", [])
+
+            if not choices_ls or not g_label:
+                continue
+
+            g_idx = find_choice_index(g_label, choices_ls)
+
+            # Text extraction method
+            p_label_text = pred.get("label_text")
+            p_text_idx = find_choice_index(p_label_text, choices_ls) if p_label_text else None
+
+            # Max-prob method
+            p_label_max = pred.get("label_maxprob")
+            p_max_idx = find_choice_index(p_label_max, choices_ls) if p_label_max else None
+
+            if g_idx is not None:
+                y_true_idx.append(g_idx)
+                y_pred_text_idx.append(p_text_idx)
+                y_pred_max_idx.append(p_max_idx)
+
+        acc_text, n_text, cm_text = _acc_and_cm(y_true_idx, y_pred_text_idx, num_classes=4)
+        acc_max, n_max, cm_max = _acc_and_cm(y_true_idx, y_pred_max_idx, num_classes=4)
+
+        return {
+            "text": {"accuracy": acc_text, "n": n_text, "confusion_matrix": cm_text.tolist()},
+            "maxprob": {"accuracy": acc_max, "n": n_max, "confusion_matrix": cm_max.tolist()},
+        }
 
 
 
@@ -181,6 +249,85 @@ class MCITaskEngineer(TaskIOEngineer):
         ex['pred']['label_maxprob'] = max(ex['pred']['label_scores'], key=lambda k: ex['pred']['label_scores'][k]['prob'])
         ex['pred']['letter_maxprob'] = max(ex['pred']['letter_scores'], key=lambda k: ex['pred']['letter_scores'][k]['prob'])
         
+    def eval(self, vlmdataset):
+        """Evaluate MCI task using ex['pred'] and ex['gold'].
+        Returns dict with accuracies and confusion matrices for text/letter extraction and max-prob methods.
+        """
+        letters = ["A", "B", "C", "D"]
+        letter_to_idx = {c: i for i, c in enumerate(letters)}
+
+        y_true_letter_idx = []
+        y_pred_letter_text_idx = []
+        y_pred_letter_max_idx = []
+        y_pred_label_text_idx = []
+        y_pred_label_max_idx = []
+
+        def find_choice_index(pred_val, choices_ls):
+            pred_norm = norm(pred_val)
+            for j, c in enumerate(choices_ls):
+                if norm(c) == pred_norm:
+                    return j
+            return None
+
+        for ex in vlmdataset.data:
+            gold = ex.get("gold", {})
+            pred = ex.get("pred", {})
+            g_label = gold.get("label")
+            g_letter = gold.get("label_letter")
+            choices_ls = gold.get("choices", {}).get("ls", [])
+
+            if not choices_ls:
+                continue
+
+            # Gold indices
+            g_letter_idx = letter_to_idx.get(str(g_letter).upper()) if g_letter else None
+            g_label_idx = None
+            if g_label:
+                # Extract option texts from (letter, text) pairs
+                label_texts = [c[1] if isinstance(c, (tuple, list)) and len(c) >= 2 else c for c in choices_ls]
+                g_label_idx = find_choice_index(g_label, label_texts)
+
+            # Letter predictions
+            p_letter_text = pred.get("letter_text")
+            p_letter_text_idx = letter_to_idx.get(str(p_letter_text).upper()) if p_letter_text else None
+
+            p_letter_max = pred.get("letter_maxprob")
+            p_letter_max_idx = letter_to_idx.get(str(p_letter_max).upper()) if p_letter_max else None
+
+            # Label predictions
+            p_label_text = pred.get("label_text")
+            p_label_text_idx = None
+            p_label_max_idx = None
+            if g_label_idx is not None:
+                label_texts = [c[1] if isinstance(c, (tuple, list)) and len(c) >= 2 else c for c in choices_ls]
+                p_label_text_idx = find_choice_index(p_label_text, label_texts) if p_label_text else None
+                p_label_max = pred.get("label_maxprob")
+                p_label_max_idx = find_choice_index(p_label_max, label_texts) if p_label_max else None
+
+            # Collect
+            if g_letter_idx is not None:
+                y_true_letter_idx.append(g_letter_idx)
+                y_pred_letter_text_idx.append(p_letter_text_idx)
+                y_pred_letter_max_idx.append(p_letter_max_idx)
+
+            if g_label_idx is not None:
+                y_pred_label_text_idx.append(p_label_text_idx)
+                y_pred_label_max_idx.append(p_label_max_idx)
+
+        # Letter metrics
+        acc_letter_text, n_letter_text, cm_letter_text = _acc_and_cm(y_true_letter_idx, y_pred_letter_text_idx)
+        acc_letter_max, n_letter_max, cm_letter_max = _acc_and_cm(y_true_letter_idx, y_pred_letter_max_idx)
+
+        # Label metrics (reuse y_true_letter_idx since it aligns with label predictions when g_label_idx exists)
+        acc_label_text, n_label_text, cm_label_text = _acc_and_cm(y_true_letter_idx, y_pred_label_text_idx)
+        acc_label_max, n_label_max, cm_label_max = _acc_and_cm(y_true_letter_idx, y_pred_label_max_idx)
+
+        return {
+            "letter_text": {"accuracy": acc_letter_text, "n": n_letter_text, "confusion_matrix": cm_letter_text.tolist()},
+            "letter_maxprob": {"accuracy": acc_letter_max, "n": n_letter_max, "confusion_matrix": cm_letter_max.tolist()},
+            "label_text": {"accuracy": acc_label_text, "n": n_label_text, "confusion_matrix": cm_label_text.tolist()},
+            "label_maxprob": {"accuracy": acc_label_max, "n": n_label_max, "confusion_matrix": cm_label_max.tolist()},
+        }
 
 
 
@@ -207,6 +354,31 @@ class QATaskEngineer(TaskIOEngineer):
         ex['pred']['label_scores'] = model.score_choices_single(ex['image'], ex['prompt'], [ex['gold']['label']])
         
 
+    def eval_qa(self, vlmdataset):
+        """Evaluate QA task using ex['pred'] and ex['gold'].
+        Returns dict with label-based accuracy (substring/text matching).
+        """
+        label_hit = label_total = 0
+
+        for ex in vlmdataset.data:
+            gold = ex.get("gold", {})
+            pred = ex.get("pred", {})
+            g_label = gold.get("label")
+            p_label = pred.get("label_text")
+
+            if g_label is None or p_label is None:
+                continue
+
+            label_total += 1
+            if norm(g_label) == norm(p_label):
+                label_hit += 1
+
+        acc = (label_hit / label_total) if label_total > 0 else 0.0
+        return {
+            "text": {"accuracy": acc, "n": label_total},
+        }
+
+    
 
 def get_taskengineer(task: str, **kwargs):
     task = task.lower()

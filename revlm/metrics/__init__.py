@@ -1,5 +1,5 @@
-from .mcq import *
-from .qa import *
+# from .mcq import *
+# from .qa import *
 
 
 
