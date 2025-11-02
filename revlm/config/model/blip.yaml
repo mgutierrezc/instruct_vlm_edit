@@ -5,8 +5,8 @@ pt: null
 # - qformer.encoder.layer.0.attention.output.dense.weight
 # - qformer.encoder.layer.0.crossattention.output.dense.weight
 # - language_model.model.layers.0.self_attn.q_proj.weight
-# - language_model.lm_head.weight
-inner_params: []  # Auto-selected from suggested layers if empty
+# - language_model.lm_head.weight (default)
+inner_params: ["language_model.lm_head.weight"]  # Language model head weight
 processor_class: null
 tokenizer_class: null
 

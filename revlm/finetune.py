@@ -8,27 +8,11 @@ import numpy as np
 from .models import get_model
 from .dataset import get_dataset
 from .editors import get_editor
+from .editors.utils import explore_layers, validate_and_correct_param_name
 from .config_utils import configure_args
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s', level=logging.INFO)
 LOG = logging.getLogger(__name__)
-
-
-def explore_layers(model, top_k=10):
-    """Find suggested layer candidates for finetuning"""
-    all_names = [n for n, p in model.named_parameters()]
-    keywords = ['lm_head', 'embed_out', 'output', 'classifier', 'head', 
-                'self_attn.q_proj', 'self_attn.v_proj', 'self_attn.k_proj',
-                'mlp.c_fc', 'mlp.c_proj', 'gate_proj', 'up_proj', 'down_proj']
-    
-    suggestions = []
-    for name in all_names:
-        for kw in keywords:
-            if kw in name.lower():
-                suggestions.append(name)
-                break
-    
-    return suggestions[:top_k] if suggestions else all_names[:1]
 
 
 def finetune(config):
@@ -52,6 +36,13 @@ def finetune(config):
             LOG.info(f"Auto-selected layer: {config.model.inner_params[0]}")
         else:
             raise ValueError("No suitable layers found and inner_params not provided")
+    
+    # Validate and correct parameter name (before creating editor)
+    # COMMENTED OUT: Validation not needed - auto-selection/YAML configs provide correct layer names
+    # validated_param = validate_and_correct_param_name(model.model, config.model.inner_params[0], logger=LOG)
+    # if validated_param != config.model.inner_params[0]:
+    #     config.model.inner_params[0] = validated_param
+    #     LOG.info(f"Using validated parameter: {validated_param}")
     
     # Load datasets
     train_dataset = get_dataset(config, split="train")
