@@ -26,7 +26,20 @@ Benchmark dataset RationaleVQA (based on AOKVQA, FVQA datasets) can be downloade
 # Run
 
 Update each .sbatch with your account/partition/GPU, CUDA/module load and project path.
+
+1. prompting
 ```bash
 cd ./jobs/eval
+bash run.sh
+```
+2. finetune
+```bash
+cd ./jobs/ft
+bash run.sh
+
+cd ./jobs/ft_ewc
+bash run.sh
+
+cd ./jobs/ft_retrain
 bash run.sh
 ```
