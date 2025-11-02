@@ -13,7 +13,7 @@ class Finetune(torch.nn.Module):
         
         self.pnames = [brackets_to_periods(config.inner_params[0])]
         self.device = config.device
-        self.edit_lr = config.edit_lr
+        self.edit_lr = float(config.edit_lr)  # Ensure float type (YAML may parse 1e-4 as string)
         
         # Freeze all parameters except the ones to edit
         for n, p in self.model.named_parameters():

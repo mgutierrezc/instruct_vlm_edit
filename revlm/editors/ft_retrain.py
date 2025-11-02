@@ -13,8 +13,10 @@ class Finetune_retrain(torch.nn.Module):
         
         self.pnames = [brackets_to_periods(config.inner_params[0])]
         self.device = config.device
-        self.edit_lr = config.edit_lr
-        self.retrain_memory = getattr(config, 'retrain_memory', 100)
+        self.edit_lr = float(config.edit_lr)  # Ensure float type (YAML may parse 1e-4 as string)
+        # Get config values - editor configs may be nested under config.editor
+        editor_config = getattr(config, 'editor', config) if hasattr(config, 'editor') else config
+        self.retrain_memory = int(getattr(editor_config, 'retrain_memory', 100))
 
     def forward(self, *inputs, **kwargs):
         return self.model(*inputs, **kwargs)

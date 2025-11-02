@@ -13,9 +13,11 @@ class Finetune_ewc(torch.nn.Module):
         
         self.pnames = [brackets_to_periods(config.inner_params[0])]
         self.device = config.device
-        self.ewc_lambda = getattr(config, 'ewc_lambda', 1.0)
-        self.fisher_mem = getattr(config, 'fisher_mem', 10)
-        self.edit_lr = config.edit_lr
+        # Get config values - editor configs may be nested under config.editor
+        editor_config = getattr(config, 'editor', config) if hasattr(config, 'editor') else config
+        self.ewc_lambda = float(getattr(editor_config, 'ewc_lambda', 1.0))
+        self.fisher_mem = int(getattr(editor_config, 'fisher_mem', 10))
+        self.edit_lr = float(config.edit_lr)  # Ensure float type (YAML may parse 1e-4 as string)
         
         for n, p in self.model.named_parameters():
             if n != self.pnames[0]:

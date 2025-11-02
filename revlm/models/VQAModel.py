@@ -122,73 +122,118 @@ class VQAModel(torch.nn.Module):
         return all_scores
 
 
-    # @torch.no_grad()
-    # def letter_classifier(self, images, prompts, letters=("A", "B", "C", "D")):
-    #     """Single-forward next-token classifier over letters.
-    #     Formats prompts to elicit a single-letter answer, then classifies using next-token logits.
-    #     Returns (pred_letters: List[str], probs: torch.Tensor[B, 4]).
-    #     """
-    #     prompts = [f"{p.strip()}\nAnswer with a single letter (A, B, C, or D) only." for p in prompts]
-    #     inputs = self.encode(images, prompts, tokenize=False)
+    def get_loss(self, batch: Dict):
+        """Return differentiable loss tensor for a loader batch (for finetuning).
+        Requires batch with 'images', 'prompts', and 'golds' (list of dicts with 'label').
+        
+        Args:
+            batch: Dict with keys:
+                - 'images': List[PIL.Image] or PIL.Image
+                - 'prompts': List[str] or str
+                - 'golds': List[Dict] where each dict has 'label' key
+                
+        Returns:
+            torch.Tensor: Loss value with gradients enabled
+        """
+        images = batch.get("images")
+        prompts = batch.get("prompts")
+        prompt_inputs = self.encode(images, prompts, tokenize=False)
 
-    #     is_enc_dec = bool(getattr(getattr(self.model, "config", object()), "is_encoder_decoder", False))
-    #     if is_enc_dec:
-    #         bos = self.tokenizer.bos_token_id or self.tokenizer.pad_token_id or 0
-    #         dec_inp = torch.full((len(prompts), 1), bos, dtype=torch.long, device=self.device)
-    #         outputs = self.model(**inputs, decoder_input_ids=dec_inp, use_cache=False, return_dict=True)
-    #         next_logits = outputs.logits[:, -1, :]
-    #     else:
-    #         outputs = self.model(**inputs, return_dict=True)
-    #         next_logits = outputs.logits[:, -1, :]
+        # Collect gold answer texts (strict requirement)
+        golds = batch["golds"]  # expect list of dicts
+        gold_texts = [str(g["label"]) for g in golds]
 
-    #     letter_ids = [ids[0] for ids in self.tokenizer(list(letters), add_special_tokens=False).input_ids]
-    #     letter_ids_t = torch.tensor(letter_ids, device=self.device)
-    #     scores = next_logits.index_select(dim=1, index=letter_ids_t)
-    #     probs = torch.softmax(scores, dim=1)
-    #     pred_idx = probs.argmax(dim=1)
-    #     preds = [letters[i] for i in pred_idx.tolist()]
-    #     return preds, probs
+        gold_tok = self.tokenizer(gold_texts, return_tensors="pt", add_special_tokens=False, padding=True)
+        labels_ids = gold_tok.input_ids.to(self.device)
+        if labels_ids.shape[1] == 0:
+            # No target tokens → zero loss
+            return torch.tensor(0.0, device=self.device, requires_grad=True)
 
+        is_enc_dec = bool(getattr(getattr(self.model, "config", object()), "is_encoder_decoder", False))
+        if is_enc_dec:
+            out = self.model(**prompt_inputs, labels=labels_ids)
+            return out.loss
 
-    # def get_loss(self, batch: Dict):
-    #     """Return differentiable loss tensor for a loader batch (for finetuning).
-    #     Requires batch with 'images', 'prompts', and 'golds' (list of dicts with 'label').
-    #     """
-    #     images = batch.get("images")
-    #     prompts = batch.get("prompts")
-    #     prompt_inputs = self.encode(images, prompts, tokenize=False)
+        input_ids = prompt_inputs.get("input_ids")
+        attn = prompt_inputs.get("attention_mask")
+        if input_ids is None:
+            out = self.model(**prompt_inputs, labels=labels_ids)
+            return out.loss
 
-    #     # Collect gold answer texts (strict requirement)
-    #     golds = batch["golds"]  # expect list of dicts
-    #     gold_texts = [str(g["label"]) for g in golds]
+        # Decoder-only: concatenate prompt + labels; mask prompt tokens
+        full_ids = torch.cat([input_ids, labels_ids], dim=1)
+        full_attn = torch.cat([attn, torch.ones_like(labels_ids)], dim=1) if attn is not None else None
+        labels = torch.full_like(full_ids, -100)
+        prompt_len = int(input_ids.shape[1])
+        labels[:, prompt_len:] = full_ids[:, prompt_len:]
 
-    #     gold_tok = self.tokenizer(gold_texts, return_tensors="pt", add_special_tokens=False, padding=True)
-    #     labels_ids = gold_tok.input_ids.to(self.device)
-    #     if labels_ids.shape[1] == 0:
-    #         # No target tokens → zero loss
-    #         return torch.tensor(0.0, device=self.device, requires_grad=True)
+        model_inputs = dict(prompt_inputs)
+        model_inputs["input_ids"] = full_ids
+        if full_attn is not None:
+            model_inputs["attention_mask"] = full_attn
+        out = self.model(**model_inputs, labels=labels)
+        return out.loss
 
-    #     is_enc_dec = bool(getattr(getattr(self.model, "config", object()), "is_encoder_decoder", False))
-    #     if is_enc_dec:
-    #         out = self.model(**prompt_inputs, labels=labels_ids)
-    #         return out.loss
+    def prepare_training_batch(self, batch: Dict) -> Dict[str, torch.Tensor]:
+        """Prepare a training batch into model inputs with labels (for editors).
+        Returns the full input dict that can be passed to model(**inputs) or editor.edit().
+        
+        This is similar to get_loss() but returns the inputs dict instead of computing loss.
+        Editors can then call model(**inputs) themselves and handle the loss computation.
+        
+        Args:
+            batch: Dict with keys:
+                - 'images': List[PIL.Image] or PIL.Image
+                - 'prompts': List[str] or str
+                - 'golds': List[Dict] where each dict has 'label' key
+                
+        Returns:
+            Dict[str, torch.Tensor]: Model inputs including:
+                - All processor outputs (pixel_values, pixel_mask, input_ids, attention_mask, etc.)
+                - 'labels': torch.Tensor with -100 masking for prompt positions (decoder-only)
+                           or raw label_ids (encoder-decoder)
+        """
+        images = batch.get("images")
+        prompts = batch.get("prompts")
+        prompt_inputs = self.encode(images, prompts, tokenize=False)
 
-    #     input_ids = prompt_inputs.get("input_ids")
-    #     attn = prompt_inputs.get("attention_mask")
-    #     if input_ids is None:
-    #         out = self.model(**prompt_inputs, labels=labels_ids)
-    #         return out.loss
+        # Collect gold answer texts
+        golds = batch["golds"]
+        gold_texts = [str(g["label"]) for g in golds]
 
-    #     # Decoder-only: concatenate prompt + labels; mask prompt tokens
-    #     full_ids = torch.cat([input_ids, labels_ids], dim=1)
-    #     full_attn = torch.cat([attn, torch.ones_like(labels_ids)], dim=1) if attn is not None else None
-    #     labels = torch.full_like(full_ids, -100)
-    #     prompt_len = int(input_ids.shape[1])
-    #     labels[:, prompt_len:] = full_ids[:, prompt_len:]
+        gold_tok = self.tokenizer(gold_texts, return_tensors="pt", add_special_tokens=False, padding=True)
+        labels_ids = gold_tok.input_ids.to(self.device)
 
-    #     model_inputs = dict(prompt_inputs)
-    #     model_inputs["input_ids"] = full_ids
-    #     if full_attn is not None:
-    #         model_inputs["attention_mask"] = full_attn
-    #     out = self.model(**model_inputs, labels=labels)
-    #     return out.loss
+        is_enc_dec = bool(getattr(getattr(self.model, "config", object()), "is_encoder_decoder", False))
+
+        if is_enc_dec:
+            # Encoder-decoder: labels are separate decoder inputs
+            model_inputs = dict(prompt_inputs)
+            model_inputs["labels"] = labels_ids
+            return model_inputs
+
+        # Decoder-only: concatenate prompt + labels; mask prompt tokens
+        input_ids = prompt_inputs.get("input_ids")
+        attn = prompt_inputs.get("attention_mask")
+
+        if input_ids is None:
+            # Fallback if no input_ids in prompt_inputs
+            model_inputs = dict(prompt_inputs)
+            model_inputs["labels"] = labels_ids
+            return model_inputs
+
+        full_ids = torch.cat([input_ids, labels_ids], dim=1)
+        full_attn = torch.cat([attn, torch.ones_like(labels_ids)], dim=1) if attn is not None else None
+        
+        # Create labels mask: -100 for prompt positions, actual token ids for answer positions
+        labels = torch.full_like(full_ids, -100)
+        prompt_len = int(input_ids.shape[1])
+        labels[:, prompt_len:] = full_ids[:, prompt_len:]
+
+        model_inputs = dict(prompt_inputs)
+        model_inputs["input_ids"] = full_ids
+        if full_attn is not None:
+            model_inputs["attention_mask"] = full_attn
+        model_inputs["labels"] = labels
+
+        return model_inputs
