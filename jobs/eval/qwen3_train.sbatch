@@ -25,9 +25,16 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 # Example command - adjust parameters based on your needs
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mcq --subsample 2000
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mcq --rationale --subsample 2000
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mci
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mci --rationale
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mc
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mc --rationale
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task qa
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task qa --rationale
 
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mcq --subsample 2000
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mcq --rationale --subsample 2000
-
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mci
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mci --rationale
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mc
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mc --rationale
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task qa
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task qa --rationale
