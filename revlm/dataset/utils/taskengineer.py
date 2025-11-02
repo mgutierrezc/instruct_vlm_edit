@@ -259,6 +259,7 @@ class MCITaskEngineer(TaskIOEngineer):
         y_true_letter_idx = []
         y_pred_letter_text_idx = []
         y_pred_letter_max_idx = []
+        y_true_label_idx = []
         y_pred_label_text_idx = []
         y_pred_label_max_idx = []
 
@@ -311,6 +312,7 @@ class MCITaskEngineer(TaskIOEngineer):
                 y_pred_letter_max_idx.append(p_letter_max_idx)
 
             if g_label_idx is not None:
+                y_true_label_idx.append(g_label_idx)
                 y_pred_label_text_idx.append(p_label_text_idx)
                 y_pred_label_max_idx.append(p_label_max_idx)
 
@@ -318,9 +320,9 @@ class MCITaskEngineer(TaskIOEngineer):
         acc_letter_text, n_letter_text, cm_letter_text = _acc_and_cm(y_true_letter_idx, y_pred_letter_text_idx)
         acc_letter_max, n_letter_max, cm_letter_max = _acc_and_cm(y_true_letter_idx, y_pred_letter_max_idx)
 
-        # Label metrics (reuse y_true_letter_idx since it aligns with label predictions when g_label_idx exists)
-        acc_label_text, n_label_text, cm_label_text = _acc_and_cm(y_true_letter_idx, y_pred_label_text_idx)
-        acc_label_max, n_label_max, cm_label_max = _acc_and_cm(y_true_letter_idx, y_pred_label_max_idx)
+        # Label metrics
+        acc_label_text, n_label_text, cm_label_text = _acc_and_cm(y_true_label_idx, y_pred_label_text_idx)
+        acc_label_max, n_label_max, cm_label_max = _acc_and_cm(y_true_label_idx, y_pred_label_max_idx)
 
         return {
             "letter_text": {"accuracy": acc_letter_text, "n": n_letter_text, "confusion_matrix": cm_letter_text.tolist()},
@@ -354,7 +356,7 @@ class QATaskEngineer(TaskIOEngineer):
         ex['pred']['label_scores'] = model.score_choices_single(ex['image'], ex['prompt'], [ex['gold']['label']])
         
 
-    def eval_qa(self, vlmdataset):
+    def eval(self, vlmdataset):
         """Evaluate QA task using ex['pred'] and ex['gold'].
         Returns dict with label-based accuracy (substring/text matching).
         """

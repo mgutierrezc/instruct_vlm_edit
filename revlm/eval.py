@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 import os
 import random
@@ -23,45 +24,25 @@ def run_eval(config, args):
     if args.subsample and len(ds) > args.subsample:
         ds.data = random.sample(ds.data, args.subsample)
     
-    # --- print 10 example answers ---
-    choices = []
-    imgs = []
-    qs = []
-    for i in range(10):
-        ex = ds.data[i]
-        print(ex)
-        choices.append(ex["choices"])
-        imgs.append(Image.open(ex["image"]).convert("RGB"))
-        qs.append("Choose A/B/C/D based on the image. " + ex["question"] + ex['choices'])
-    
-    with torch.no_grad():
-        ans = vlm.generate(images=imgs, prompts=qs, max_new_tokens=100)
-    print(ans)
-    # --------------
+    # --- debug: sample 10 examples ---
+    sample_ds = copy.copy(ds)
+    sample_ds.data = [ds.data[i].copy() for i in range(min(10, len(ds.data)))]
+    sample_ds.set_dataloader(task=args.task, with_rationale=args.rationale, batch_size=10)
+    for batch in sample_ds.loader:
+        sample_ds.task_generate(batch, vlm)
+        break
+    print(sample_ds.data[:10])
 
-    # Prepare loader
+    # ---- run -----
     ds.set_dataloader(
         task=args.task,
         with_rationale=args.rationale,
         shuffle_choices=True,
         unpaired=True
     )
-
-    if args.task == "mcq":
-        # Run metrics
-        res_loss1 = MCQ_metrics_score(vlm, ds)
-        res_loss2 = MCQ_metrics_score(vlm, ds, score_by_letter=False)
-        res_text = MCQ_metrics_text(vlm, ds)
-        res_cls = MCQ_metrics_classifier(vlm, ds)
-        results = {"loss_letter": res_loss1, "loss_option": res_loss2, "text": res_text, "classifier": res_cls}
-    if args.task == "qa":
-        # Run metrics
-        res_loss = QA_metrics_loss(vlm, ds)
-        res_text = QA_metrics_text(vlm, ds)
-        res_qa = QA_metrics_nli_bi(vlm, ds)
-        results = {"loss": res_loss, "text": res_text, "nli_bi": res_qa}
-
-   
+    for batch in ds.loader:
+        ds.task_generate(batch, vlm)
+    results = ds.task_engineer.eval(ds)
 
     # Save under res_dir
     res_dir = getattr(config, "res_dir")
@@ -83,7 +64,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'llava', 'blip')")
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
     parser.add_argument("--split", type=str, default="test", choices=["train", "test"], help="Split to evaluate on")
-    parser.add_argument("--task", type=str, default="mcq", choices=["mcq", "qa"], help="Task to evaluate")
+    parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task to evaluate")
     parser.add_argument("--rationale", action="store_true", help="Append rationale to prompts if available")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     
