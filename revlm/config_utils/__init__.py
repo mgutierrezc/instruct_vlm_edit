@@ -36,15 +36,30 @@ def configure_args(args, config_path=None):
             merged = {k: v for k, v in preset.items() if k != "_name"}
             editor = {"_name": editor_name, **merged}
 
-    # Map short model name if provided
-    if getattr(args, "model_name", None):
+    # Map short model name if provided and load model preset
+    model_name_provided = getattr(args, "model_name", None)
+    if model_name_provided:
         short_to_full = {
             "qwen3": "Qwen/Qwen3-VL-8B-Instruct",
             "llava": "llava-hf/llava-1.5-7b-hf",
             "blip": "Salesforce/instructblip-vicuna-7b",
         }
-        key = str(args.model_name).lower()
-        model["name"] = short_to_full.get(key, args.model_name)
+        key = str(model_name_provided).lower()
+        resolved_name = short_to_full.get(key, model_name_provided)
+        
+        # Try to load model preset YAML (similar to editor presets)
+        model_preset_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "model", f"{key}.yaml")
+        model_preset = load_yaml(model_preset_path)
+        if model_preset:
+            # Merge preset into model config (preset values override defaults)
+            for k, v in model_preset.items():
+                if k not in model or model[k] is None or model[k] == []:
+                    model[k] = v
+            # Ensure name is set to resolved full name
+            model["name"] = resolved_name
+        else:
+            # No preset found, just set the name
+            model["name"] = resolved_name
 
     # CLI overrides
     if getattr(args, "inner_params", None):
