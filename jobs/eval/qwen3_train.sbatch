@@ -24,17 +24,19 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
-# Example command - adjust parameters based on your needs
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mci
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mci --rationale
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mc
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task mc --rationale
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task qa
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split test --task qa --rationale
+# Evaluate Qwen3 on train sets
+# Each command runs in a separate Python process which should free memory on exit
+# Added explicit cleanup in eval.py for safety
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mci || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mci --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mc || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mc --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task qa || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task qa --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
 
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mci
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mci --rationale
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mc
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task mc --rationale
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task qa
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split test --task qa --rationale
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mci || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mci --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mc || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mc --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task qa || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task qa --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }

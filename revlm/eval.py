@@ -51,6 +51,13 @@ def run_eval(config, args):
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Saved metrics to {out_path}")
+    
+    # Explicit cleanup to free GPU memory before script exits
+    del vlm
+    del ds
+    del sample_ds
+    torch.cuda.empty_cache()
+    print("Cleaned up model and freed GPU memory")
 
 
 

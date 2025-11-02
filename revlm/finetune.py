@@ -129,6 +129,14 @@ def finetune(config):
         torch.save(model.model.state_dict(), ckpt_path)
         LOG.info(f"Saved checkpoint: {ckpt_path}")
     
+    # Explicit cleanup to free GPU memory before script exits
+    del model
+    del editor
+    del train_dataset
+    del test_dataset
+    torch.cuda.empty_cache()
+    LOG.info("Cleaned up model and freed GPU memory")
+    
     return metrics
 
 

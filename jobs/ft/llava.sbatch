@@ -25,7 +25,7 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 # Finetune LLaVA with ft editor (basic finetuning)
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mc --batch_size 2 --n_iter 1
+python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mc --batch_size 1 --n_iter 1
 python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mc --with_rationale --batch_size 2 --n_iter 1
 python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mci --batch_size 2 --n_iter 1
 python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mci --with_rationale --batch_size 2 --n_iter 1
