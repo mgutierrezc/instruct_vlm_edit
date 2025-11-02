@@ -40,7 +40,8 @@ class VLMDataset(Dataset):
                                               shuffle_choices=shuffle_choices,
                                               unpaired=unpaired,
                                               seed=seed)
-        for ex in self.data: # ex is a reference to the dict stored in self.data
+        for i, ex in enumerate(self.data): # ex is a reference to the dict stored in self.data
+            ex['idx'] = i
             self.task_engineer.eng_golds(ex)
             self.task_engineer.eng_prompt(ex)
         self.loader = DataLoader(self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=pin_memory, collate_fn=self.image_collate)
@@ -48,29 +49,37 @@ class VLMDataset(Dataset):
         
     def image_collate(self, batch):
         """Collate function that loads images and returns a batch dict.
-        Expects items with keys: 'image' (path), 'prompt' (string), 'gold' (dict).
+        Expects items with keys: 'image' (path), 'prompt' (string), 'gold' (dict), 'idx' (int).
         """
         images = [Image.open(ex["image"]).convert("RGB") for ex in batch]
         prompts = [ex["prompt"] for ex in batch]
         golds = [ex["gold"] for ex in batch]
+        idxs = [ex["idx"] for ex in batch]
         return {
             "images": images,
             "prompts": prompts,
             "golds": golds,
+            "idxs": idxs,
         }
     
-    def task_generate(self, model):
-        loader = self.loader
-        answers = []
-        for batch in loader:
-            images = batch.get("images")
-            prompts = batch.get("prompts")
-            out_texts = model.generate(images, prompts, max_new_tokens=100)
-            answers.extend(out_texts)
+    # def task_generate(self, model):
+    #     loader = self.loader
+    #     answers = []
+    #     for batch in loader:
+    #         images = batch.get("images")
+    #         prompts = batch.get("prompts")
+    #         out_texts = model.generate(images, prompts, max_new_tokens=100)
+    #         answers.extend(out_texts)
 
-        for (ex, a) in zip(self.data, answers): # ex is a reference to the dict stored in vlmdataset.data
-            self.task_engineer.eng_preds(ex, a, model)
+    #     for (ex, a) in zip(self.data, answers): # ex is a reference to the dict stored in vlmdataset.data
+    #         self.task_engineer.eng_preds(ex, a, model)
         
+
+    def task_generate(self, batch, model):
+        """Generate predictions for a single collated batch and write back in place using indices."""
+        outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
+        for idx, a in zip(batch["idxs"], outs):
+            self.task_engineer.eng_preds(self.data[idx], a, model)
 
 class AOKVQADataset(VLMDataset):
     def __init__(self, split: str = "train"):
