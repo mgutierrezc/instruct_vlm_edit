@@ -6,16 +6,9 @@ LOG = logging.getLogger(__name__)
 
 
 def get_model(config):
-    # Get model class name (with fallback to config model_name access)
-    model_name = getattr(config.model, "name", "")
-    model_class = getattr(config.model, "class_name", "VQAModel")
     model_pt = getattr(config.model, "pt", None)
-    task = getattr(getattr(config, "experiment", None), "task", None) or getattr(config, "task", "vqa")
-    if task == "vqa":
-        LOG.info(f"Loading VQAModel for VQA task")
-        model = VQAModel(config)
-    else:
-        raise NotImplementedError(f"Model class {model_class} for task {task} not implemented")
+    LOG.info(f"Loading VQAModel for VQA task")
+    model = VQAModel(config)
     
     if model_pt:
         LOG.info(f"Loading model from checkpoint {model_pt}")

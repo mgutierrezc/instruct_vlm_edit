@@ -52,7 +52,7 @@ class VLMDataset(Dataset):
         """
         images = [Image.open(ex["image"]).convert("RGB") for ex in batch]
         prompts = [ex["prompt"] for ex in batch]
-        golds = [ex["golds"] for ex in batch]
+        golds = [ex["gold"] for ex in batch]
         return {
             "images": images,
             "prompts": prompts,

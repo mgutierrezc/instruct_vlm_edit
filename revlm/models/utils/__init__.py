@@ -3,6 +3,8 @@ import logging
 import transformers
 from torch import nn
 import torch
+import math
+from typing import Dict
 
 from .qwen3 import *
 from .llava import *
@@ -117,43 +119,58 @@ def clean_answer(o, i):
     return s
 
 
-def compute_loss_stats(model, prompt_inputs, labels_ids, mask_prompt: bool = True):
-    """Compute (avg_nll, sum_nll, num_tokens) for given labels given prompt inputs.
-    Handles both encoder-decoder and decoder-only models.
-    - model: VQAModel instance (has .model and .loss)
-    - prompt_inputs: dict from model.encode(...)
-    - labels_ids: LongTensor [B, T]
-    - mask_prompt: when decoder-only with input_ids present, mask loss to answer tokens only
-    """
-    import torch  # local import to avoid surprises
-    is_enc_dec = bool(getattr(getattr(model.model, "config", object()), "is_encoder_decoder", False))
-    if is_enc_dec:
-        _ = model.forward({**prompt_inputs, "labels": labels_ids})
-        avg_nll = float(model.loss.item()) if getattr(model, "loss", None) is not None else float("inf")
-        num_tokens = int(labels_ids.shape[0] * labels_ids.shape[1])
-        return avg_nll, avg_nll * num_tokens, num_tokens
+# “subtract max” softmax. This is a more numerically stable version of the softmax function.
+def nll_to_probs(label_losses: Dict[str, Dict[str, float]], use_avg: bool = False, temperature: float = 1.0) -> Dict[str, float]:
+    scores = {}
+    temp = max(1e-8, float(temperature))
+    for lbl, d in label_losses.items():
+        nll = float(d['avg_nll'] if use_avg else d['sum_nll'])
+        scores[lbl] = -(nll) / temp
+    m = max(scores.values()) if scores else 0.0
+    exps = {lbl: math.exp(s - m) for lbl, s in scores.items()}
+    Z = sum(exps.values()) or 1.0
+    return {lbl: v / Z for lbl, v in exps.items()}
 
-    input_ids = prompt_inputs.get("input_ids")
-    attn = prompt_inputs.get("attention_mask")
-    if input_ids is None or not mask_prompt:
-        _ = model.forward({**prompt_inputs, "labels": labels_ids})
-        avg_nll = float(model.loss.item()) if getattr(model, "loss", None) is not None else float("inf")
-        num_tokens = int(labels_ids.shape[0] * labels_ids.shape[1])
-        return avg_nll, avg_nll * num_tokens, num_tokens
+    
 
-    # Decoder-only: concatenate prompt + labels; mask prompt tokens
-    full_ids = torch.cat([input_ids, labels_ids], dim=1)
-    full_attn = torch.cat([attn, torch.ones_like(labels_ids)], dim=1) if attn is not None else None
-    labels = torch.full_like(full_ids, -100)
-    prompt_len = int(input_ids.shape[1])
-    labels[:, prompt_len:] = full_ids[:, prompt_len:]
+# def compute_loss_stats(model, prompt_inputs, labels_ids, mask_prompt: bool = True):
+#     """Compute (avg_nll, sum_nll, num_tokens) for given labels given prompt inputs.
+#     Handles both encoder-decoder and decoder-only models.
+#     - model: VQAModel instance (has .model and .loss)
+#     - prompt_inputs: dict from model.encode(...)
+#     - labels_ids: LongTensor [B, T]
+#     - mask_prompt: when decoder-only with input_ids present, mask loss to answer tokens only
+#     """
+#     import torch  # local import to avoid surprises
+#     is_enc_dec = bool(getattr(getattr(model.model, "config", object()), "is_encoder_decoder", False))
+#     if is_enc_dec:
+#         _ = model.forward({**prompt_inputs, "labels": labels_ids})
+#         avg_nll = float(model.loss.item()) if getattr(model, "loss", None) is not None else float("inf")
+#         num_tokens = int(labels_ids.shape[0] * labels_ids.shape[1])
+#         return avg_nll, avg_nll * num_tokens, num_tokens
 
-    model_inputs = dict(prompt_inputs)
-    model_inputs["input_ids"] = full_ids
-    if full_attn is not None:
-        model_inputs["attention_mask"] = full_attn
-    _ = model.forward({**model_inputs, "labels": labels})
-    avg_nll = float(model.loss.item()) if getattr(model, "loss", None) is not None else float("inf")
-    num_tokens = int(full_ids.shape[1] - prompt_len) * full_ids.shape[0]
-    num_tokens = max(1, num_tokens)
-    return avg_nll, avg_nll * num_tokens, num_tokens
+#     input_ids = prompt_inputs.get("input_ids")
+#     attn = prompt_inputs.get("attention_mask")
+#     if input_ids is None or not mask_prompt:
+#         _ = model.forward({**prompt_inputs, "labels": labels_ids})
+#         avg_nll = float(model.loss.item()) if getattr(model, "loss", None) is not None else float("inf")
+#         num_tokens = int(labels_ids.shape[0] * labels_ids.shape[1])
+#         return avg_nll, avg_nll * num_tokens, num_tokens
+
+#     # Decoder-only: concatenate prompt + labels; mask prompt tokens
+#     full_ids = torch.cat([input_ids, labels_ids], dim=1)
+#     full_attn = torch.cat([attn, torch.ones_like(labels_ids)], dim=1) if attn is not None else None
+#     labels = torch.full_like(full_ids, -100)
+#     prompt_len = int(input_ids.shape[1])
+#     labels[:, prompt_len:] = full_ids[:, prompt_len:]
+
+#     model_inputs = dict(prompt_inputs)
+#     model_inputs["input_ids"] = full_ids
+#     if full_attn is not None:
+#         model_inputs["attention_mask"] = full_attn
+#     _ = model.forward({**model_inputs, "labels": labels})
+#     avg_nll = float(model.loss.item()) if getattr(model, "loss", None) is not None else float("inf")
+#     num_tokens = int(full_ids.shape[1] - prompt_len) * full_ids.shape[0]
+#     num_tokens = max(1, num_tokens)
+#     return avg_nll, avg_nll * num_tokens, num_tokens
+

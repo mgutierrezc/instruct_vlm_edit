@@ -1,11 +1,11 @@
 # TaskEngineer is a class that engineers task-dependent inputs and outputs for a given example.
 # ex is a binding to the dict stored in self.data, mutable in place
 # (1) prompt 
-# (2) golds
+# (2) gold
 #   - label (answer text)
 #   - choices (if applicable)
 #   - label_letter (if applicable)
-# (3) preds
+# (3) pred
 #   - label (answer text) from VLM's answer 
 #   - label_letter (if applicable) from VLM's answer
 
@@ -35,6 +35,7 @@ class MCTaskEngineer(TaskIOEngineer):
         self.with_rationale = with_rationale
         self.shuffle_choices = shuffle_choices
         self.seed = seed
+        self.rng = random.Random(seed)
     
 
     def _eng_choices(self, s: str):
@@ -42,19 +43,18 @@ class MCTaskEngineer(TaskIOEngineer):
         choices_list = s.split(';')
         choices_list = [choice.strip() for choice in choices_list]
         if self.shuffle_choices:
-            rng = random.Random(self.seed)
-            rng.shuffle(choices_list)
+            self.rng.shuffle(choices_list)
         choices_str = '; '.join(choices_list)
         return {"str": choices_str, "ls": choices_list}
 
     def eng_golds(self, ex):
-        ex['golds'] = {}
-        ex['golds']['label'] = str(ex['answer']).lower().strip()
-        ex['golds']['choices'] = self._eng_choices(ex['choices'])
+        ex['gold'] = {}
+        ex['gold']['label'] = str(ex['answer']).lower().strip()
+        ex['gold']['choices'] = self._eng_choices(ex['choices'])
     
     def eng_prompt(self, ex):
         sys_prompt = "Choose the correct answer from the options."
-        base = f"{sys_prompt} {ex['question']} Options: {ex['golds']['choices']['str']}".strip()
+        base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
 
     def eng_preds(self, answer: str):
@@ -74,6 +74,7 @@ class MCITaskEngineer(TaskIOEngineer):
         self.shuffle_choices = shuffle_choices
         self.unpaired = unpaired
         self.seed = seed
+        self.rng = random.Random(seed)
 
     def extract_choice_pairs(self, s: str):
         pairs = re.findall(r"\(([A-D])\)\s*(.+)", s)
@@ -94,29 +95,33 @@ class MCITaskEngineer(TaskIOEngineer):
         # return s: 
         # "(D) bus\n\n(B) bike(A) car\n(C) train" if paired shuffle (maintain letter-option association)
         # "(D) car\n(C) bike\n(A) train\n(B) bus" if unpaired shuffle (shuffle both letter and option)
-        rng = random.Random(self.seed)
         pairs = self.extract_choice_pairs(idx_choices_s)
-        if not self.unpaired: # paired shuffle
-            rng.shuffle(pairs)
-        else: # unpaired shuffle
+        # If shuffle disabled, keep original order
+        if not self.shuffle_choices:
+            s = "\n".join([f"({ltr}) {txt}" for (ltr, txt) in pairs])
+            return {"str": s, "ls": pairs}
+
+        if not self.unpaired:  # paired shuffle
+            self.rng.shuffle(pairs)
+        else:  # unpaired shuffle
             letters = [ltr for ltr, _ in pairs]
             options = [opt for _, opt in pairs]
-            rng.shuffle(letters)
-            rng.shuffle(options)
+            self.rng.shuffle(letters)
+            self.rng.shuffle(options)
             pairs = list(zip(letters, options))
         s = "\n".join([f"({ltr}) {txt}" for (ltr, txt) in pairs])
         return {"str": s, "ls": pairs}
     
 
     def eng_golds(self, ex):
-        ex['golds'] = {}
-        ex['golds']['choices'] = self.eng_idx_choices(ex['idx_choices'])
-        ex['golds']['label'] = str(ex['answer']).lower().strip()
-        ex['golds']['label_letter'] = self.get_gold_label_letter(ex['golds']['label'], ex['golds']['choices']['str'])
+        ex['gold'] = {}
+        ex['gold']['choices'] = self.eng_idx_choices(ex['idx_choices'])
+        ex['gold']['label'] = str(ex['answer']).lower().strip()
+        ex['gold']['label_letter'] = self.get_gold_label_letter(ex['gold']['label'], ex['gold']['choices']['str'])
 
     def eng_prompt(self, ex):
         sys_prompt = "Choose A/B/C/D from the options."
-        base = f"{sys_prompt} {ex['question']} Options: {ex['golds']['choices']['str']}".strip()
+        base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
 
     def eng_preds(self, answer: str):
@@ -131,8 +136,8 @@ class QATaskEngineer(TaskIOEngineer):
         self.seed = 333
 
     def eng_golds(self, ex): 
-        ex['golds'] = {}
-        ex['golds']['label'] = str(ex['answer']).lower().strip()
+        ex['gold'] = {}
+        ex['gold']['label'] = str(ex['answer']).lower().strip()
     
     def eng_prompt(self, ex):
         sys_prompt = "Answer the question in one word or phrase."
