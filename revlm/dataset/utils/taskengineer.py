@@ -24,20 +24,21 @@
 import random
 import re
 import numpy as np
+import torch
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 def norm(s):
     return str(s).strip().lower() if s is not None else None
 
-def entail_score(prem: str, hyp: str, clf=None) -> float:
-    """Compute entailment score between premise and hypothesis."""
-    out = clf({"text": prem, "text_pair": hyp})
-    # Normalize pipeline outputs to a list of dicts
-    if isinstance(out, list) and len(out) > 0 and isinstance(out[0], dict):
-        scores_list = out
-    else:
-        scores_list = out[0]
-    ent = next((d.get("score", 0.0) for d in scores_list if str(d.get("label", "")).lower().startswith("entail")), 0.0)
-    return float(ent)
+def get_entailment_score(prem: str, hyp: str, tokenizer, model, labels) -> float:
+    """Compute entailment score between premise and hypothesis using tokenizer and model."""
+    enc = tokenizer(prem, hyp, return_tensors="pt", padding=True, truncation=True, max_length=1280)
+    with torch.no_grad():
+        logits = model(**enc).logits
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+    # Find entailment label index
+    ent_idx = next((i for i, lbl in enumerate(labels) if lbl.lower().startswith("entail")), 0)
+    return float(probs[0, ent_idx])
 
 
 def _acc_and_cm(y_true_idx, y_pred_idx, num_classes=4):
@@ -383,17 +384,20 @@ class QATaskEngineer(TaskIOEngineer):
             print(vlmdataset.data[i])
             print("-"*50)
         
-        # create a default NLI pipeline
-        from transformers import pipeline
-        clf = pipeline("text-classification", model="roberta-large-mnli", return_all_scores=True)
-
+        # Load NLI model
+        from transformers import logging as hf_logging
+        hf_logging.set_verbosity_error()
+        model_name = "tasksource/deberta-base-long-nli"
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        id2label = model.config.id2label
+        labels = [lbl for _, lbl in sorted(id2label.items())]
         
         # accuracy
         label_hit = label_total = 0
-        # bidirectional nli
         fwd_sum = bwd_sum = bi_cnt = 0.0
+        
         for ex in vlmdataset.data:
-            # accuracy
             gold = ex.get("gold", {})
             pred = ex.get("pred", {})
             g_label = gold.get("label")
@@ -405,8 +409,8 @@ class QATaskEngineer(TaskIOEngineer):
                 label_hit += 1
             
             # Bidirectional NLI: pred -> gold and gold -> pred
-            s_fwd = entail_score(p_label, g_label, clf)
-            s_bwd = entail_score(g_label, p_label, clf)
+            s_fwd = get_entailment_score(p_label, g_label, tokenizer, model, labels)
+            s_bwd = get_entailment_score(g_label, p_label, tokenizer, model, labels)
             fwd_sum += s_fwd
             bwd_sum += s_bwd
             if s_fwd >= 0.5 and s_bwd >= 0.5:
