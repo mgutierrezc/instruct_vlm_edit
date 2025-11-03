@@ -59,7 +59,6 @@ def run_eval(config, args):
     # Explicit cleanup to free GPU memory before script exits
     del vlm
     del ds
-    del sample_ds
     torch.cuda.empty_cache()
     print("Cleaned up model and freed GPU memory")
 
