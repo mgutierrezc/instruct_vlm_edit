@@ -196,7 +196,7 @@ if __name__ == "__main__":
     config.n_iter = args.n_iter
     # Only override task from CLI if explicitly provided (otherwise uses config.yaml)
     if args.task is not None:
-    config.experiment.task = args.task
+        config.experiment.task = args.task
     # Only override with_rationale from CLI if flag is explicitly provided
     # If flag not provided, config.yaml value (or default False) will be used
     if args.with_rationale:
