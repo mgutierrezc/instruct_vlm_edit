@@ -28,6 +28,17 @@ import numpy as np
 def norm(s):
     return str(s).strip().lower() if s is not None else None
 
+def entail_score(prem: str, hyp: str, clf=None) -> float:
+    """Compute entailment score between premise and hypothesis."""
+    out = clf({"text": prem, "text_pair": hyp})
+    # Normalize pipeline outputs to a list of dicts
+    if isinstance(out, list) and len(out) > 0 and isinstance(out[0], dict):
+        scores_list = out
+    else:
+        scores_list = out[0]
+    ent = next((d.get("score", 0.0) for d in scores_list if str(d.get("label", "")).lower().startswith("entail")), 0.0)
+    return float(ent)
+
 
 def _acc_and_cm(y_true_idx, y_pred_idx, num_classes=4):
     """Return (acc, n, cm) given parallel lists of class indices (or None)."""
@@ -366,30 +377,51 @@ class QATaskEngineer(TaskIOEngineer):
 
     def eval(self, vlmdataset):
         """Evaluate QA task using ex['pred'] and ex['gold'].
-        Returns dict with label-based accuracy (substring/text matching).
+        Returns dict with label-based accuracy (substring/text matching) and bidirectional NLI.
         """
         for i in range(10):
             print(vlmdataset.data[i])
             print("-"*50)
         
-        label_hit = label_total = 0
+        # create a default NLI pipeline
+        from transformers import pipeline
+        clf = pipeline("text-classification", model="roberta-large-mnli", return_all_scores=True)
 
+        
+        # accuracy
+        label_hit = label_total = 0
+        # bidirectional nli
+        fwd_sum = bwd_sum = bi_cnt = 0.0
         for ex in vlmdataset.data:
+            # accuracy
             gold = ex.get("gold", {})
             pred = ex.get("pred", {})
             g_label = gold.get("label")
             p_label = pred.get("label_text")
-
             if g_label is None or p_label is None:
                 continue
-
             label_total += 1
             if norm(g_label) == norm(p_label):
                 label_hit += 1
-
+            
+            # Bidirectional NLI: pred -> gold and gold -> pred
+            s_fwd = entail_score(p_label, g_label, clf)
+            s_bwd = entail_score(g_label, p_label, clf)
+            fwd_sum += s_fwd
+            bwd_sum += s_bwd
+            if s_fwd >= 0.5 and s_bwd >= 0.5:
+                bi_cnt += 1
+        
         acc = (label_hit / label_total) if label_total > 0 else 0.0
+        
+        
         return {
             "text": {"accuracy": acc, "n": label_total},
+            "nli": {
+                "pred_to_gold": fwd_sum / label_total if label_total > 0 else 0.0,
+                "gold_to_pred": bwd_sum / label_total if label_total > 0 else 0.0,
+                "bi_frac": bi_cnt / label_total if label_total > 0 else 0.0,
+            },
         }
 
     
