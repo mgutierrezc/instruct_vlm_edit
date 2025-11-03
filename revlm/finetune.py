@@ -4,6 +4,7 @@ import os
 import torch
 import numpy as np
 import json
+import random
 
 from .models import get_model
 from .dataset import get_dataset
@@ -48,6 +49,12 @@ def finetune(config):
     train_dataset = get_dataset(config, split="train")
     test_dataset = get_dataset(config, split="test")
     
+    subsample = getattr(config, 'subsample', 0)
+    if subsample and len(train_dataset) > subsample:
+        train_dataset.data = random.sample(train_dataset.data, subsample)
+    if subsample and len(test_dataset) > subsample:
+        test_dataset.data = random.sample(test_dataset.data, subsample)
+
     with_rationale = getattr(config.experiment, 'with_rationale', False)
     task = getattr(config.experiment, 'task', 'mc')
     
@@ -131,8 +138,9 @@ def finetune(config):
     LOG.info(f"Test metrics: {metrics}")
     
     # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
-    if args.res_dir is not None:
-        res_dir = os.path.join("results", args.res_dir)
+    res_dir_arg = getattr(config, 'res_dir_arg', None)
+    if res_dir_arg is not None:
+        res_dir = os.path.join("results", res_dir_arg)
     else:
         res_dir = getattr(config, "res_dir")
     os.makedirs(res_dir, exist_ok=True)
@@ -179,6 +187,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--n_iter", type=int, default=1, help="Inner iterations per batch")
     parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
+    parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
     
     args = parser.parse_args()
@@ -202,13 +211,12 @@ if __name__ == "__main__":
     config.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     config.batch_size = args.batch_size
     config.n_iter = args.n_iter
+    config.subsample = args.subsample
+    config.res_dir_arg = args.res_dir
     if args.ckpt_dir is not None:
         config.ckpt_dir = args.ckpt_dir
-    # Only override task from CLI if explicitly provided (otherwise uses config.yaml)
     if args.task is not None:
         config.experiment.task = args.task
-    # Only override with_rationale from CLI if flag is explicitly provided
-    # If flag not provided, config.yaml value (or default False) will be used
     if args.with_rationale:
         config.experiment.with_rationale = True
     
