@@ -117,6 +117,10 @@ class MCTaskEngineer(TaskIOEngineer):
         """Evaluate MC task using ex['pred'] and ex['gold'].
         Returns dict with accuracies and counts for text extraction and max-prob methods.
         """
+        for i in range(10):
+            print(vlmdataset.data[i])
+            print("-"*50)
+
         y_true_idx = []
         y_pred_text_idx = []
         y_pred_max_idx = []
@@ -253,6 +257,10 @@ class MCITaskEngineer(TaskIOEngineer):
         """Evaluate MCI task using ex['pred'] and ex['gold'].
         Returns dict with accuracies and confusion matrices for text/letter extraction and max-prob methods.
         """
+        for i in range(10):
+            print(vlmdataset.data[i])
+            print("-"*50)
+        
         letters = ["A", "B", "C", "D"]
         letter_to_idx = {c: i for i, c in enumerate(letters)}
 
@@ -360,6 +368,10 @@ class QATaskEngineer(TaskIOEngineer):
         """Evaluate QA task using ex['pred'] and ex['gold'].
         Returns dict with label-based accuracy (substring/text matching).
         """
+        for i in range(10):
+            print(vlmdataset.data[i])
+            print("-"*50)
+        
         label_hit = label_total = 0
 
         for ex in vlmdataset.data:

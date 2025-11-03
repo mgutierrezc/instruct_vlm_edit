@@ -24,14 +24,14 @@ def run_eval(config, args):
     if args.subsample and len(ds) > args.subsample:
         ds.data = random.sample(ds.data, args.subsample)
     
-    # --- debug: sample 10 examples ---
-    sample_ds = copy.copy(ds)
-    sample_ds.data = [ds.data[i].copy() for i in range(min(10, len(ds.data)))]
-    sample_ds.set_dataloader(task=args.task, with_rationale=args.rationale, batch_size=10)
-    for batch in sample_ds.loader:
-        sample_ds.task_generate(batch, vlm)
-        break
-    print(sample_ds.data[:10])
+    # # --- debug: sample 10 examples ---
+    # sample_ds = copy.copy(ds)
+    # sample_ds.data = [ds.data[i].copy() for i in range(min(10, len(ds.data)))]
+    # sample_ds.set_dataloader(task=args.task, with_rationale=args.rationale, batch_size=10)
+    # for batch in sample_ds.loader:
+    #     sample_ds.task_generate(batch, vlm)
+    #     break
+    # print(sample_ds.data[:10])
 
     # ---- run -----
     ds.set_dataloader(

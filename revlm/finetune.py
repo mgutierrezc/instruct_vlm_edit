@@ -62,7 +62,7 @@ def finetune(config):
     
     test_dataset.set_dataloader(
         task=task,
-        with_rationale=with_rationale,
+        with_rationale=False,
         shuffle_choices=False,
         batch_size=config.batch_size,
         shuffle=False,

@@ -41,9 +41,9 @@ def get_processor(config):
             original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
             os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
             try:
-                return transformers.AutoProcessor.from_pretrained(
+    return transformers.AutoProcessor.from_pretrained(
                     model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=False
-                )
+    )
             finally:
                 if original_timeout is not None:
                     os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
