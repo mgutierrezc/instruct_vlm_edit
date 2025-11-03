@@ -24,16 +24,32 @@ def cache_dir():
 
 
 def get_processor(config):
-    """Load vision-language processor"""
+    """Load vision-language processor with HPC timeout handling."""
     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
     if "blip" in name_lower:
         return get_processor_instructblip(config, cache_dir=cache_dir())
     
-    return transformers.AutoProcessor.from_pretrained(
-        config.model.name,
-        cache_dir=cache_dir(),
-        trust_remote_code=True,
-    )
+    # Try local cache first, fallback to download
+    model_name = config.model.name
+    ckpt_cache = cache_dir()
+    try:
+        return transformers.AutoProcessor.from_pretrained(
+            model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=True
+        )
+    except Exception as e:
+        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+            original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
+            os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+            try:
+                return transformers.AutoProcessor.from_pretrained(
+                    model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=False
+                )
+            finally:
+                if original_timeout is not None:
+                    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
+                elif "HF_HUB_DOWNLOAD_TIMEOUT" in os.environ:
+                    del os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]
+        raise
 
 
 
