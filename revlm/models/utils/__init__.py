@@ -13,8 +13,11 @@ from .instructblip import *
 LOG = logging.getLogger(__name__)
 
 
-def ckpt_dir():
-    """returns the directory in which to store model checkpoints"""
+def cache_dir():
+    """Returns the directory for HuggingFace model/processor cache.
+    This is where downloaded models are stored/read from, NOT where finetuned weights are saved.
+    For saving finetuned checkpoints, use config.ckpt_dir in finetune.py instead.
+    """
     path = "/scratch/jq2uw/MME/instruct_vlm_edit/ckpts/"
     os.makedirs(path, exist_ok=True)
     return path
@@ -24,11 +27,11 @@ def get_processor(config):
     """Load vision-language processor"""
     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
     if "blip" in name_lower:
-        return get_processor_instructblip(config, cache_dir=ckpt_dir())
+        return get_processor_instructblip(config, cache_dir=cache_dir())
     
     return transformers.AutoProcessor.from_pretrained(
         config.model.name,
-        cache_dir=ckpt_dir(),
+        cache_dir=cache_dir(),
         trust_remote_code=True,
     )
 
@@ -57,7 +60,7 @@ def get_hf_model(config):
     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
     if "blip" in name_lower:
         torch_dtype = torch.bfloat16 if torch.cuda.is_available() else None
-        cache = None if getattr(config.model, "pt", None) else ckpt_dir()
+        cache = None if getattr(config.model, "pt", None) else cache_dir()
         return get_hf_model_instructblip(config, cache_dir=cache, torch_dtype=torch_dtype)
     ModelClass = get_model_class_for_name(name_lower)
     model_path = getattr(config.model, "pt", None) or config.model.name
@@ -68,7 +71,7 @@ def get_hf_model(config):
     }
     load_kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else None
     if not config.model.pt:
-        load_kwargs["cache_dir"] = ckpt_dir()
+        load_kwargs["cache_dir"] = cache_dir()
     model = ModelClass.from_pretrained(
         model_path,
         **{k: v for k, v in load_kwargs.items() if v is not None},

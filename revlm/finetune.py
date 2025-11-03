@@ -172,6 +172,8 @@ if __name__ == "__main__":
                         help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--n_iter", type=int, default=1, help="Inner iterations per batch")
+    parser.add_argument("--ckpt_dir", type=str, default=None, 
+                        help="Directory to save checkpoints (overrides config.yaml)")
     
     args = parser.parse_args()
     
@@ -194,6 +196,8 @@ if __name__ == "__main__":
     config.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     config.batch_size = args.batch_size
     config.n_iter = args.n_iter
+    if args.ckpt_dir is not None:
+        config.ckpt_dir = args.ckpt_dir
     # Only override task from CLI if explicitly provided (otherwise uses config.yaml)
     if args.task is not None:
         config.experiment.task = args.task
