@@ -3,6 +3,7 @@ import logging
 import os
 import torch
 import numpy as np
+import json
 
 from .models import get_model
 from .dataset import get_dataset
@@ -129,6 +130,15 @@ def finetune(config):
     metrics = test_dataset.task_engineer.eval(test_dataset)
     LOG.info(f"Test metrics: {metrics}")
     
+    # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
+    res_dir = getattr(config, "res_dir")
+    os.makedirs(res_dir, exist_ok=True)
+    rationale_suffix = "_rationale" if with_rationale else ""
+    out_path = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
+    with open(out_path, 'w') as f:
+        json.dump(metrics, f, indent=2)
+    LOG.info(f"Saved evaluation metrics: {out_path}")
+    
     # Save checkpoint if requested
     if config.ckpt_dir:
         os.makedirs(config.ckpt_dir, exist_ok=True)
@@ -136,7 +146,6 @@ def finetune(config):
         dataset_tag = config.experiment.dataset_name
         editor_tag = config.editor._name
         rationale_tag = "rationale" if with_rationale else "norationale"
-        
         ckpt_path = os.path.join(
             config.ckpt_dir, 
             f"{model_tag}_{dataset_tag}_{editor_tag}_{rationale_tag}.pt"
