@@ -131,7 +131,10 @@ def finetune(config):
     LOG.info(f"Test metrics: {metrics}")
     
     # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
-    res_dir = getattr(config, "res_dir")
+    if args.res_dir is not None:
+        res_dir = os.path.join("results", args.res_dir)
+    else:
+        res_dir = getattr(config, "res_dir")
     os.makedirs(res_dir, exist_ok=True)
     rationale_suffix = "_rationale" if with_rationale else ""
     out_path = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
@@ -167,22 +170,16 @@ def finetune(config):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VLM Finetuning")
     parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
-    parser.add_argument("--editor", type=str, required=True, 
-                        choices=["ft", "ft_ewc", "ft_retrain"], help="Editor method")
-    parser.add_argument("--model_name", type=str, default=None, 
-                        help="Model name: 'qwen3', 'llava', 'blip'")
-    parser.add_argument("--inner_params", type=str, nargs='+', default=[], 
-                        help="Layer to finetune (auto-selected if empty)")
-    parser.add_argument("--dataset_name", type=str, required=True, 
-                        choices=["aokvqa", "fvqa"], help="Dataset name")
-    parser.add_argument("--task", type=str, default=None, 
-                        choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
-    parser.add_argument("--with_rationale", action="store_true", 
-                        help="Include rationale in prompts (uses config.yaml if not provided)")
+    parser.add_argument("--editor", type=str, required=True, choices=["ft", "ft_ewc", "ft_retrain"], help="Editor method")
+    parser.add_argument("--model_name", type=str, default=None, help="Model name: 'qwen3', 'llava', 'blip'")
+    parser.add_argument("--inner_params", type=str, nargs='+', default=[], help="Layer to finetune (auto-selected if empty)")
+    parser.add_argument("--dataset_name", type=str, required=True, choices=["aokvqa", "fvqa"], help="Dataset name")
+    parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
+    parser.add_argument("--with_rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--n_iter", type=int, default=1, help="Inner iterations per batch")
-    parser.add_argument("--ckpt_dir", type=str, default=None, 
-                        help="Directory to save checkpoints (overrides config.yaml)")
+    parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
+    parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
     
     args = parser.parse_args()
     
