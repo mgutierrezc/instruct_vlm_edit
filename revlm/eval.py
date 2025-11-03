@@ -38,7 +38,8 @@ def run_eval(config, args):
         task=args.task,
         with_rationale=args.rationale,
         shuffle_choices=True,
-        unpaired=True
+        unpaired=True,
+        batch_size=10
     )
     for batch in ds.loader:
         ds.task_generate(batch, vlm)

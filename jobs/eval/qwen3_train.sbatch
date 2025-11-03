@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=eval_qwen3_train
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:2 
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=250G
 #SBATCH -t 8:00:00
