@@ -126,17 +126,18 @@ def finetune(config):
     
     LOG.info(f"Finetuning complete. Total batches: {total_batches}")
     
-    # Evaluation on test set
-    model.model.eval()
-    LOG.info("Evaluating on test set...")
-    
-    for batch in test_dataset.loader:
-        test_dataset.task_generate(batch, model)
-    
-    # Compute metrics
-    metrics = test_dataset.task_engineer.eval(test_dataset)
-    LOG.info(f"Test metrics: {metrics}")
-    
+    # model.model.eval()
+    with torch.no_grad():
+        LOG.info("Evaluating on train set...")
+        for batch in train_dataset.loader:
+            train_dataset.task_generate(batch, model)
+        train_metrics = train_dataset.task_engineer.eval(train_dataset)
+        LOG.info(f"Train metrics: {train_metrics}")
+        LOG.info("Evaluating on test set...")
+        for batch in test_dataset.loader:
+            test_dataset.task_generate(batch, model)
+        test_metrics = test_dataset.task_engineer.eval(test_dataset)
+        LOG.info(f"Test metrics: {test_metrics}")
     # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
     res_dir_arg = getattr(config, 'res_dir_arg', None)
     if res_dir_arg is not None:
@@ -145,10 +146,13 @@ def finetune(config):
         res_dir = getattr(config, "res_dir")
     os.makedirs(res_dir, exist_ok=True)
     rationale_suffix = "_rationale" if with_rationale else ""
-    out_path = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
-    with open(out_path, 'w') as f:
-        json.dump(metrics, f, indent=2)
-    LOG.info(f"Saved evaluation metrics: {out_path}")
+    out_path_test = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
+    out_path_train = os.path.join(res_dir, f"{task}{rationale_suffix}_train.json")
+    with open(out_path_test, 'w') as f:
+        json.dump(test_metrics, f, indent=2)
+    with open(out_path_train, 'w') as f:
+        json.dump(train_metrics, f, indent=2)
+    LOG.info(f"Saved evaluation metrics: {out_path_test} and {out_path_train}")
     
     # Save checkpoint if requested
     if config.ckpt_dir:

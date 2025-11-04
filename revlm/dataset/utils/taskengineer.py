@@ -235,6 +235,11 @@ class MCITaskEngineer(TaskIOEngineer):
         ex['gold']['choices'] = self.eng_idx_choices(ex['idx_choices'])
         ex['gold']['label'] = str(ex['answer']).lower().strip()
         ex['gold']['label_letter'] = self.get_gold_label_letter(ex['gold']['label'], ex['gold']['choices']['str'])
+        # Training target: include letter prefix when available, e.g., "(A) car"
+        if ex['gold']['label_letter']:
+            ex['gold']['label_train'] = f"({ex['gold']['label_letter']}) {ex['gold']['label']}"
+        else:
+            ex['gold']['label_train'] = ex['gold']['label']
 
     def eng_prompt(self, ex):
         sys_prompt = "Choose A/B/C/D from the options."

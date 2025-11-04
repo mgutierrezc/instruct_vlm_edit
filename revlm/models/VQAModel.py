@@ -141,7 +141,8 @@ class VQAModel(torch.nn.Module):
 
         # Collect gold answer texts (strict requirement)
         golds = batch["golds"]  # expect list of dicts
-        gold_texts = [str(g["label"]) for g in golds]
+        # Prefer task-specific training label if provided (e.g., MCI uses "(A) car")
+        gold_texts = [str(g.get("label_train", g["label"])) for g in golds]
 
         gold_tok = self.tokenizer(gold_texts, return_tensors="pt", add_special_tokens=False, padding=True)
         labels_ids = gold_tok.input_ids.to(self.device)
@@ -199,7 +200,8 @@ class VQAModel(torch.nn.Module):
 
         # Collect gold answer texts
         golds = batch["golds"]
-        gold_texts = [str(g["label"]) for g in golds]
+        # Prefer task-specific training label if provided (e.g., MCI uses "(A) car")
+        gold_texts = [str(g.get("label_train", g["label"])) for g in golds]
 
         gold_tok = self.tokenizer(gold_texts, return_tensors="pt", add_special_tokens=False, padding=True)
         labels_ids = gold_tok.input_ids.to(self.device)
