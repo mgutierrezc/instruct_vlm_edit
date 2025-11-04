@@ -62,6 +62,7 @@ def finetune(config):
     train_dataset.set_dataloader(
         task=task,
         with_rationale=with_rationale,
+        rationale_in_prompt=False, # image + prompt -> label + rationale
         shuffle_choices=True if task in ("mc", "mci") else False,
         batch_size=config.batch_size,
         shuffle=True,
@@ -176,7 +177,6 @@ def finetune(config):
     torch.cuda.empty_cache()
     LOG.info("Cleaned up model and freed GPU memory")
     
-    return metrics
 
 
 if __name__ == "__main__":
@@ -225,6 +225,5 @@ if __name__ == "__main__":
         config.experiment.with_rationale = True
     
     # Run finetuning
-    metrics = finetune(config)
-    print(f"\nFinal Results: {metrics}")
+    finetune(config)
 

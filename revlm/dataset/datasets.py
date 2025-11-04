@@ -22,6 +22,7 @@ class VLMDataset(Dataset):
                         # task engineer
                         task="mc",  
                         with_rationale=False,
+                        rationale_in_prompt=True,
                         shuffle_choices=False,
                         unpaired=False,
                         seed=333,
@@ -37,6 +38,7 @@ class VLMDataset(Dataset):
         """
         self.task_engineer = get_taskengineer(task, 
                                               with_rationale=with_rationale, 
+                                              rationale_in_prompt=rationale_in_prompt,
                                               shuffle_choices=shuffle_choices,
                                               unpaired=unpaired,
                                               seed=seed)

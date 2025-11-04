@@ -37,7 +37,7 @@ def run_eval(config, args):
     ds.set_dataloader(
         task=args.task,
         with_rationale=args.rationale,
-        shuffle_choices=True,
+        rationale_in_prompt=True, # prompt model with "image + prompt + rationale" (if)
         unpaired=True,
         batch_size=10
     )

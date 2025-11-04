@@ -71,12 +71,14 @@ class TaskIOEngineer:
 class MCTaskEngineer(TaskIOEngineer):
     def __init__(self, 
                 with_rationale=False,
+                rationale_in_prompt=True,
                 shuffle_choices=False, 
                 seed=333,
                 **kwargs):
         super().__init__()
         self.name = "mc"
         self.with_rationale = with_rationale
+        self.rationale_in_prompt = rationale_in_prompt
         self.shuffle_choices = shuffle_choices
         self.seed = seed
         self.rng = random.Random(seed)
@@ -95,11 +97,14 @@ class MCTaskEngineer(TaskIOEngineer):
         ex['gold'] = {}
         ex['gold']['label'] = str(ex['answer']).lower().strip()
         ex['gold']['choices'] = self._eng_choices(ex['choices'])
+        # Training target: optionally include rationale instead of putting it in the prompt
+        target = ex['gold']['label']
+        ex['gold']['label_train'] = f"{target} {ex.get('rationale','')}".strip() if (self.with_rationale and not self.rationale_in_prompt) else target
     
     def eng_prompt(self, ex):
         sys_prompt = "Choose the correct answer from the options."
         base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
-        ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
+        ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if (self.with_rationale and self.rationale_in_prompt) else base
 
     def eng_preds(self, ex, a: str, model):
         """ example s: 
@@ -181,6 +186,7 @@ class MCTaskEngineer(TaskIOEngineer):
 class MCITaskEngineer(TaskIOEngineer):
     def __init__(self, 
                 with_rationale=False,
+                rationale_in_prompt=True,
                 shuffle_choices=False,
                 unpaired=False,
                 seed=333,
@@ -188,6 +194,7 @@ class MCITaskEngineer(TaskIOEngineer):
         super().__init__()
         self.name = "mci"
         self.with_rationale = with_rationale
+        self.rationale_in_prompt = rationale_in_prompt
         self.shuffle_choices = shuffle_choices
         self.unpaired = unpaired
         self.seed = seed
@@ -236,15 +243,17 @@ class MCITaskEngineer(TaskIOEngineer):
         ex['gold']['label'] = str(ex['answer']).lower().strip()
         ex['gold']['label_letter'] = self.get_gold_label_letter(ex['gold']['label'], ex['gold']['choices']['str'])
         # Training target: include letter prefix when available, e.g., "(A) car"
-        if ex['gold']['label_letter']:
-            ex['gold']['label_train'] = f"({ex['gold']['label_letter']}) {ex['gold']['label']}"
+        base_target = f"({ex['gold']['label_letter']}) {ex['gold']['label']}" if ex['gold']['label_letter'] else ex['gold']['label']
+        # Optionally append rationale to target (when not injecting it into the prompt)
+        if self.with_rationale and not self.rationale_in_prompt:
+            ex['gold']['label_train'] = f"{base_target} {ex.get('rationale','')}".strip()
         else:
-            ex['gold']['label_train'] = ex['gold']['label']
+            ex['gold']['label_train'] = base_target
 
     def eng_prompt(self, ex):
         sys_prompt = "Choose A/B/C/D from the options."
         base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
-        ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
+        ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if (self.with_rationale and self.rationale_in_prompt) else base
 
     def eng_preds(self, ex, a: str, model):
         # text-based generation
@@ -359,21 +368,27 @@ class MCITaskEngineer(TaskIOEngineer):
 
 
 class QATaskEngineer(TaskIOEngineer):
-    def __init__(self, with_rationale=False, **kwargs):
+    def __init__(self, 
+                 with_rationale=False, 
+                 rationale_in_prompt=True, 
+                 **kwargs):
         super().__init__()
         self.with_rationale = with_rationale
+        self.rationale_in_prompt = rationale_in_prompt
         self.name = "qa"
         self.seed = 333
 
     def eng_golds(self, ex): 
         ex['gold'] = {}
         ex['gold']['label'] = str(ex['answer']).lower().strip()
+        target = ex['gold']['label']
+        ex['gold']['label_train'] = f"{target} {ex.get('rationale','')}".strip() if (self.with_rationale) and (not self.rationale_in_prompt) else target
     
     def eng_prompt(self, ex):
         sys_prompt = "Answer the question in one word or phrase."
         base = f"{sys_prompt} {ex['question']}".strip()     
-        ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale else base
-
+        ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale and self.rationale_in_prompt else base
+    
     def eng_preds(self, ex, a: str, model):
         ex['pred'] = {}
         ex['pred']['answer'] = a
