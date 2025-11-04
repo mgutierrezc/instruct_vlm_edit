@@ -21,7 +21,7 @@ def finetune(config):
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     
-    print(f"Starting finetuning: model={config.model.name}, dataset={config.experiment.dataset_name}, "
+    print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, "
           f"editor={config.editor._name}, rationale={getattr(config.experiment, 'with_rationale', False)}")
     
     device = torch.device(config.device if isinstance(config.device, str) else config.device)
