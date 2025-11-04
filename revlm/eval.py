@@ -16,6 +16,19 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def run_eval(config, args):
 
+
+    # Save under res_dir
+    if args.res_dir is not None:
+        res_dir = os.path.join("results", args.res_dir)
+    else:
+        res_dir = getattr(config, "res_dir")
+    os.makedirs(res_dir, exist_ok=True)
+    out_path = os.path.join(res_dir, f"{args.task}{'_rationale' if args.rationale else ''}_{args.split}.json")
+    
+    if os.path.exists(out_path) and not args.overwrite:
+        print(f"Results already exist at {out_path}. Use --overwrite to overwrite.")
+        return
+    
     # Build model
     vlm = get_model(config)
 
@@ -45,13 +58,6 @@ def run_eval(config, args):
         ds.task_generate(batch, vlm)
     results = ds.task_engineer.eval(ds)
 
-    # Save under res_dir
-    if args.res_dir is not None:
-        res_dir = os.path.join("results", args.res_dir)
-    else:
-        res_dir = getattr(config, "res_dir")
-    os.makedirs(res_dir, exist_ok=True)
-    out_path = os.path.join(res_dir, f"{args.task}{'_rationale' if args.rationale else ''}_{args.split}.json")
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Saved metrics to {out_path}")
@@ -78,7 +84,7 @@ if __name__ == "__main__":
     parser.add_argument("--rationale", action="store_true", help="Append rationale to prompts if available")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
-
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
 
     args = parser.parse_args()
     config = configure_args(args, config_path=args.config)
