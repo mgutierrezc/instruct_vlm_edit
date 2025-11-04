@@ -52,7 +52,7 @@ def run_eval(config, args):
         with_rationale=args.rationale,
         rationale_in_prompt=True, # prompt model with "image + prompt + rationale" (if)
         unpaired=True,
-        batch_size=10
+        batch_size=args.batch_size
     )
     for batch in ds.loader:
         ds.task_generate(batch, vlm)
@@ -82,6 +82,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="test", choices=["train", "test"], help="Split to evaluate on")
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task to evaluate")
     parser.add_argument("--rationale", action="store_true", help="Append rationale to prompts if available")
+    parser.add_argument("--batch_size", type=int, default=50, help="Batch size")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")

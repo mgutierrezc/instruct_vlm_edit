@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=eval_qwen3_train
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1
+#SBATCH --gres=gpu:a6000:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=250G
-#SBATCH -t 16:00:00
+#SBATCH -t 24:00:00
 #SBATCH -A cama
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
