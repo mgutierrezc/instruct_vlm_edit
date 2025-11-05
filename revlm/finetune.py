@@ -5,6 +5,7 @@ import torch
 import numpy as np
 import json
 import random
+import time
 
 from .models import get_model
 from .dataset import get_dataset
@@ -22,19 +23,24 @@ def finetune(config):
     torch.manual_seed(config.seed)
     
     print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, "
-          f"editor={config.editor._name}, rationale={getattr(config.experiment, 'with_rationale', False)}")
+          f"editor={config.editor._name}, rationale={getattr(config.experiment, 'with_rationale', False)}", flush=True)
     
     device = torch.device(config.device if isinstance(config.device, str) else config.device)
     
     # Load model
+    print("Loading model...", flush=True)
+    t0 = time.time()
     model = get_model(config).to(device)
+    print(f"Model loaded in {time.time() - t0:.2f}s", flush=True)
     
     # Auto-select layer if not provided
     if not getattr(config.model, 'inner_params', []) or len(config.model.inner_params) == 0:
+        print("Auto-selecting layer...", flush=True)
+        t0 = time.time()
         suggestions = explore_layers(model.model)
         if suggestions:
             config.model.inner_params = [suggestions[0]]
-            print(f"Auto-selected layer: {config.model.inner_params[0]}")
+            print(f"Auto-selected layer: {config.model.inner_params[0]} (took {time.time() - t0:.2f}s)", flush=True)
         else:
             raise ValueError("No suitable layers found and inner_params not provided")
     
@@ -46,8 +52,11 @@ def finetune(config):
     #     LOG.info(f"Using validated parameter: {validated_param}")
     
     # Load datasets
+    print("Loading datasets...", flush=True)
+    t0 = time.time()
     train_dataset = get_dataset(config, split="train")
     test_dataset = get_dataset(config, split="test")
+    print(f"Datasets loaded in {time.time() - t0:.2f}s (train: {len(train_dataset)}, test: {len(test_dataset)})", flush=True)
     
     subsample = getattr(config, 'subsample', 0)
     if subsample and len(train_dataset) > subsample:
@@ -59,6 +68,8 @@ def finetune(config):
     task = getattr(config.experiment, 'task', 'mc')
     
     # Setup dataloaders
+    print(f"Setting up train dataloader (processing {len(train_dataset)} examples)...", flush=True)
+    t0 = time.time()
     train_dataset.set_dataloader(
         task=task,
         with_rationale=with_rationale,
@@ -67,7 +78,10 @@ def finetune(config):
         batch_size=config.batch_size,
         shuffle=True,
     )
+    print(f"Train dataloader setup in {time.time() - t0:.2f}s", flush=True)
     
+    print(f"Setting up test dataloader (processing {len(test_dataset)} examples)...", flush=True)
+    t0 = time.time()
     test_dataset.set_dataloader(
         task=task,
         with_rationale=False,
@@ -75,8 +89,9 @@ def finetune(config):
         batch_size=config.batch_size,
         shuffle=False,
     )
+    print(f"Test dataloader setup in {time.time() - t0:.2f}s", flush=True)
     
-    print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}")
+    print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}", flush=True)
     
     # Load editor
     editor = get_editor(config, model, device)
@@ -93,7 +108,7 @@ def finetune(config):
     needs_history = editor_name in ['ft_ewc', 'ft_retrain']
     prefill_size = 2 if needs_history else 0  # Pre-fill with at least 2 batches for history-based editors
     
-    print("Starting finetuning...")
+    print("Starting finetuning...", flush=True)
     total_batches = len(train_dataset.loader)
     for batch_idx, batch in enumerate(train_dataset.loader):
         tokens = model.prepare_training_batch(batch)
@@ -102,7 +117,7 @@ def finetune(config):
         if needs_history and len(batch_history) < prefill_size:
             batch_history.append(tokens)
             if len(batch_history) == prefill_size:
-                print(f"Pre-populated batch_history with {len(batch_history)} batches for {editor_name}")
+                print(f"Pre-populated batch_history with {len(batch_history)} batches for {editor_name}", flush=True)
             continue  # Skip editing until we have enough history
         
         # Edit (finetune) on this batch
@@ -123,22 +138,22 @@ def finetune(config):
         if (batch_idx + 1) % 10 == 0:
             recent_losses = losses[-10:] if len(losses) >= 10 else losses
             avg_loss = np.mean(recent_losses) if recent_losses else 0.0
-            print(f"Batch {batch_idx + 1}/{total_batches}, Avg loss (last 10): {avg_loss:.4f}")
+            print(f"Batch {batch_idx + 1}/{total_batches}, Avg loss (last 10): {avg_loss:.4f}", flush=True)
     
-    print(f"Finetuning complete. Total batches: {total_batches}")
+    print(f"Finetuning complete. Total batches: {total_batches}", flush=True)
     
-    # model.model.eval()
+    model.model.eval()
     with torch.no_grad():
-        print("Evaluating on train set...")
+        print("Evaluating on train set...", flush=True)
         for batch in train_dataset.loader:
             train_dataset.task_generate(batch, model)
         train_metrics = train_dataset.task_engineer.eval(train_dataset)
-        print(f"Train metrics: {train_metrics}")
-        print("Evaluating on test set...")
+        print(f"Train metrics: {train_metrics}", flush=True)
+        print("Evaluating on test set...", flush=True)
         for batch in test_dataset.loader:
             test_dataset.task_generate(batch, model)
         test_metrics = test_dataset.task_engineer.eval(test_dataset)
-        print(f"Test metrics: {test_metrics}")
+        print(f"Test metrics: {test_metrics}", flush=True)
     # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
     res_dir_arg = getattr(config, 'res_dir_arg', None)
     if res_dir_arg is not None:
@@ -153,7 +168,7 @@ def finetune(config):
         json.dump(test_metrics, f, indent=2)
     with open(out_path_train, 'w') as f:
         json.dump(train_metrics, f, indent=2)
-    print(f"Saved evaluation metrics: {out_path_test} and {out_path_train}")
+    print(f"Saved evaluation metrics: {out_path_test} and {out_path_train}", flush=True)
     
     # Save checkpoint if requested
     if config.ckpt_dir:
@@ -167,7 +182,7 @@ def finetune(config):
             f"{model_tag}_{dataset_tag}_{editor_tag}_{rationale_tag}.pt"
         )
         torch.save(model.model.state_dict(), ckpt_path)
-        print(f"Saved checkpoint: {ckpt_path}")
+        print(f"Saved checkpoint: {ckpt_path}", flush=True)
     
     # Explicit cleanup to free GPU memory before script exits
     del model
@@ -175,7 +190,7 @@ def finetune(config):
     del train_dataset
     del test_dataset
     torch.cuda.empty_cache()
-    print("Cleaned up model and freed GPU memory")
+    print("Cleaned up model and freed GPU memory", flush=True)
     
 
 
