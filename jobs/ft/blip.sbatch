@@ -25,10 +25,8 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 # Finetune BLIP with ft editor (basic finetuning)
-# Each command runs in a separate Python process which should free memory on exit
-# Added explicit cleanup in finetune.py, but adding extra safety here
 MODEL_NAME=blip
-SUBSAMPLE=0 # remove / set to 0 to use all
+SUBSAMPLE=1000 # 0 to use all
 BATCH_SIZE=100   
 export MODEL_NAME SUBSAMPLE BATCH_SIZE
 

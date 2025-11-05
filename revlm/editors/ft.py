@@ -21,11 +21,16 @@ class Finetune(torch.nn.Module):
         self.autocast_dtype = torch.float16 if model_dtype == torch.float16 else torch.bfloat16
         self.scaler = torch.amp.GradScaler('cuda') if self.autocast_dtype == torch.float16 else None
         
-        # # Enable gradient checkpointing if available (memory saving)
-        # if hasattr(self.model, 'gradient_checkpointing_enable'):
-        #     self.model.gradient_checkpointing_enable()
-        # elif hasattr(self.model, 'enable_gradient_checkpointing'):
-        #     self.model.enable_gradient_checkpointing()
+        # Reduce memory and ensure gradients flow with checkpointing (LLaVA only)
+        if "llava" in config.model.name.lower():
+            self.model.config.use_cache = False
+            self.model.enable_input_require_grads()
+
+        # Enable gradient checkpointing if available (memory saving)
+        if hasattr(self.model, 'gradient_checkpointing_enable'):
+            self.model.gradient_checkpointing_enable()
+        elif hasattr(self.model, 'enable_gradient_checkpointing'):
+            self.model.enable_gradient_checkpointing()
         
         # Freeze all parameters except the ones to edit
         for n, p in self.model.named_parameters():

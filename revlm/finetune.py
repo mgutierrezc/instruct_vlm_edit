@@ -22,7 +22,7 @@ def finetune(config):
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
     
-    print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, "
+    print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, batch_size={config.batch_size}, "
           f"editor={config.editor._name}, rationale={getattr(config.experiment, 'with_rationale', False)}", flush=True)
     
     device = torch.device(config.device if isinstance(config.device, str) else config.device)
@@ -210,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
     parser.add_argument("--with_rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size")
-    parser.add_argument("--n_iter", type=int, default=100, help="Inner iterations per batch")
+    parser.add_argument("--n_iter", type=int, default=10, help="Inner iterations per batch")
     parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")

@@ -25,13 +25,11 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 # Finetune LLaVA with ft editor (basic finetuning)
-# Each command runs in a separate Python process which should free memory on exit
-# Added explicit cleanup in finetune.py, but adding extra safety here
 # python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mc --subsample 100 --batch_size 20 --res_dir test_ft || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
 
 MODEL_NAME=llava
-SUBSAMPLE=1000 # remove to use all
-BATCH_SIZE=2
+SUBSAMPLE=1000 # 0 to use all
+BATCH_SIZE=50
 export MODEL_NAME SUBSAMPLE BATCH_SIZE
 
 export DATA=aokvqa
