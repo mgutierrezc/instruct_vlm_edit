@@ -123,12 +123,16 @@ def finetune(config):
         # Edit (finetune) on this batch
         editor.edit(config, tokens, batch_history)
         
-        # Track history for EWC/retrain methods
-        batch_history.append(tokens)
-        max_history = getattr(config.editor, 'fisher_mem', 10) if hasattr(config.editor, 'fisher_mem') else \
-                      getattr(config.editor, 'retrain_memory', 100) if hasattr(config.editor, 'retrain_memory') else 10
-        if len(batch_history) > max_history:
-            batch_history = batch_history[-max_history:]
+        # Track history only for editors that need it (avoid holding large tensors for ft)
+        if needs_history:
+            batch_history.append(tokens)
+            max_history = getattr(config.editor, 'fisher_mem', 10) if hasattr(config.editor, 'fisher_mem') else \
+                          getattr(config.editor, 'retrain_memory', 100) if hasattr(config.editor, 'retrain_memory') else 10
+            if len(batch_history) > max_history:
+                batch_history = batch_history[-max_history:]
+
+        # Release per-batch tensors ASAP to reduce VRAM pressure when not needed
+        del tokens
         
         # Track losses
         if hasattr(editor, 'losses') and editor.losses:
@@ -139,6 +143,8 @@ def finetune(config):
             recent_losses = losses[-10:] if len(losses) >= 10 else losses
             avg_loss = np.mean(recent_losses) if recent_losses else 0.0
             print(f"Batch {batch_idx + 1}/{total_batches}, Avg loss (last 10): {avg_loss:.4f}", flush=True)
+            # Periodically purge cached memory to smooth peak usage
+            torch.cuda.empty_cache()
     
     print(f"Finetuning complete. Total batches: {total_batches}", flush=True)
     
@@ -204,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
     parser.add_argument("--with_rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size")
-    parser.add_argument("--n_iter", type=int, default=100, help="Inner iterations per batch")
+    parser.add_argument("--n_iter", type=int, default=10, help="Inner iterations per batch")
     parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")

@@ -4,9 +4,11 @@ pt: null
 # Common layers for BLIP (auto-selected if empty):
 # - qformer.encoder.layer.0.attention.output.dense.weight
 # - qformer.encoder.layer.0.crossattention.output.dense.weight
+#
 # - language_model.model.layers.0.self_attn.q_proj.weight
 # - language_model.lm_head.weight (default)
-inner_params: ["language_model.model.layers.0.self_attn.q_proj.weight"]  # Language model head weight
+# - language_projection.weight # Projects Q-Former output to language model embedding space
+inner_params: ["language_projection.weight"]  
 processor_class: null
 tokenizer_class: null
 
