@@ -29,19 +29,15 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 # Added explicit cleanup in finetune.py, but adding extra safety here
 # python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mc --subsample 100 --batch_size 20 --res_dir test_ft || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
 
+MODEL_NAME=llava
 SUBSAMPLE=1000 # remove to use all
-BATCH_SIZE=10
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mc --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mc --with_rationale --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mci --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task mci --with_rationale --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task qa --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name aokvqa --task qa --with_rationale --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+BATCH_SIZE=2
+export MODEL_NAME SUBSAMPLE BATCH_SIZE
 
-python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mc --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mc --with_rationale --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mci --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mci --with_rationale --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task qa --subsample $SUBSAMPLE --batch_size $BATCH_SIZE || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+export DATA=aokvqa
+bash jobs/ft/main.sh
+
+export DATA=fvqa
+bash jobs/ft/main.sh
 
 

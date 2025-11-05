@@ -210,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
     parser.add_argument("--with_rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size")
-    parser.add_argument("--n_iter", type=int, default=10, help="Inner iterations per batch")
+    parser.add_argument("--n_iter", type=int, default=100, help="Inner iterations per batch")
     parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
