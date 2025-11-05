@@ -15,6 +15,18 @@ class Finetune(torch.nn.Module):
         self.device = config.device
         self.edit_lr = float(config.edit_lr)  # Ensure float type (YAML may parse 1e-4 as string)
         
+        # AMP configuration: use GradScaler only for FP16, BF16 does not need/allow it
+        first_param = next(self.model.parameters(), None)
+        model_dtype = getattr(first_param, 'dtype', torch.bfloat16)
+        self.autocast_dtype = torch.float16 if model_dtype == torch.float16 else torch.bfloat16
+        self.scaler = torch.amp.GradScaler('cuda') if self.autocast_dtype == torch.float16 else None
+        
+        # Enable gradient checkpointing if available (memory saving)
+        if hasattr(self.model, 'gradient_checkpointing_enable'):
+            self.model.gradient_checkpointing_enable()
+        elif hasattr(self.model, 'enable_gradient_checkpointing'):
+            self.model.enable_gradient_checkpointing()
+        
         # Freeze all parameters except the ones to edit
         for n, p in self.model.named_parameters():
             if n != self.pnames[0]:
@@ -36,10 +48,11 @@ class Finetune(torch.nn.Module):
         n_iter = config.n_iter
         
         for _ in range(n_iter):
-            self.model.zero_grad()
-            outputs = self.model(**tokens)
-            logits = outputs.logits if hasattr(outputs, "logits") else outputs
-            loss = outputs.loss if hasattr(outputs, "loss") else None
+            opt.zero_grad(set_to_none=True)
+            with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
+                outputs = self.model(**tokens)
+                logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                loss = outputs.loss if hasattr(outputs, "loss") else None
             
             if loss is None:
                 # Compute loss manually if not provided
@@ -61,9 +74,14 @@ class Finetune(torch.nn.Module):
             
             self.loss = loss
             self.losses.append(self.loss.detach().cpu().numpy())
-            self.loss.backward()
-            opt.step()
-            opt.zero_grad()
+            # Backward + step (scaled for FP16, unscaled for BF16)
+            if self.scaler is not None:
+                self.scaler.scale(self.loss).backward()
+                self.scaler.step(opt)
+                self.scaler.update()
+            else:
+                self.loss.backward()
+                opt.step()
         
         return self.model
 
