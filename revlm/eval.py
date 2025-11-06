@@ -56,8 +56,15 @@ def run_eval(config, args):
     )
     for batch in ds.loader:
         ds.task_generate(batch, vlm)
-    results = ds.task_engineer.eval(ds)
+    
+    # Save predictions
+    pred_res_dir = os.path.join(res_dir.rsplit("/", 1)[0], "pred") # replace the last folder in res_dir with "pred"
+    os.makedirs(pred_res_dir, exist_ok=True)
+    pred_out_path = os.path.join(pred_res_dir, f"{args.task}{'_rationale' if args.rationale else ''}_{args.split}.json")
+    ds.snap(pred_out_path)
 
+    # Save evaluation metrics
+    results = ds.task_engineer.eval(ds)
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Saved metrics to {out_path}")
