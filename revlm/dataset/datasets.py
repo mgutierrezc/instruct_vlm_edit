@@ -48,12 +48,19 @@ class VLMDataset(Dataset):
             self.task_engineer.eng_prompt(ex)
         self.loader = DataLoader(self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=pin_memory, collate_fn=self.image_collate)
         
-        
+    def _resize_image(self, img, max_side=1344):
+        w, h = img.size
+        m = max(w, h)
+        if m > max_side:
+            s = max_side / m
+            img = img.resize((int(w * s), int(h * s)), Image.BICUBIC)
+        return img
+    
     def image_collate(self, batch):
         """Collate function that loads images and returns a batch dict.
         Expects items with keys: 'image' (path), 'prompt' (string), 'gold' (dict), 'idx' (int).
         """
-        images = [Image.open(ex["image"]).convert("RGB") for ex in batch]
+        images = [self._resize_image(Image.open(ex["image"]).convert("RGB")) for ex in batch]
         prompts = [ex["prompt"] for ex in batch]
         golds = [ex["gold"] for ex in batch]
         idxs = [ex["idx"] for ex in batch]

@@ -27,9 +27,8 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 # Finetune Qwen3 with ft editor (basic finetuning)
 MODEL_NAME=qwen3
-SUBSAMPLE=1000 # 0 to use all
-BATCH_SIZE=20 
-export MODEL_NAME SUBSAMPLE BATCH_SIZE
+BATCH_SIZE=5 
+export MODEL_NAME BATCH_SIZE
 
 export DATA=aokvqa
 bash jobs/ft/main.sh

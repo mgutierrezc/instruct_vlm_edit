@@ -28,9 +28,8 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 # python -m revlm.finetune --editor ft --model_name llava --dataset_name fvqa --task mc --subsample 100 --batch_size 20 --res_dir test_ft || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
 
 MODEL_NAME=llava
-SUBSAMPLE=1000 # 0 to use all
-BATCH_SIZE=50
-export MODEL_NAME SUBSAMPLE BATCH_SIZE
+BATCH_SIZE=100
+export MODEL_NAME BATCH_SIZE
 
 export DATA=aokvqa
 bash jobs/ft/main.sh
