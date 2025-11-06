@@ -42,6 +42,7 @@ def run_eval(config, args):
         task=args.task,
         with_rationale=args.rationale,
         rationale_in_prompt=True, # prompt model with "image + prompt + rationale" (if)
+        shuffle_choices=True,
         unpaired=True,
         batch_size=args.batch_size
     )
