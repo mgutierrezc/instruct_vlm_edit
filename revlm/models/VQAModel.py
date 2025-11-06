@@ -45,6 +45,7 @@ class VQAModel(torch.nn.Module):
         if kwargs["temperature"] <= 0:
             kwargs["do_sample"] = False  
             kwargs["num_beams"] = 1 
+            kwargs.pop("temperature", None)
         with torch.no_grad():
             outputs = self.model.generate(**inputs, **kwargs)
             outputs_text = self.processor.batch_decode(outputs, skip_special_tokens=True)

@@ -71,6 +71,7 @@ def run_eval(config, args):
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"Saved metrics to {out_path}")
+    print(f"Evaluation results: {results}", flush=True)
     
     # Explicit cleanup to free GPU memory before script exits
     del vlm
