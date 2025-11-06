@@ -24,8 +24,8 @@ class VLMDataset(Dataset):
                         task="mc",  
                         with_rationale=False,
                         rationale_in_prompt=True,
-                        shuffle_choices=False,
-                        unpaired=False,
+                        shuffle_choices=True,
+                        unpaired=True,
                         seed=333,
                         # dataloader
                         batch_size=32,
