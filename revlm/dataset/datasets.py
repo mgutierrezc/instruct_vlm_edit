@@ -48,7 +48,7 @@ class VLMDataset(Dataset):
             self.task_engineer.eng_prompt(ex)
         self.loader = DataLoader(self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=pin_memory, collate_fn=self.image_collate)
         
-    def _resize_image(self, img, max_side=1344):
+    def _resize_image(self, img, max_side=800):
         w, h = img.size
         m = max(w, h)
         if m > max_side:
