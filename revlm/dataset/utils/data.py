@@ -58,66 +58,66 @@ def data_rows_to_examples(df: pd.DataFrame) -> List[Dict]:
     return examples
 
 
-# Tokenization utilities moved from top-level utils
-def tokenize_vlm(batch, tokenizer, device, test=False):
-    """
-    Tokenize VLM input batch.
-    Accepts either:
-    - collated batch with keys: 'prompts' (list[str]), 'golds' (list[dict])
-    - single example with 'prompt' or 'question', and optional 'answer'/'label'
-    """
-    # Questions/prompts
-    if isinstance(batch, dict):
-        if "prompts" in batch:
-            questions = batch["prompts"]
-        else:
-            q = batch.get("prompt", batch.get("question", ""))
-            questions = q if isinstance(q, list) else [q]
-    else:
-        questions = [str(batch)]
+# # Tokenization utilities moved from top-level utils
+# def tokenize_vlm(batch, tokenizer, device, test=False):
+#     """
+#     Tokenize VLM input batch.
+#     Accepts either:
+#     - collated batch with keys: 'prompts' (list[str]), 'golds' (list[dict])
+#     - single example with 'prompt' or 'question', and optional 'answer'/'label'
+#     """
+#     # Questions/prompts
+#     if isinstance(batch, dict):
+#         if "prompts" in batch:
+#             questions = batch["prompts"]
+#         else:
+#             q = batch.get("prompt", batch.get("question", ""))
+#             questions = q if isinstance(q, list) else [q]
+#     else:
+#         questions = [str(batch)]
 
-    tokens = tokenizer(
-        questions,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-    )
+#     tokens = tokenizer(
+#         questions,
+#         return_tensors="pt",
+#         padding=True,
+#         truncation=True,
+#     )
 
-    # Labels (optional)
-    if isinstance(batch, dict):
-        labels = None
-        if "golds" in batch:
-            golds = batch["golds"]
-            if isinstance(golds, list):
-                labels = [g.get("label") for g in golds]
-            elif isinstance(golds, dict):
-                labels = [golds.get("label")]
-        if labels is None:
-            if "label" in batch:
-                labels = batch["label"] if isinstance(batch["label"], list) else [batch["label"]]
-            elif "answer" in batch:
-                labels = batch["answer"] if isinstance(batch["answer"], list) else [batch["answer"]]
+#     # Labels (optional)
+#     if isinstance(batch, dict):
+#         labels = None
+#         if "golds" in batch:
+#             golds = batch["golds"]
+#             if isinstance(golds, list):
+#                 labels = [g.get("label") for g in golds]
+#             elif isinstance(golds, dict):
+#                 labels = [golds.get("label")]
+#         if labels is None:
+#             if "label" in batch:
+#                 labels = batch["label"] if isinstance(batch["label"], list) else [batch["label"]]
+#             elif "answer" in batch:
+#                 labels = batch["answer"] if isinstance(batch["answer"], list) else [batch["answer"]]
 
-        if labels is not None and not test:
-            label_tokens = tokenizer(
-                labels,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-            )
-            tokens["label"] = label_tokens["input_ids"]
-            if tokenizer.pad_token_id is not None:
-                tokens["label"][tokens["label"] == tokenizer.pad_token_id] = -100
-        elif not test:
-            tokens["label"] = tokens["input_ids"].clone()
-            if tokenizer.pad_token_id is not None:
-                tokens["label"][tokens["input_ids"] == tokenizer.pad_token_id] = -100
+#         if labels is not None and not test:
+#             label_tokens = tokenizer(
+#                 labels,
+#                 return_tensors="pt",
+#                 padding=True,
+#                 truncation=True,
+#             )
+#             tokens["label"] = label_tokens["input_ids"]
+#             if tokenizer.pad_token_id is not None:
+#                 tokens["label"][tokens["label"] == tokenizer.pad_token_id] = -100
+#         elif not test:
+#             tokens["label"] = tokens["input_ids"].clone()
+#             if tokenizer.pad_token_id is not None:
+#                 tokens["label"][tokens["input_ids"] == tokenizer.pad_token_id] = -100
 
-    tokens = {k: v.to(device) for k, v in tokens.items()}
-    return tokens
+#     tokens = {k: v.to(device) for k, v in tokens.items()}
+#     return tokens
 
 
-def get_tokenize_fn(task):
-    """Get tokenization function for given task"""
-    return tokenize_vlm
+# def get_tokenize_fn(task):
+#     """Get tokenization function for given task"""
+#     return tokenize_vlm
 
