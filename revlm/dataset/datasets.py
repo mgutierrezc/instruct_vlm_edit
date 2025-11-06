@@ -1,5 +1,6 @@
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
+import json
 from .utils import *
 
 class VLMDataset(Dataset):
@@ -76,6 +77,10 @@ class VLMDataset(Dataset):
         outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
         for idx, a in zip(batch["idxs"], outs):
             self.task_engineer.eng_preds(self.data[idx], a, model)
+
+    def snap(self, out_path: str) -> None:
+        with open(out_path, "w") as f:
+            json.dump(self.data, f, indent=2)
 
 class AOKVQADataset(VLMDataset):
     def __init__(self, split: str = "train"):
