@@ -4,7 +4,13 @@ from .utils import *
 
 def configure_args(args, config_path=None):
     """Load config.yaml, apply simple CLI overrides, return NestedConfig.
-    Sticks to editor/model_name/inner_params/dataset_name.
+    - base config in config.yaml
+    - CLI overrides from args: 
+        editor -> editor preset
+        model_name -> model preset
+        dataset_name -> experiment
+        task -> experiment
+    - result saving dir: results/editor/model/dataset
     """
     if config_path is None:
         config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "config.yaml")
@@ -15,7 +21,7 @@ def configure_args(args, config_path=None):
     model = dict(cfg.get("model", {}))
     experiment = dict(cfg.get("experiment", {}))
 
-    # Simple editor handling: take CLI editor if provided, else YAML
+    # ---- editor ----
     cli_editor = getattr(args, "editor", None)
     editor = cfg.get("editor", None)
     if cli_editor is not None:
@@ -26,8 +32,7 @@ def configure_args(args, config_path=None):
         editor = {"_name": editor.get("_name", editor.get("name", ""))}
     else:
         editor = {}
-
-    # Optional: load and merge editor preset YAML by name
+    # ---- editor preset ----
     editor_name = editor.get("_name")
     if editor_name:
         preset_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "editor", f"{editor_name}.yaml")
@@ -36,7 +41,7 @@ def configure_args(args, config_path=None):
             merged = {k: v for k, v in preset.items() if k != "_name"}
             editor = {"_name": editor_name, **merged}
 
-    # Map short model name if provided and load model preset
+    # ---- model ----
     model_name_provided = getattr(args, "model_name", None)
     if model_name_provided:
         short_to_full = {
@@ -47,7 +52,7 @@ def configure_args(args, config_path=None):
         key = str(model_name_provided).lower()
         resolved_name = short_to_full.get(key, model_name_provided)
         
-        # Try to load model preset YAML (similar to editor presets)
+        # ---- model preset ----
         model_preset_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "model", f"{key}.yaml")
         model_preset = load_yaml(model_preset_path)
         if model_preset:
@@ -61,27 +66,38 @@ def configure_args(args, config_path=None):
             # No preset found, just set the name
             model["name"] = resolved_name
 
-    # CLI overrides
-    if getattr(args, "inner_params", None):
-        model["inner_params"] = args.inner_params
+    # ---- experiment ----
     if getattr(args, "dataset_name", None):
         experiment["dataset_name"] = args.dataset_name
+    if getattr(args, "task", None):
+        experiment["task"] = args.task
 
-    # create result saving dir
+    # ---- result saving dir ----
     editor_tag = editor.get("_name") or "raw"
     model_tag = (model.get("name", "").split("/")[-1] or "model").replace(" ", "_")
     dataset_tag = (experiment.get("dataset_name", "dataset") or "dataset").replace(" ", "_")
     res_dir = os.path.join("results", editor_tag, model_tag, dataset_tag)
     os.makedirs(res_dir, exist_ok=True)
 
+    # ---- global settings ----
+    cfg['batch_size'] = args.batch_size if getattr(args, "batch_size", None) else cfg.get("batch_size", 1)
+    cfg['n_iter'] = args.n_iter if getattr(args, "n_iter", None) else cfg.get("n_iter", 100)
+    cfg['max_n_edits'] = args.max_n_edits if getattr(args, "max_n_edits", None) else cfg.get("max_n_edits", 5000)
+    cfg['seed'] = args.seed if getattr(args, "seed", None) else cfg.get("seed", 42)
+    cfg['device'] = args.device if getattr(args, "device", None) else cfg.get("device", "cuda")
+    cfg['ckpt_dir'] = args.ckpt_dir if getattr(args, "ckpt_dir", None) else cfg.get("ckpt_dir", None)
+    cfg['dropout'] = args.dropout if getattr(args, "dropout", None) else cfg.get("dropout", None)
+
     nested = {
-        "batch_size": cfg.get("batch_size", 1),
-        "n_iter": cfg.get("n_iter", 100),
-        "max_n_edits": cfg.get("max_n_edits", 5000),
-        "seed": cfg.get("seed", 42),
-        "device": cfg.get("device", "cuda"),
-        "ckpt_dir": cfg.get("ckpt_dir", None),
-        "dropout": cfg.get("dropout", None),
+        # global settings
+        "batch_size": cfg['batch_size'],
+        "n_iter": cfg['n_iter'],
+        "max_n_edits": cfg['max_n_edits'],
+        "seed": cfg['seed'],
+        "device": cfg['device'],
+        "ckpt_dir": cfg['ckpt_dir'],
+        "dropout": cfg['dropout'],
+        # local settings
         "res_dir": res_dir,
         "model": model,
         "editor": editor,

@@ -62,6 +62,7 @@ class VLMDataset(Dataset):
         Expects items with keys: 'image' (path), 'prompt' (string), 'gold' (dict), 'idx' (int).
         """
         images = [self._resize_image(Image.open(ex["image"]).convert("RGB")) for ex in batch]
+        # images = [Image.open(ex["image"]).convert("RGB") for ex in batch]
         prompts = [ex["prompt"] for ex in batch]
         golds = [ex["gold"] for ex in batch]
         idxs = [ex["idx"] for ex in batch]
