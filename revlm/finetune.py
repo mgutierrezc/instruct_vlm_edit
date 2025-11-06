@@ -25,6 +25,24 @@ def finetune(config):
     print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, batch_size={config.batch_size}, n_iter={config.n_iter}, "
           f"editor={config.editor._name}, rationale={getattr(config.experiment, 'with_rationale', False)}", flush=True)
     
+    # Check if output files already exist (early exit to avoid loading model/datasets)
+    with_rationale = getattr(config.experiment, 'with_rationale', False)
+    task = getattr(config.experiment, 'task', 'mc')
+    res_dir_arg = getattr(config, 'res_dir_arg', None)
+    if res_dir_arg is not None:
+        res_dir = os.path.join("results", res_dir_arg)
+    else:
+        res_dir = getattr(config, "res_dir")
+    os.makedirs(res_dir, exist_ok=True)
+    rationale_suffix = "_rationale" if with_rationale else ""
+    out_path_test = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
+    out_path_train = os.path.join(res_dir, f"{task}{rationale_suffix}_train.json")
+    
+    overwrite = getattr(config, 'overwrite', False)
+    if os.path.exists(out_path_test) and os.path.exists(out_path_train) and not overwrite:
+        print(f"Results already exist at {out_path_test} and {out_path_train}. Use --overwrite to overwrite.", flush=True)
+        return
+    
     device = torch.device(config.device if isinstance(config.device, str) else config.device)
     
     # Load model
@@ -64,9 +82,6 @@ def finetune(config):
     if subsample and len(test_dataset) > subsample:
         test_dataset.data = random.sample(test_dataset.data, subsample)
 
-    with_rationale = getattr(config.experiment, 'with_rationale', False)
-    task = getattr(config.experiment, 'task', 'mc')
-    
     # Setup dataloaders
     print(f"Setting up train dataloader (processing {len(train_dataset)} examples)...", flush=True)
     t0 = time.time()
@@ -161,15 +176,7 @@ def finetune(config):
         test_metrics = test_dataset.task_engineer.eval(test_dataset)
         print(f"Test metrics: {test_metrics}", flush=True)
     # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
-    res_dir_arg = getattr(config, 'res_dir_arg', None)
-    if res_dir_arg is not None:
-        res_dir = os.path.join("results", res_dir_arg)
-    else:
-        res_dir = getattr(config, "res_dir")
-    os.makedirs(res_dir, exist_ok=True)
-    rationale_suffix = "_rationale" if with_rationale else ""
-    out_path_test = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
-    out_path_train = os.path.join(res_dir, f"{task}{rationale_suffix}_train.json")
+    # Note: res_dir and paths are already constructed at the start of the function
     with open(out_path_test, 'w') as f:
         json.dump(test_metrics, f, indent=2)
     with open(out_path_train, 'w') as f:
@@ -210,10 +217,11 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
     parser.add_argument("--with_rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size")
-    parser.add_argument("--n_iter", type=int, default=1, help="Inner iterations per batch")
+    parser.add_argument("--n_iter", type=int, default=5, help="Inner iterations per batch")
     parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
     
     args = parser.parse_args()
     
@@ -238,6 +246,7 @@ if __name__ == "__main__":
     config.n_iter = args.n_iter
     config.subsample = args.subsample
     config.res_dir_arg = args.res_dir
+    config.overwrite = args.overwrite
     if args.ckpt_dir is not None:
         config.ckpt_dir = args.ckpt_dir
     if args.task is not None:
