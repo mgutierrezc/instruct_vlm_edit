@@ -71,7 +71,7 @@ def configure_args(args, config_path=None):
     editor_tag = editor.get("_name") or "raw"
     model_tag = (model.get("name", "").split("/")[-1] or "model").replace(" ", "_")
     dataset_tag = (experiment.get("dataset_name", "dataset") or "dataset").replace(" ", "_")
-    res_dir = os.path.join("results", model_tag, dataset_tag, editor_tag)
+    res_dir = os.path.join("results", editor_tag, model_tag, dataset_tag)
     os.makedirs(res_dir, exist_ok=True)
 
     nested = {

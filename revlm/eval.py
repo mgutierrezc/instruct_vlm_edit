@@ -58,10 +58,13 @@ def run_eval(config, args):
         ds.task_generate(batch, vlm)
     
     # Save predictions
-    pred_res_dir = os.path.join(res_dir.rsplit("/", 1)[0], "pred") # replace the last folder in res_dir with "pred"
-    os.makedirs(pred_res_dir, exist_ok=True)
-    pred_out_path = os.path.join(pred_res_dir, f"{args.task}{'_rationale' if args.rationale else ''}_{args.split}.json")
-    ds.snap(pred_out_path)
+    if args.res_dir is None: # args.res_dir will only be provided for testing, skip snap for testing 
+        # res_dir: "results/editor/model/dataset"
+        # pred_res_dir: "results/pred/model/dataset"
+        pred_res_dir = os.path.join("results", "pred", res_dir.split("/")[-2], res_dir.split("/")[-1])
+        os.makedirs(pred_res_dir, exist_ok=True)
+        pred_out_path = os.path.join(pred_res_dir, f"{args.task}{'_rationale' if args.rationale else ''}_{args.split}.json")
+        ds.snap(pred_out_path)
 
     # Save evaluation metrics
     results = ds.task_engineer.eval(ds)
