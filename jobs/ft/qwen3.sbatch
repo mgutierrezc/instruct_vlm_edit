@@ -30,8 +30,8 @@ MODEL_NAME=qwen3
 BATCH_SIZE=30
 export MODEL_NAME BATCH_SIZE
 
-export DATA=aokvqa
+export DATA=fvqa
 bash jobs/ft/main.sh
 
-export DATA=fvqa
+export DATA=aokvqa
 bash jobs/ft/main.sh
