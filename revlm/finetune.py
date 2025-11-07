@@ -7,9 +7,9 @@ import json
 import random
 import time
 
-from .models import get_model
-from .dataset import get_dataset
-from .editors import get_editor
+from .models import *
+from .dataset import *
+from .editors import *
 from .editors.utils import explore_layers, validate_and_correct_param_name
 from .config_utils import configure_args
 
@@ -48,7 +48,7 @@ def finetune(config):
     # Load model
     print("Loading model...", flush=True)
     t0 = time.time()
-    model = get_model(config).to(device)
+    model = VQAModel(config).to(device)
     print(f"Model loaded in {time.time() - t0:.2f}s", flush=True)
     
     # Auto-select layer if not provided
@@ -72,8 +72,8 @@ def finetune(config):
     # Load datasets
     print("Loading datasets...", flush=True)
     t0 = time.time()
-    train_dataset = get_dataset(config, split="train")
-    test_dataset = get_dataset(config, split="test")
+    train_dataset = VQADataset(config)
+    test_dataset = VQADataset(config)
     print(f"Datasets loaded in {time.time() - t0:.2f}s (train: {len(train_dataset)}, test: {len(test_dataset)})", flush=True)
     
     subsample = getattr(config, 'subsample', 0)
@@ -86,23 +86,17 @@ def finetune(config):
     print(f"Setting up train dataloader (processing {len(train_dataset)} examples)...", flush=True)
     t0 = time.time()
     train_dataset.set_dataloader(
-        task=task,
         with_rationale=with_rationale,
         rationale_in_prompt=False, # image + prompt -> label + rationale
-        shuffle_choices=True if task in ("mc", "mci") else False,
-        batch_size=config.batch_size,
-        shuffle=True,
+        shuffle_choices=True,
     )
     print(f"Train dataloader setup in {time.time() - t0:.2f}s", flush=True)
     
     print(f"Setting up test dataloader (processing {len(test_dataset)} examples)...", flush=True)
     t0 = time.time()
     test_dataset.set_dataloader(
-        task=task,
         with_rationale=False,
         shuffle_choices=False,
-        batch_size=config.batch_size,
-        shuffle=False,
     )
     print(f"Test dataloader setup in {time.time() - t0:.2f}s", flush=True)
     
@@ -166,13 +160,11 @@ def finetune(config):
     model.model.eval()
     with torch.no_grad():
         print("Evaluating on train set...", flush=True)
-        for batch in train_dataset.loader:
-            train_dataset.task_generate(batch, model)
+        train_dataset.task_generate(model)
         train_metrics = train_dataset.task_engineer.eval(train_dataset)
         print(f"Train metrics: {train_metrics}", flush=True)
         print("Evaluating on test set...", flush=True)
-        for batch in test_dataset.loader:
-            test_dataset.task_generate(batch, model)
+        test_dataset.task_generate(model)
         test_metrics = test_dataset.task_engineer.eval(test_dataset)
         print(f"Test metrics: {test_metrics}", flush=True)
     # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
@@ -229,28 +221,22 @@ if __name__ == "__main__":
     cfg_path = args.config or os.path.join(
         os.path.dirname(__file__), "config", "config.yaml"
     )
-    
-    ns = argparse.Namespace(
-        config=cfg_path,
-        editor=args.editor,
-        inner_params=args.inner_params if args.inner_params else [],
-        dataset_name=args.dataset_name,
-        model_name=args.model_name,
-    )
-    
-    config = configure_args(ns, config_path=cfg_path)
+    # ns = argparse.Namespace(
+    #     config=cfg_path,
+    #     editor=args.editor,
+    #     inner_params=args.inner_params if args.inner_params else [],
+    #     dataset_name=args.dataset_name,
+    #     model_name=args.model_name,
+    # )
+    config = configure_args(args, config_path=cfg_path)
     
     # Override settings
     config.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    config.batch_size = args.batch_size
-    config.n_iter = args.n_iter
     config.subsample = args.subsample
     config.res_dir_arg = args.res_dir
     config.overwrite = args.overwrite
     if args.ckpt_dir is not None:
         config.ckpt_dir = args.ckpt_dir
-    if args.task is not None:
-        config.experiment.task = args.task
     if args.with_rationale:
         config.experiment.with_rationale = True
     

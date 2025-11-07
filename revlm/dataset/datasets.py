@@ -3,40 +3,65 @@ from PIL import Image
 import json
 from .utils import *
 
-class VLMDataset(Dataset):
-    def __init__(self, split="train"):
-        self.split = split
+class VQADataset(Dataset):
+    def __init__(self, config):
+        self.config = config
         self.data = []
-        self._load_data()
-        
-    def _load_data(self):
-        """Load dataset - to be implemented by subclasses"""
-        raise NotImplementedError("Subclasses must implement _load_data")
-    
+        df = self.load_df()
+        self.data = self.df2data(df)
+
     def __len__(self):
         return len(self.data)
     
     def __getitem__(self, idx):
         return self.data[idx]
     
+    def load_df(self):
+        if self.config.experiment.dataset_name == "fvqa":
+            path_in_repo = "FVQA"
+        elif self.config.experiment.dataset_name == "aokvqa":
+            path_in_repo = "AOKVQA"
+        else:
+            raise ValueError(f"Unknown dataset: {self.config.experiment.dataset_name}")
+        split_paths = data_download_parquet_splits(
+            repo_id="JJoy333/RationaleVQA",
+            path_in_repo=path_in_repo,
+        )
+        df = data_load_split_df(split_paths.get(self.config.experiment.split))
+        return df
+    
+    def df2data(self, df: pd.DataFrame) -> List[Dict]:
+        cols = ["image_path", "question", "answer", "rationale", "choices", "idx_choices"]
+        missing = set(cols) - set(df.columns)
+        if missing:
+            raise ValueError(f"Parquet missing required columns: {missing}")
+        if df.empty:
+            return []
+
+        records = df[cols].to_dict(orient="records")
+        examples: List[Dict] = []
+        for r in records:
+            ex: Dict[str, object] = {
+                "image": r["image_path"],
+                "question": r["question"],
+                "answer": r["answer"],
+                "rationale": r["rationale"],
+                "choices": r["choices"],
+                "idx_choices": r["idx_choices"],
+            }
+            examples.append(ex)
+        return examples
+    
     def set_dataloader(self,
-                        # task engineer
-                        task="mc",  
                         with_rationale=False,
                         rationale_in_prompt=True,
                         shuffle_choices=True,
-                        unpaired=True,
-                        seed=333,
-                        # dataloader
-                        batch_size=32,
-                        shuffle=False,
-                        num_workers=0,
-                        pin_memory=True):
-        """
-        task: "mc": multiple choices, queried with "choices" field, i.e "car; person; flower; animal"
-        task: "mci": multiple choices (indexed with letters), queried with "idx_choices" field, i.e "(A) car\n(B) bike\n(C) train\n(D) bus"
-        task: "qa": free generation qa, provided with no "choices", require to return one word or one phrase.
-        """
+                        unpaired=True):
+            
+        task = self.config.experiment.task
+        batch_size = self.config.batch_size
+        seed = self.config.seed
+
         self.task_engineer = get_taskengineer(task, 
                                               with_rationale=with_rationale, 
                                               rationale_in_prompt=rationale_in_prompt,
@@ -47,7 +72,7 @@ class VLMDataset(Dataset):
             ex['idx'] = i
             self.task_engineer.eng_golds(ex)
             self.task_engineer.eng_prompt(ex)
-        self.loader = DataLoader(self, batch_size=batch_size, shuffle=shuffle, num_workers=num_workers, pin_memory=pin_memory, collate_fn=self.image_collate)
+        self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=self.image_collate)
         
     def _resize_image(self, img, max_side=800):
         w, h = img.size
@@ -73,52 +98,18 @@ class VLMDataset(Dataset):
             "idxs": idxs,
         }
 
-    def task_generate(self, batch, model):
-        """Generate predictions for a single collated batch and write back in place using indices."""
-        outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
-        for idx, a in zip(batch["idxs"], outs):
-            self.task_engineer.eng_preds(self.data[idx], a, model)
+    # def task_generate_batch(self, batch, model):
+    #     """Generate predictions for a single collated batch and write back in place using indices."""
+    #     outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
+    #     for idx, a in zip(batch["idxs"], outs):
+    #         self.task_engineer.eng_preds(self.data[idx], a, model)
+
+    def task_generate(self, model):
+        for batch in self.loader:
+            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
+            for idx, a in zip(batch["idxs"], outs):
+                self.task_engineer.eng_preds(self.data[idx], a, model)
 
     def snap(self, out_path: str) -> None:
         with open(out_path, "w") as f:
             json.dump(self.data, f, indent=2)
-
-class AOKVQADataset(VLMDataset):
-    def __init__(self, split: str = "train"):
-        super().__init__(split=split)
-
-    def _load_data(self):
-        split = self.split if self.split in ("train", "val", "test") else "train"
-        split_paths = data_download_parquet_splits(
-            repo_id="JJoy333/RationaleVQA",
-            path_in_repo="AOKVQA",
-        )
-        df = data_load_split_df(split_paths.get(split))
-        self.data = data_rows_to_examples(df)
-
-
-class FVQADataset(VLMDataset):
-    def __init__(self, split: str = "train"):
-        super().__init__(split=split)
-
-    def _load_data(self):
-        split = self.split if self.split in ("train", "test") else "train"
-        split_paths = data_download_parquet_splits(
-            repo_id="JJoy333/RationaleVQA",
-            path_in_repo="FVQA",
-        )
-        df = data_load_split_df(split_paths.get(split))
-        self.data = data_rows_to_examples(df)
-
-
-def get_dataset(config, split="train"):
-    dataset_name = str(config.experiment.dataset_name).strip().lower()
-    # Prefer explicit dataset_name if provided
-    if dataset_name == "aokvqa":
-        edit_dataset = AOKVQADataset(split=split)
-    elif dataset_name == "fvqa":
-        edit_dataset = FVQADataset(split=split)
-    else:
-        raise ValueError(f"Unknown dataset: {dataset_name}")
-    
-    return edit_dataset

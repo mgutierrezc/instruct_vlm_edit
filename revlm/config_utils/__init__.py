@@ -71,6 +71,8 @@ def configure_args(args, config_path=None):
         experiment["dataset_name"] = args.dataset_name
     if getattr(args, "task", None):
         experiment["task"] = args.task
+    if getattr(args, "split", None):
+        experiment["split"] = args.split
 
     # ---- result saving dir ----
     editor_tag = editor.get("_name") or "raw"

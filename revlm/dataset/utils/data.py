@@ -31,93 +31,29 @@ def data_load_split_df(parquet_path: Optional[str]) -> pd.DataFrame:
     )
 
 
-def data_rows_to_examples(df: pd.DataFrame) -> List[Dict]:
-    """Convert a dataframe to trainer-ready dicts.
+# def data_rows_to_examples(df: pd.DataFrame) -> List[Dict]:
+#     """Convert a dataframe to trainer-ready dicts.
 
-    Required columns: image_path, question, answer, rationale, choices, idx_choices
-    """
-    cols = ["image_path", "question", "answer", "rationale", "choices", "idx_choices"]
-    missing = set(cols) - set(df.columns)
-    if missing:
-        raise ValueError(f"Parquet missing required columns: {missing}")
-    if df.empty:
-        return []
-
-    records = df[cols].to_dict(orient="records")
-    examples: List[Dict] = []
-    for r in records:
-        ex: Dict[str, object] = {
-            "image": r["image_path"],
-            "question": r["question"],
-            "answer": r["answer"],
-            "rationale": r["rationale"],
-            "choices": r["choices"],
-            "idx_choices": r["idx_choices"],
-        }
-        examples.append(ex)
-    return examples
-
-
-# # Tokenization utilities moved from top-level utils
-# def tokenize_vlm(batch, tokenizer, device, test=False):
+#     Required columns: image_path, question, answer, rationale, choices, idx_choices
 #     """
-#     Tokenize VLM input batch.
-#     Accepts either:
-#     - collated batch with keys: 'prompts' (list[str]), 'golds' (list[dict])
-#     - single example with 'prompt' or 'question', and optional 'answer'/'label'
-#     """
-#     # Questions/prompts
-#     if isinstance(batch, dict):
-#         if "prompts" in batch:
-#             questions = batch["prompts"]
-#         else:
-#             q = batch.get("prompt", batch.get("question", ""))
-#             questions = q if isinstance(q, list) else [q]
-#     else:
-#         questions = [str(batch)]
+#     cols = ["image_path", "question", "answer", "rationale", "choices", "idx_choices"]
+#     missing = set(cols) - set(df.columns)
+#     if missing:
+#         raise ValueError(f"Parquet missing required columns: {missing}")
+#     if df.empty:
+#         return []
 
-#     tokens = tokenizer(
-#         questions,
-#         return_tensors="pt",
-#         padding=True,
-#         truncation=True,
-#     )
-
-#     # Labels (optional)
-#     if isinstance(batch, dict):
-#         labels = None
-#         if "golds" in batch:
-#             golds = batch["golds"]
-#             if isinstance(golds, list):
-#                 labels = [g.get("label") for g in golds]
-#             elif isinstance(golds, dict):
-#                 labels = [golds.get("label")]
-#         if labels is None:
-#             if "label" in batch:
-#                 labels = batch["label"] if isinstance(batch["label"], list) else [batch["label"]]
-#             elif "answer" in batch:
-#                 labels = batch["answer"] if isinstance(batch["answer"], list) else [batch["answer"]]
-
-#         if labels is not None and not test:
-#             label_tokens = tokenizer(
-#                 labels,
-#                 return_tensors="pt",
-#                 padding=True,
-#                 truncation=True,
-#             )
-#             tokens["label"] = label_tokens["input_ids"]
-#             if tokenizer.pad_token_id is not None:
-#                 tokens["label"][tokens["label"] == tokenizer.pad_token_id] = -100
-#         elif not test:
-#             tokens["label"] = tokens["input_ids"].clone()
-#             if tokenizer.pad_token_id is not None:
-#                 tokens["label"][tokens["input_ids"] == tokenizer.pad_token_id] = -100
-
-#     tokens = {k: v.to(device) for k, v in tokens.items()}
-#     return tokens
-
-
-# def get_tokenize_fn(task):
-#     """Get tokenization function for given task"""
-#     return tokenize_vlm
+#     records = df[cols].to_dict(orient="records")
+#     examples: List[Dict] = []
+#     for r in records:
+#         ex: Dict[str, object] = {
+#             "image": r["image_path"],
+#             "question": r["question"],
+#             "answer": r["answer"],
+#             "rationale": r["rationale"],
+#             "choices": r["choices"],
+#             "idx_choices": r["idx_choices"],
+#         }
+#         examples.append(ex)
+#     return examples
 

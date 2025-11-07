@@ -9,13 +9,12 @@ from PIL import Image
 from .config_utils import *
 from .dataset import *
 from .models import *
-from .metrics import *
+# from .metrics import *
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 def run_eval(config, args):
-
 
     # Save under res_dir
     if args.res_dir is not None:
@@ -30,24 +29,21 @@ def run_eval(config, args):
         return
     
     # Build model
-    vlm = get_model(config)
+    vlm = VQAModel(config)
 
     # Load dataset (test split)
-    ds = get_dataset(config, split=args.split)
+    ds = VQADataset(config)
     if args.subsample and len(ds) > args.subsample:
         ds.data = random.sample(ds.data, args.subsample)
 
     # ---- run -----
     ds.set_dataloader(
-        task=args.task,
         with_rationale=args.rationale,
         rationale_in_prompt=True, # prompt model with "image + prompt + rationale" (if)
         shuffle_choices=True,
-        unpaired=True,
-        batch_size=args.batch_size
+        unpaired=True
     )
-    for batch in ds.loader:
-        ds.task_generate(batch, vlm)
+    ds.task_generate(vlm)
     
     # Save predictions
     if args.res_dir is None: # args.res_dir will only be provided for testing, skip snap for testing 
@@ -86,9 +82,9 @@ if __name__ == "__main__":
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task to evaluate")
     parser.add_argument("--batch_size", type=int, default=50, help="Batch size")
+    parser.add_argument("--split", type=str, default="test", choices=["train", "test"], help="Split to evaluate on")
     
     # Args
-    parser.add_argument("--split", type=str, default="test", choices=["train", "test"], help="Split to evaluate on")
     parser.add_argument("--rationale", action="store_true", help="Append rationale to prompts if available")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
