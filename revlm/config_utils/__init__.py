@@ -75,13 +75,31 @@ def configure_args(args, config_path=None):
         experiment["split"] = args.split
     if getattr(args, "pred_by", None):
         experiment["pred_by"] = args.pred_by
+    if getattr(args, "suffix", ""):
+        experiment["suffix"] = args.suffix
         
-    # ---- result saving dir ----
+    # ---- result saving dirs ----
     editor_tag = editor.get("_name") or "raw"
     model_tag = (model.get("name", "").split("/")[-1] or "model").replace(" ", "_")
     dataset_tag = (experiment.get("dataset_name", "dataset") or "dataset").replace(" ", "_")
-    res_dir = os.path.join("results", editor_tag, model_tag, dataset_tag)
-    os.makedirs(res_dir, exist_ok=True)
+    task_tag = (experiment.get("task", "task") or "task").replace(" ", "_")
+    # task-based evaluation (te) metrics saving path
+    task_dir = getattr(args, "task_dir", os.path.join("results", "te", editor_tag, model_tag, dataset_tag))
+    os.makedirs(task_dir, exist_ok=True)
+    print(f"Task evaluation metrics will be saved to {task_dir}")
+    # edit-based evaluation (ee) metrics saving dir
+    edit_dir = getattr(args, "edit_dir", os.path.join("results", "ee", editor_tag, model_tag, dataset_tag))
+    os.makedirs(edit_dir, exist_ok=True)
+    print(f"Edit evaluation metrics will be saved to {edit_dir}")
+    # prediction saving dir
+    pred_dir = getattr(args, "pred_dir", os.path.join("results", "pred", model_tag, dataset_tag))
+    os.makedirs(pred_dir, exist_ok=True)
+    print(f"Predictions will be saved to {pred_dir}")
+    # unified filename to save
+    fname = f"{task_tag}_{experiment['split']}{experiment['suffix']}.json"
+    print(f"Unified filename to save: {fname}")
+
+
 
     # ---- global settings ----
     cfg['batch_size'] = args.batch_size if getattr(args, "batch_size", None) else cfg.get("batch_size", 1)
@@ -102,7 +120,10 @@ def configure_args(args, config_path=None):
         "ckpt_dir": cfg['ckpt_dir'],
         "dropout": cfg['dropout'],
         # local settings
-        "res_dir": res_dir,
+        "task_dir": task_dir,
+        "edit_dir": edit_dir,
+        "pred_dir": pred_dir,
+        "fname": fname,
         "model": model,
         "editor": editor,
         "experiment": experiment,

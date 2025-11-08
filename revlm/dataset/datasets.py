@@ -9,7 +9,7 @@ class VQADataset(Dataset):
         self.data = []
         df = self.load_df()
         self.data = self.df2data(df)
-
+    
     def __len__(self):
         return len(self.data)
     
@@ -122,6 +122,15 @@ class VQADataset(Dataset):
         edit_ds.set_dataloader()
         return edit_ds
 
-    def snap(self, out_path: str) -> None:
+    def snap(self) -> None:
+        out_path = os.path.join(self.config.pred_dir, self.config.fname)
         with open(out_path, "w") as f:
             json.dump(self.data, f, indent=2)
+
+    def task_eval(self) -> None:
+        task_metrics = self.task_engineer.eval(self)
+        out_path = os.path.join(self.config.task_dir, self.config.fname)
+        with open(out_path, "w") as f:
+            json.dump(task_metrics, f, indent=2)
+        print(f"Saved task evaluation metrics to {out_path}")
+        print(f"Task evaluation metrics: {task_metrics}", flush=True)

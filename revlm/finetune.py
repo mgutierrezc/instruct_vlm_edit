@@ -21,26 +21,13 @@ def finetune(config):
     """Main finetuning function"""
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    
+    # split should be default to train
     print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, batch_size={config.batch_size}, n_iter={config.n_iter}, "
-          f"editor={config.editor._name}, rationale={getattr(config.experiment, 'with_rationale', False)}", flush=True)
+          f"editor={config.editor._name}, rationale={getattr(config, 'rationale', False)}, fname={config.fname}", flush=True)
     
-    # Check if output files already exist (early exit to avoid loading model/datasets)
-    with_rationale = getattr(config.experiment, 'with_rationale', False)
-    task = getattr(config.experiment, 'task', 'mc')
-    res_dir_arg = getattr(config, 'res_dir_arg', None)
-    if res_dir_arg is not None:
-        res_dir = os.path.join("results", res_dir_arg)
-    else:
-        res_dir = getattr(config, "res_dir")
-    os.makedirs(res_dir, exist_ok=True)
-    rationale_suffix = "_rationale" if with_rationale else ""
-    out_path_test = os.path.join(res_dir, f"{task}{rationale_suffix}_test.json")
-    out_path_train = os.path.join(res_dir, f"{task}{rationale_suffix}_train.json")
-    
-    overwrite = getattr(config, 'overwrite', False)
-    if os.path.exists(out_path_test) and os.path.exists(out_path_train) and not overwrite:
-        print(f"Results already exist at {out_path_test} and {out_path_train}. Use --overwrite to overwrite.", flush=True)
+    out_path = os.path.join(config.task_dir, config.fname)
+    if os.path.exists(out_path) and not config.overwrite:
+        print(f"Results already exist at {out_path}. Use --overwrite to overwrite.")
         return
     
     device = torch.device(config.device if isinstance(config.device, str) else config.device)
@@ -62,17 +49,12 @@ def finetune(config):
         else:
             raise ValueError("No suitable layers found and inner_params not provided")
     
-    # Validate and correct parameter name (before creating editor)
-    # COMMENTED OUT: Validation not needed - auto-selection/YAML configs provide correct layer names
-    # validated_param = validate_and_correct_param_name(model.model, config.model.inner_params[0], logger=LOG)
-    # if validated_param != config.model.inner_params[0]:
-    #     config.model.inner_params[0] = validated_param
-    #     LOG.info(f"Using validated parameter: {validated_param}")
-    
     # Load datasets
     print("Loading datasets...", flush=True)
     t0 = time.time()
+    config.experiment.split = "train"
     train_dataset = VQADataset(config)
+    config.experiment.split = "test"
     test_dataset = VQADataset(config)
     print(f"Datasets loaded in {time.time() - t0:.2f}s (train: {len(train_dataset)}, test: {len(test_dataset)})", flush=True)
     
@@ -86,7 +68,7 @@ def finetune(config):
     print(f"Setting up train dataloader (processing {len(train_dataset)} examples)...", flush=True)
     t0 = time.time()
     train_dataset.set_dataloader(
-        with_rationale=with_rationale,
+        with_rationale=config.rationale,
         rationale_in_prompt=False, # image + prompt -> label + rationale
         shuffle_choices=True,
     )
@@ -96,7 +78,7 @@ def finetune(config):
     t0 = time.time()
     test_dataset.set_dataloader(
         with_rationale=False,
-        shuffle_choices=False,
+        shuffle_choices=True,
     )
     print(f"Test dataloader setup in {time.time() - t0:.2f}s", flush=True)
     
@@ -161,19 +143,10 @@ def finetune(config):
     with torch.no_grad():
         print("Evaluating on train set...", flush=True)
         train_dataset.task_generate(model)
-        train_metrics = train_dataset.task_engineer.eval(train_dataset)
-        print(f"Train metrics: {train_metrics}", flush=True)
+        train_dataset.task_eval()
         print("Evaluating on test set...", flush=True)
         test_dataset.task_generate(model)
-        test_metrics = test_dataset.task_engineer.eval(test_dataset)
-        print(f"Test metrics: {test_metrics}", flush=True)
-    # Save evaluation metrics (using eval.py structure: nested folders in res_dir)
-    # Note: res_dir and paths are already constructed at the start of the function
-    with open(out_path_test, 'w') as f:
-        json.dump(test_metrics, f, indent=2)
-    with open(out_path_train, 'w') as f:
-        json.dump(train_metrics, f, indent=2)
-    print(f"Saved evaluation metrics: {out_path_test} and {out_path_train}", flush=True)
+        test_dataset.task_eval()
     
     # Save checkpoint if requested
     if config.ckpt_dir:
@@ -181,7 +154,7 @@ def finetune(config):
         model_tag = config.model.name.split("/")[-1].replace(" ", "_")
         dataset_tag = config.experiment.dataset_name
         editor_tag = config.editor._name
-        rationale_tag = "rationale" if with_rationale else "norationale"
+        rationale_tag = "rationale" if config.rationale else "norationale"
         ckpt_path = os.path.join(
             config.ckpt_dir, 
             f"{model_tag}_{dataset_tag}_{editor_tag}_{rationale_tag}.pt"
@@ -201,38 +174,34 @@ def finetune(config):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VLM Finetuning")
-    parser.add_argument("--config", type=str, default=None, help="Path to YAML config file")
+    parser.add_argument("--config", type=str, default="revlm/config/config.yaml", help="Path to YAML config file (CLI overrides YAML)")
     parser.add_argument("--editor", type=str, required=True, choices=["ft", "ft_ewc", "ft_retrain"], help="Editor method")
     parser.add_argument("--model_name", type=str, default=None, help="Model name: 'qwen3', 'llava', 'blip'")
     parser.add_argument("--inner_params", type=str, nargs='+', default=[], help="Layer to finetune (auto-selected if empty)")
     parser.add_argument("--dataset_name", type=str, required=True, choices=["aokvqa", "fvqa"], help="Dataset name")
+    parser.add_argument("--split", type=str, default="train", choices=["train", "test"], help="Split to finetune on")
     parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
-    parser.add_argument("--with_rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
+    parser.add_argument("--rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size")
     parser.add_argument("--n_iter", type=int, default=5, help="Inner iterations per batch")
     parser.add_argument("--ckpt_dir", type=str, default=None, help="Directory to save checkpoints (overrides config.yaml)")
+    parser.add_argument("--task_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
+
+    
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
-    parser.add_argument("--res_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
     
+
     args = parser.parse_args()
-    
-    # Create config
-    cfg_path = args.config or os.path.join(
-        os.path.dirname(__file__), "config", "config.yaml"
-    )
-    config = configure_args(args, config_path=cfg_path)
-    
-    # Override settings
-    config.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    config.subsample = args.subsample
-    config.res_dir_arg = args.res_dir
+    args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    args.suffix = "_rationale" if args.rationale else ""
+    config = configure_args(args, config_path=args.config)
+
+    # current run-specific settings
     config.overwrite = args.overwrite
-    if args.ckpt_dir is not None:
-        config.ckpt_dir = args.ckpt_dir
-    if args.with_rationale:
-        config.experiment.with_rationale = True
-    
+    config.subsample = args.subsample
+    config.rationale = args.rationale
+
     # Run finetuning
     finetune(config)
 
