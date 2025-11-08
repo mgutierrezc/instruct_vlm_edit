@@ -109,6 +109,18 @@ class VQADataset(Dataset):
             outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
             for idx, a in zip(batch["idxs"], outs):
                 self.task_engineer.eng_preds(self.data[idx], a, model)
+    
+    def get_edits(self):
+        pred_by = self.config.experiment.pred_by
+        for ex in self.data:
+            if ex['gold']['label'] != ex['pred'][pred_by]:
+                ex['edit'] = True
+            else:
+                ex['edit'] = False
+        edit_ds = self
+        edit_ds.data = [ex for ex in edit_ds.data if ex['edit']]
+        edit_ds.set_dataloader()
+        return edit_ds
 
     def snap(self, out_path: str) -> None:
         with open(out_path, "w") as f:

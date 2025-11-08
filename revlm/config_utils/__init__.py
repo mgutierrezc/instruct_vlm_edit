@@ -73,7 +73,9 @@ def configure_args(args, config_path=None):
         experiment["task"] = args.task
     if getattr(args, "split", None):
         experiment["split"] = args.split
-
+    if getattr(args, "pred_by", None):
+        experiment["pred_by"] = args.pred_by
+        
     # ---- result saving dir ----
     editor_tag = editor.get("_name") or "raw"
     model_tag = (model.get("name", "").split("/")[-1] or "model").replace(" ", "_")

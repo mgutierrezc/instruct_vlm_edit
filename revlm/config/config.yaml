@@ -24,7 +24,8 @@ editor: ft  # Options: ft, ft_ewc, ft_retrain, mend, grace, rome, memory, defer
 
 # Experiment/dataset configuration
 experiment:
-  task: mci  # Options: mc, mci, qa
+  task: mc # Options: mc, mci, qa
   dataset_name: "fvqa"
   split: "train"
+  pred_by: "label_maxprob"
 

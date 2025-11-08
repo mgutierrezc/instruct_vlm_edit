@@ -38,7 +38,8 @@ def editeval(
     edit_ds: Any,
     related_texts: Mapping[int, Sequence[str]],
     related_images: Mapping[int, Sequence[Any]],
-    unrelated_ds: Any,
+    unrelated_texts: Dict[str, List[str]],
+    unrelated_images: Dict[str, List[str]],
     lambda_gen: float = 1.0,
     lambda_loc: float = 1.0,
     gen_agg: str = "harmonic",
@@ -50,20 +51,24 @@ def editeval(
     rel = reliability(model_new, edit_ds)
     tgen = text_generality(model_new, edit_ds, related_texts)
     igen = image_generality(model_new, edit_ds, related_images)
+    tloc = text_locality(model_base, model_new, edit_ds, unrelated_texts)
+    iloc = image_locality(model_base, model_new, edit_ds, unrelated_images)
 
     if gen_agg == "harmonic":
         gen = 0.0 if (tgen == 0 or igen == 0) else 2.0 / (1.0 / tgen + 1.0 / igen)
+        loc = 0.0 if (tloc == 0 or iloc == 0) else 2.0 / (1.0 / tloc + 1.0 / iloc)
     else:
         gen = 0.5 * (tgen + igen)
+        loc = 0.5 * (tloc + iloc)
 
-    loc = locality(model_base, model_new, unrelated_ds)
     score = rel + lambda_gen * gen + lambda_loc * loc
 
     return {
         "reliability": float(rel),
         "text_generality": float(tgen),
         "image_generality": float(igen),
-        "locality": float(loc),
+        "text_locality": float(tloc),
+        "image_locality": float(iloc),
         "combined": float(score),
     }
 
@@ -82,14 +87,74 @@ def reliability(model_new: Any, edit_ds: Any) -> float:
     return correct / len(pairs)
 
 
-def locality(model_old: Any, model_new: Any, unrelated_ds: Any) -> float:
-    """Agreement between base and new models on unrelated dataset inputs.
+# def locality(model_old: Any, model_new: Any, unrelated_ds: Any) -> float:
+#     """Agreement between base and new models on unrelated dataset inputs.
 
-    Uses batch generation on (image, prompt) pairs from unrelated_ds.
+#     Uses batch generation on (image, prompt) pairs from unrelated_ds.
+#     """
+
+#     pairs_old = generation(model_old, unrelated_ds)
+#     pairs_new = generation(model_new, unrelated_ds)
+#     preds_old = [p for _, p in pairs_old]
+#     preds_new = [p for _, p in pairs_new]
+#     correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
+#     return correct / len(preds_old)
+
+def text_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_texts: Dict[str, List[str]]) -> float:
+    """Accuracy on unrelated texts using the same images.
+
+    related_texts: {"image_path": ["unrelated_question1", "unrelated_question2", ...]} aligned to edit_ds.data indices.
     """
 
-    pairs_old = generation(model_old, unrelated_ds)
-    pairs_new = generation(model_new, unrelated_ds)
+    df = edit_ds._load_df()
+    unrelated_df = pd.DataFrame(
+        (
+            (image_path, unrelated_question)
+            for image_path, questions in unrelated_texts.items()
+            for unrelated_question in questions
+        ),
+        columns=["image_path", "question"],
+    )
+    # merge unrelated_df with df (without the "question" column) by image_path, keep all rows from unrelated_df
+    unrelated_df = unrelated_df.merge(
+        df.drop(columns=["question"]),
+        on="image_path",
+        how="left",
+    )
+    edit_ds.data = edit_ds.df2data(unrelated_df) # convert to structured dataset of my project
+    edit_ds.set_dataloader()
+
+    pairs_old = generation(model_old, edit_ds)
+    pairs_new = generation(model_new, edit_ds)
+    preds_old = [p for _, p in pairs_old]
+    preds_new = [p for _, p in pairs_new]
+    correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
+    return correct / len(preds_old)
+
+def image_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_images: Dict[str, List[str]]) -> float:
+    """Accuracy on unrelated images using the same texts.
+
+    unrelated_images: {"question": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
+    """
+    df = edit_ds._load_df()
+    unrelated_df = pd.DataFrame(
+        (
+            (question, image_path)
+            for question, image_paths in unrelated_images.items()
+            for image_path in image_paths
+        ),
+        columns=["question", "image_path"],
+    )
+    # merge unrelated_df with df (without the "text" column) by image_path, keep all rows from unrelated_df
+    unrelated_df = unrelated_df.merge(
+        df.drop(columns=["question"]),
+        on="image_path",
+        how="left",
+    )
+    edit_ds.data = edit_ds.df2data(unrelated_df) # convert to structured dataset of my project
+    edit_ds.set_dataloader()
+    pairs_old = generation(model_old, edit_ds)
+    pairs_new = generation(model_new, edit_ds)
     preds_old = [p for _, p in pairs_old]
     preds_new = [p for _, p in pairs_new]
     correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
