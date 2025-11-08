@@ -1,18 +1,74 @@
-"""Editing Evaluation sMetrics (dataset-based, batch generation).
+from typing import Any, Dict, List, Tuple, Mapping, Sequence
 
-Quick usage
-- reliability = ee_reliability(vlm, edit_ds)
-- text_gen = compute_text_generality(vlm, edit_ds, related_texts)
-- image_gen = compute_image_generality(vlm, edit_ds, related_images)
-- locality = compute_locality(vlm_base, vlm_new, unrelated_ds)
-- scores = combined_score(vlm_base, vlm_new, edit_ds, related_texts, related_images, unrelated_ds)
-"""
+import pandas as pd
 
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
-from .utils.helper import generation  # uses dataset.task_generate under the hood
+# ! Customize your task-specific generation function here
+# inputs: 
+# - vlm: VLMModel
+# - edit_ds: VQADataset (or your structured dataset that has samples of <"image", "prompt", "target">)
+# output: 
+# - list of (target, prediction) pairs. 
+def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
+	edit_ds.task_generate(model)
+	edit_set: List[Dict[str, Any]] = []
+	pred_set: List[Dict[str, Any]] = []
+	for ex in edit_ds.data:
+		gold = ex.get("gold", {})
+		pred = ex.get("pred", {})
+		if pred:
+			edit_set.append({
+				"idx": ex.get("idx"),
+				"image": ex.get("image"),
+				"text": ex.get("prompt", ""),
+				"target": gold.get("label", ""),
+				"rationale": ex.get("rationale", ""),
+			})
+			pred_set.append({
+				"idx": ex.get("idx"),
+				"image": ex.get("image"),
+				"text": ex.get("prompt", ""),
+				"pred": pred.get("label_maxprob", ""),
+			})
+	return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
 
 
-def ee_reliability(model_new: Any, edit_ds: Any) -> float:
+def editeval(
+    model_base: Any,
+    model_new: Any,
+    edit_ds: Any,
+    related_texts: Mapping[int, Sequence[str]],
+    related_images: Mapping[int, Sequence[Any]],
+    unrelated_ds: Any,
+    lambda_gen: float = 1.0,
+    lambda_loc: float = 1.0,
+    gen_agg: str = "harmonic",
+) -> Dict[str, float]:
+    """Combined metric: rel + λ_gen * gen + λ_loc * loc.
+
+    gen can be mean or harmonic of text/image generality.
+    """
+    rel = reliability(model_new, edit_ds)
+    tgen = text_generality(model_new, edit_ds, related_texts)
+    igen = image_generality(model_new, edit_ds, related_images)
+
+    if gen_agg == "harmonic":
+        gen = 0.0 if (tgen == 0 or igen == 0) else 2.0 / (1.0 / tgen + 1.0 / igen)
+    else:
+        gen = 0.5 * (tgen + igen)
+
+    loc = locality(model_base, model_new, unrelated_ds)
+    score = rel + lambda_gen * gen + lambda_loc * loc
+
+    return {
+        "reliability": float(rel),
+        "text_generality": float(tgen),
+        "image_generality": float(igen),
+        "locality": float(loc),
+        "combined": float(score),
+    }
+
+
+def reliability(model_new: Any, edit_ds: Any) -> float:
     """Compute reliability via task-based generation on the dataset.
 
     Args
@@ -26,11 +82,7 @@ def ee_reliability(model_new: Any, edit_ds: Any) -> float:
     return correct / len(pairs)
 
 
-def ee_locality(
-    model_old: Any,
-    model_new: Any,
-    unrelated_ds: Any,
-) -> float:
+def locality(model_old: Any, model_new: Any, unrelated_ds: Any) -> float:
     """Agreement between base and new models on unrelated dataset inputs.
 
     Uses batch generation on (image, prompt) pairs from unrelated_ds.
@@ -44,104 +96,55 @@ def ee_locality(
     return correct / len(preds_old)
 
 
-def compute_text_generality(
-    model_new: Any,
-    edit_ds: Any,
-    related_texts: Mapping[int, Sequence[str]],
-) -> float:
+def text_generality(model_new: Any, edit_ds: Any, related_texts: Dict[str, List[str]]) -> float:
     """Accuracy on paraphrased/related texts using the same images.
 
-    related_texts: {idx:[text1, text2, ...]} aligned to edit_ds.data indices.
+    related_texts: {"image_path": ["question_variant1", "question_variant2", ...]} aligned to edit_ds.data indices.
     """
-    newdata = []
+    df = edit_ds._load_df()
+    related_df = pd.DataFrame(
+        (
+            (image_path, question_variant)
+            for image_path, variants in related_texts.items()
+            for question_variant in variants
+        ),
+        columns=["image_path", "question"],
+    )
+    # merge related_df with df (without the "question" column) by image_path, keep all rows from related_df
+    related_df = related_df.merge(
+        df.drop(columns=["question"]),
+        on="image_path",
+        how="left",
+    )
+    related_df = pd.concat([related_df, df], axis=0, ignore_index=True)
+    edit_ds.data = edit_ds.df2data(related_df) # convert to structured dataset of my project
+    edit_ds.set_dataloader()
+    return reliability(model_new, edit_ds)
 
-    for id, ex in enumerate(edit_ds.data):
-        rtexts = related_texts.get(ex['idx'], [])
-        if not rtexts:
-            continue
-        for rid, t in enumerate(rtexts):
-            # make a copy entrance of ex, that is another instance of the same example, replace the prompt with the related text
-            # make it a new id of ex['idx']+"_"+str(rid)
-            images.append(ex['image'])
-            texts.append(t)
-            targets.append(ex['target'])
-            rt_id.append(ex['idx']+"_"+str(rid))
 
-    if not images:
-        return 0.0
+def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, List[str]]) -> float:
+    """Accuracy on paraphrased/related texts using the same images.
 
-    preds = model_new.generate(images, texts)
-    correct = sum(1 for p, y in zip(preds, targets) if p == y)
-    return correct / len(images)
-
-
-def compute_image_generality(
-    model_new: Any,
-    edit_ds: Any,
-    related_images: Mapping[int, Sequence[Any]],
-) -> float:
-    """Accuracy on related images using the same prompts.
-
-    related_images: {idx -> [img1, img2, ...]} aligned to edit_ds.data indices.
+    related_texts: {"question": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
     """
-    images: List[Any] = []
-    texts: List[str] = []
-    targets: List[str] = []
-
-    data = getattr(edit_ds, "data", [])
-    for idx, ex in enumerate(data):
-        rimgs = related_images.get(idx, [])
-        if not rimgs:
-            continue
-        prompt = ex.get("prompt", "")
-        gold = ex.get("gold", {})
-        target = str(gold.get("label", ""))
-        for img in rimgs:
-            images.append(img)
-            texts.append(prompt)
-            targets.append(target)
-
-    if not images:
-        return 0.0
-
-    preds = model_new.generate(images, texts)
-    correct = sum(1 for p, y in zip(preds, targets) if p == y)
-    return correct / len(images)
-
-
-def combined_score(
-    model_base: Any,
-    model_new: Any,
-    edit_ds: Any,
-    related_texts: Mapping[int, Sequence[str]],
-    related_images: Mapping[int, Sequence[Any]],
-    unrelated_ds: Any,
-    lambda_gen: float = 1.0,
-    lambda_loc: float = 1.0,
-    gen_agg: str = "mean",
-) -> Dict[str, float]:
-    """Combined metric: rel + λ_gen * gen + λ_loc * loc.
-
-    gen can be mean or harmonic of text/image generality.
-    """
-    rel = compute_reliability(model_new, edit_ds)
-    tgen = compute_text_generality(model_new, edit_ds, related_texts)
-    igen = compute_image_generality(model_new, edit_ds, related_images)
-
-    if gen_agg == "harmonic":
-        gen = 0.0 if (tgen == 0 or igen == 0) else 2.0 / (1.0 / tgen + 1.0 / igen)
-    else:
-        gen = 0.5 * (tgen + igen)
-
-    loc = compute_locality(model_base, model_new, unrelated_ds)
-    score = rel + lambda_gen * gen + lambda_loc * loc
-
-    return {
-        "reliability": float(rel),
-        "text_generality": float(tgen),
-        "image_generality": float(igen),
-        "locality": float(loc),
-        "combined": float(score),
-    }
+    df = edit_ds._load_df()
+    related_df = pd.DataFrame(
+        (
+            (question, image_path_variant)
+            for question, image_paths in related_images.items()
+            for image_path_variant in image_paths
+        ),
+        columns=["question", "image_path"],
+    )
+    # merge related_df with df (without the "question" column) by image_path, keep all rows from related_df
+    related_df = related_df.merge(
+        df.drop(columns=["image_path"]),
+        on="question",
+        how="left",
+    )
+    related_df = pd.concat([related_df, df], axis=0, ignore_index=True)
+    edit_ds.data = edit_ds.df2data(related_df) # convert to structured dataset of my project
+    edit_ds.set_dataloader()
+    return reliability(model_new, edit_ds)
 
 

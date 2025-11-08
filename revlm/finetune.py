@@ -221,13 +221,6 @@ if __name__ == "__main__":
     cfg_path = args.config or os.path.join(
         os.path.dirname(__file__), "config", "config.yaml"
     )
-    # ns = argparse.Namespace(
-    #     config=cfg_path,
-    #     editor=args.editor,
-    #     inner_params=args.inner_params if args.inner_params else [],
-    #     dataset_name=args.dataset_name,
-    #     model_name=args.model_name,
-    # )
     config = configure_args(args, config_path=cfg_path)
     
     # Override settings
