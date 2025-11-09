@@ -39,7 +39,7 @@ def editeval(
     related_texts: Mapping[int, Sequence[str]],
     related_images: Mapping[int, Sequence[Any]],
     unrelated_ds=None,
-    loc_sample_size=1000,
+    loc_sample_size=100,
     lambda_gen: float = 1.0,
     lambda_loc: float = 1.0,
     gen_agg: str = "harmonic",

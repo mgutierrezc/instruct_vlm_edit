@@ -73,7 +73,7 @@ class VQADataset(Dataset):
             ex['idx'] = i
             self.task_engineer.eng_golds(ex)
             self.task_engineer.eng_prompt(ex)
-        self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=self.image_collate)
+        self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, collate_fn=self.image_collate)
         
     def _resize_image(self, img, max_side=800):
         w, h = img.size
@@ -113,7 +113,7 @@ class VQADataset(Dataset):
                     inner.rope_deltas = None
             except Exception:
                 pass
-            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100, use_cache=False)
+            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=10, use_cache=True) # use_cache = False
             for idx, a in zip(batch["idxs"], outs):
                 self.task_engineer.eng_preds(self.data[idx], a, model)
     
