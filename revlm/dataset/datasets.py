@@ -57,10 +57,12 @@ class VQADataset(Dataset):
                         with_rationale=False,
                         rationale_in_prompt=True,
                         shuffle_choices=False,
-                        unpaired=True):
+                        unpaired=True,
+                        batch_size=None):
             
         task = self.config.experiment.task
-        batch_size = self.config.batch_size
+        if batch_size is None:
+            batch_size = self.config.batch_size
         seed = self.config.seed
 
         self.task_engineer = get_taskengineer(task, 
