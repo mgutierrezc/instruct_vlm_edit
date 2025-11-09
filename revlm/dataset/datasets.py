@@ -31,7 +31,7 @@ class VQADataset(Dataset):
         return df
     
     def df2data(self, df: pd.DataFrame) -> List[Dict]:
-        cols = ["image_path", "question", "answer", "rationale", "choices", "idx_choices"]
+        cols = ["uid", "image_path", "question", "answer", "rationale", "choices", "idx_choices"]
         missing = set(cols) - set(df.columns)
         if missing:
             raise ValueError(f"Parquet missing required columns: {missing}")
@@ -42,6 +42,7 @@ class VQADataset(Dataset):
         examples: List[Dict] = []
         for r in records:
             ex: Dict[str, object] = {
+                "uid": r["uid"],
                 "image": r["image_path"],
                 "question": r["question"],
                 "answer": r["answer"],
