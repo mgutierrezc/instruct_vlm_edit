@@ -1,6 +1,9 @@
 import os
 import yaml
 from .utils import *
+import random
+import numpy as np
+import torch
 
 def configure_args(args, config_path=None):
     """Load config.yaml, apply simple CLI overrides, return NestedConfig.
@@ -109,6 +112,16 @@ def configure_args(args, config_path=None):
     cfg['device'] = args.device if getattr(args, "device", None) else cfg.get("device", "cuda")
     cfg['ckpt_dir'] = args.ckpt_dir if getattr(args, "ckpt_dir", None) else cfg.get("ckpt_dir", None)
     cfg['dropout'] = args.dropout if getattr(args, "dropout", None) else cfg.get("dropout", None)
+
+    # ---- determinism & seeding (effective for subsequent ops) ----
+    seed = cfg['seed']
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     nested = {
         # global settings

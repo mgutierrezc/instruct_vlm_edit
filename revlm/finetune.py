@@ -85,7 +85,7 @@ def finetune(config):
     print(f"Train samples: {len(train_dataset)}, Test samples: {len(test_dataset)}", flush=True)
     
     # Load editor
-    editor = get_editor(config, model, device)
+    editor = get_editor(config, model)
     editor.generate = model.model.generate if hasattr(model, 'model') else model.generate
     
     # Finetuning loop

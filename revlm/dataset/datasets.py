@@ -106,7 +106,13 @@ class VQADataset(Dataset):
 
     def task_generate(self, model):
         for batch in self.loader:
-            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100)
+            try: # Reset cached rope offsets for Qwen3-VL style models to avoid mask/id length mismatch
+                inner = getattr(getattr(model, "model", None), "model", None)
+                if inner is not None and hasattr(inner, "rope_deltas"):
+                    inner.rope_deltas = None
+            except Exception:
+                pass
+            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=100, use_cache=False)
             for idx, a in zip(batch["idxs"], outs):
                 self.task_engineer.eng_preds(self.data[idx], a, model)
     
@@ -122,8 +128,9 @@ class VQADataset(Dataset):
         edit_ds.set_dataloader()
         return edit_ds
 
-    def snap(self) -> None:
-        out_path = os.path.join(self.config.pred_dir, self.config.fname)
+    def snap(self, out_path=None) -> None:
+        if out_path is None:
+            out_path = os.path.join(self.config.pred_dir, self.config.fname)
         with open(out_path, "w") as f:
             json.dump(self.data, f, indent=2)
 

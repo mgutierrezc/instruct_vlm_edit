@@ -45,7 +45,7 @@ def main(config):
     LOG.info(f"Loaded {len(edit_loader)} candidate edits.")
     
     # --- Load editor ---
-    editor = get_editor(config, model, device)
+    editor = get_editor(config, model)
     editor.generate = model.model.generate if hasattr(model, 'model') else model.generate
     
     # --- Begin editing ---

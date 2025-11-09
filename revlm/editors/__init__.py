@@ -8,7 +8,7 @@ from .defer import Defer
 from .memory import MemoryNetwork
 
 
-def get_editor(config, model, device):
+def get_editor(config, model):
     """
     Factory function to get editor based on config.
     
@@ -20,6 +20,7 @@ def get_editor(config, model, device):
     Returns:
         Editor instance
     """
+    device = config.device
     editor_name = getattr(config.editor, "_name", config.editor if hasattr(config, "editor") else None)
     
     if editor_name == "ft":
