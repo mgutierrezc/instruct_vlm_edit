@@ -86,16 +86,23 @@ def configure_args(args, config_path=None):
     model_tag = (model.get("name", "").split("/")[-1] or "model").replace(" ", "_")
     dataset_tag = (experiment.get("dataset_name", "dataset") or "dataset").replace(" ", "_")
     task_tag = (experiment.get("task", "task") or "task").replace(" ", "_")
+    # Normalize CLI-provided dirs: treat None / "" / "None" as unset
+    def _normalize_cli_dir(val):
+        if val is None:
+            return None
+        if isinstance(val, str) and val.strip().lower() in ("", "none", "null"):
+            return None
+        return val
     # task-based evaluation (te) metrics saving path
-    task_dir = getattr(args, "task_dir", os.path.join("results", "te", editor_tag, model_tag, dataset_tag))
+    task_dir = _normalize_cli_dir(getattr(args, "task_dir", None)) or os.path.join("results", "te", editor_tag, model_tag, dataset_tag)
     os.makedirs(task_dir, exist_ok=True)
     print(f"Task evaluation metrics will be saved to {task_dir}")
     # edit-based evaluation (ee) metrics saving dir
-    edit_dir = getattr(args, "edit_dir", os.path.join("results", "ee", editor_tag, model_tag, dataset_tag))
+    edit_dir = _normalize_cli_dir(getattr(args, "edit_dir", None)) or os.path.join("results", "ee", editor_tag, model_tag, dataset_tag)
     os.makedirs(edit_dir, exist_ok=True)
     print(f"Edit evaluation metrics will be saved to {edit_dir}")
     # prediction saving dir
-    pred_dir = getattr(args, "pred_dir", os.path.join("results", "pred", model_tag, dataset_tag))
+    pred_dir =  _normalize_cli_dir(getattr(args, "pred_dir", None)) or os.path.join("results", "pred", model_tag, dataset_tag)
     os.makedirs(pred_dir, exist_ok=True)
     print(f"Predictions will be saved to {pred_dir}")
     # unified filename to save
