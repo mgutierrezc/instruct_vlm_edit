@@ -73,7 +73,7 @@ class VQADataset(Dataset):
             ex['idx'] = i
             self.task_engineer.eng_golds(ex)
             self.task_engineer.eng_prompt(ex)
-        self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True, collate_fn=self.image_collate)
+        self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=self.image_collate)
         
     def _resize_image(self, img, max_side=800):
         w, h = img.size
@@ -107,10 +107,16 @@ class VQADataset(Dataset):
 
     def task_generate(self, model):
         for batch in self.loader:
-            try: # Reset cached rope offsets for Qwen3-VL style models to avoid mask/id length mismatch
-                inner = getattr(getattr(model, "model", None), "model", None)
-                if inner is not None and hasattr(inner, "rope_deltas"):
-                    inner.rope_deltas = None
+            try:
+                core = getattr(getattr(model, "model", model), "model", getattr(model, "model", model))
+                if hasattr(core, "gradient_checkpointing_disable"): # Disable gradient checkpointing if available
+                    core.gradient_checkpointing_disable()
+                cfg = getattr(core, "config", None) # Re-enable KV cache for faster eval
+                if cfg is not None:
+                    cfg.use_cache = True
+                rope_owner = core if hasattr(core, "rope_deltas") else getattr(core, "model", None) # Qwen3-VL: reset rope deltas (owner can be core or core.model)
+                if rope_owner is not None and hasattr(rope_owner, "rope_deltas"):
+                    rope_owner.rope_deltas = None
             except Exception:
                 pass
             outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=10, use_cache=True) # use_cache = False
