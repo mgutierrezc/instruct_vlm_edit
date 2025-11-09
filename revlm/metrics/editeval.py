@@ -106,7 +106,7 @@ def text_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_texts:
     related_texts: {"image_path": ["unrelated_question1", "unrelated_question2", ...]} aligned to edit_ds.data indices.
     """
 
-    df = edit_ds._load_df()
+    df = edit_ds.load_df()
     unrelated_df = pd.DataFrame(
         (
             (image_path, unrelated_question)
@@ -136,7 +136,7 @@ def image_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_image
 
     unrelated_images: {"question": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
     """
-    df = edit_ds._load_df()
+    df = edit_ds.load_df()
     unrelated_df = pd.DataFrame(
         (
             (question, image_path)
@@ -166,7 +166,7 @@ def text_generality(model_new: Any, edit_ds: Any, related_texts: Dict[str, List[
 
     related_texts: {"image_path": ["question_variant1", "question_variant2", ...]} aligned to edit_ds.data indices.
     """
-    df = edit_ds._load_df()
+    df = edit_ds.load_df()
     related_df = pd.DataFrame(
         (
             (image_path, question_variant)
@@ -192,7 +192,7 @@ def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, Lis
 
     related_texts: {"question": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
     """
-    df = edit_ds._load_df()
+    df = edit_ds.load_df()
     related_df = pd.DataFrame(
         (
             (question, image_path_variant)
