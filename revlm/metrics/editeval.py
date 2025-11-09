@@ -1,6 +1,6 @@
 from typing import Any, Dict, List, Tuple, Mapping, Sequence
-
 import pandas as pd
+import copy
 
 # ! Customize your task-specific generation function here
 # inputs: 
@@ -164,52 +164,50 @@ def image_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_image
 def text_generality(model_new: Any, edit_ds: Any, related_texts: Dict[str, List[str]]) -> float:
     """Accuracy on paraphrased/related texts using the same images.
 
-    related_texts: {"image_path": ["question_variant1", "question_variant2", ...]} aligned to edit_ds.data indices.
+    related_texts: {"uid": ["question_variant1", "question_variant2", ...]} aligned to edit_ds.data indices.
     """
-    df = edit_ds.load_df()
+    df = edit_ds.load_df() # df is the full dataset from HF
+    ds = copy.deepcopy(edit_ds) # do not change the original dataset
     related_df = pd.DataFrame(
         (
-            (image_path, question_variant)
-            for image_path, variants in related_texts.items()
+            (uid, question_variant)
+            for uid, variants in related_texts.items()
             for question_variant in variants
         ),
-        columns=["image_path", "question"],
+        columns=["uid", "question"],
     )
-    # merge related_df with df (without the "question" column) by image_path, keep all rows from related_df
     related_df = related_df.merge(
         df.drop(columns=["question"]),
-        on="image_path",
+        on="uid",
         how="left",
     )
-    related_df = pd.concat([related_df, df], axis=0, ignore_index=True)
-    edit_ds.data = edit_ds.df2data(related_df) # convert to structured dataset of my project
-    edit_ds.set_dataloader()
-    return reliability(model_new, edit_ds)
-
+    ds.data = ds.df2data(related_df)
+    ds.set_dataloader(shuffle_choices=False)
+    return reliability(model_new, ds)
 
 def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, List[str]]) -> float:
     """Accuracy on paraphrased/related texts using the same images.
 
-    related_texts: {"question": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
+    related_images: {"uid": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
     """
     df = edit_ds.load_df()
+    ds = copy.deepcopy(edit_ds) # do not change the original dataset
     related_df = pd.DataFrame(
         (
-            (question, image_path_variant)
-            for question, image_paths in related_images.items()
+            (uid, image_path_variant)
+            for uid, image_paths in related_images.items()
             for image_path_variant in image_paths
         ),
-        columns=["question", "image_path"],
+        columns=["uid", "image_path"],
     )
     # merge related_df with df (without the "question" column) by image_path, keep all rows from related_df
     related_df = related_df.merge(
         df.drop(columns=["image_path"]),
-        on="question",
+        on="uid",
         how="left",
     )
-    related_df = pd.concat([related_df, df], axis=0, ignore_index=True)
-    edit_ds.data = edit_ds.df2data(related_df) # convert to structured dataset of my project
-    edit_ds.set_dataloader()
-    return reliability(model_new, edit_ds)
+    ds.data = ds.df2data(related_df) 
+    ds.set_dataloader(shuffle_choices=False)
+    return reliability(model_new, ds)
 
 

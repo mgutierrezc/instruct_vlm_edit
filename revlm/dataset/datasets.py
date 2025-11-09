@@ -56,7 +56,7 @@ class VQADataset(Dataset):
     def set_dataloader(self,
                         with_rationale=False,
                         rationale_in_prompt=True,
-                        shuffle_choices=True,
+                        shuffle_choices=False,
                         unpaired=True):
             
         task = self.config.experiment.task
@@ -126,7 +126,7 @@ class VQADataset(Dataset):
                 ex['edit'] = False
         edit_ds = self
         edit_ds.data = [ex for ex in edit_ds.data if ex['edit']]
-        edit_ds.set_dataloader()
+        edit_ds.set_dataloader(shuffle_choices=False)
         return edit_ds
 
     def snap(self, out_path=None) -> None:
