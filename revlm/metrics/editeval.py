@@ -101,7 +101,7 @@ def locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_ds=None, sa
         if sample_size is not None:
             pool_df = pool_df.sample(n=min(sample_size, len(pool_df)), random_state=getattr(edit_ds.config, "seed", 333))
         unrelated_ds.data = unrelated_ds.df2data(pool_df)
-        unrelated_ds.set_dataloader(shuffle_choices=False, batch_size=100)
+        unrelated_ds.set_dataloader(shuffle_choices=False)
 
     # evaluate locality
     pairs_old = generation(model_old, unrelated_ds)
