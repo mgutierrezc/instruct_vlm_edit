@@ -180,10 +180,10 @@ def update_config(config, *, config_path=None, **overrides):
     # defaults from the current NestedConfig
     payload = {
         "editor": overrides.get("editor", getattr(config.editor, "_name", None)),
-        "model_name": overrides.get("model_name", config.model.get("name")),
-        "dataset_name": overrides.get("dataset_name", config.experiment.get("dataset_name")),
-        "task": overrides.get("task", config.experiment.get("task")),
-        "split": overrides.get("split", config.experiment.get("split")),
+        "model_name": overrides.get("model_name", getattr(config.model, "name", None)),
+        "dataset_name": overrides.get("dataset_name", getattr(config.experiment, "dataset_name", None)),
+        "task": overrides.get("task", getattr(config.experiment, "task", None)),
+        "split": overrides.get("split", getattr(config.experiment, "split", None)),
         "batch_size": overrides.get("batch_size", config.batch_size),
         "n_iter": overrides.get("n_iter", config.n_iter),
         "max_n_edits": overrides.get("max_n_edits", config.max_n_edits),
@@ -193,7 +193,7 @@ def update_config(config, *, config_path=None, **overrides):
         "task_dir": overrides.get("task_dir", config.task_dir),
         "edit_dir": overrides.get("edit_dir", config.edit_dir),
         "pred_dir": overrides.get("pred_dir", config.pred_dir),
-        "suffix": overrides.get("suffix", config.experiment.get("suffix", "")),
+        "suffix": overrides.get("suffix", getattr(config.experiment, "suffix", "")),
         "subsample": overrides.get("subsample", getattr(config, "subsample", 0)),
         "overwrite": overrides.get("overwrite", getattr(config, "overwrite", False)),
         "rationale": overrides.get("rationale", getattr(config, "rationale", False)),
