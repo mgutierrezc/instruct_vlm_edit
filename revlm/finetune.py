@@ -21,13 +21,13 @@ def finetune(config):
     """Main finetuning function"""
     np.random.seed(config.seed)
     torch.manual_seed(config.seed)
-    # split should be default to train
+    # split should be default to train, check if all files exist
     print(f"model={config.model.name}, dataset={config.experiment.dataset_name}, batch_size={config.batch_size}, n_iter={config.n_iter}, "
           f"editor={config.editor._name}, rationale={getattr(config, 'rationale', False)}, fname={config.fname}", flush=True)
-    
-    out_path = os.path.join(config.task_dir, config.fname)
-    if os.path.exists(out_path) and not config.overwrite:
-        print(f"Results already exist at {out_path}. Use --overwrite to overwrite.")
+    train_path = os.path.join(config.task_dir, config.fname)
+    test_path = os.path.join(config.task_dir, str(config.fname).replace("_train", "_test"))
+    if all(os.path.exists(p) for p in [train_path, test_path]) and not config.overwrite:
+        print(f"Results already exist. Use --overwrite to overwrite.")
         return
     
     device = torch.device(config.device if isinstance(config.device, str) else config.device)
