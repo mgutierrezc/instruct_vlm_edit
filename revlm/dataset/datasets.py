@@ -105,21 +105,23 @@ class VQADataset(Dataset):
     #     for idx, a in zip(batch["idxs"], outs):
     #         self.task_engineer.eng_preds(self.data[idx], a, model)
 
-    def task_generate(self, model):
+    def task_generate(self, model, use_cache=False):
         for batch in self.loader:
             try:
                 core = getattr(getattr(model, "model", model), "model", getattr(model, "model", model))
-                if hasattr(core, "gradient_checkpointing_disable"): # Disable gradient checkpointing if available
-                    core.gradient_checkpointing_disable()
-                cfg = getattr(core, "config", None) # Re-enable KV cache for faster eval
+                # Re-enable KV cache for faster eval
+                cfg = getattr(core, "config", None)
                 if cfg is not None:
-                    cfg.use_cache = True
-                rope_owner = core if hasattr(core, "rope_deltas") else getattr(core, "model", None) # Qwen3-VL: reset rope deltas (owner can be core or core.model)
+                    cfg.use_cache = use_cache
+                # Qwen3-VL: reset rope deltas Disable gradient checkpointing if available, (owner can be core or core.model)
+                if hasattr(core, "gradient_checkpointing_disable"): 
+                    core.gradient_checkpointing_disable()
+                rope_owner = core if hasattr(core, "rope_deltas") else getattr(core, "model", None) 
                 if rope_owner is not None and hasattr(rope_owner, "rope_deltas"):
                     rope_owner.rope_deltas = None
             except Exception:
                 pass
-            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=10, use_cache=True) # use_cache = False
+            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=10, use_cache=use_cache) # use_cache = False
             for idx, a in zip(batch["idxs"], outs):
                 self.task_engineer.eng_preds(self.data[idx], a, model)
     

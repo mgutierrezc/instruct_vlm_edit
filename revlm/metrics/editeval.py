@@ -9,7 +9,7 @@ import copy
 # output: 
 # - list of (target, prediction) pairs. 
 def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
-	edit_ds.task_generate(model)
+	edit_ds.task_generate(model, use_cache=True)
 	edit_set: List[Dict[str, Any]] = []
 	pred_set: List[Dict[str, Any]] = []
 	for ex in edit_ds.data:

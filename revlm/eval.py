@@ -34,7 +34,7 @@ def run_eval(config):
         shuffle_choices=True,
         unpaired=True
     )
-    ds.task_generate(vlm)
+    ds.task_generate(vlm, use_cache=True)
 
     # ---- save predictions ----
     ds.snap()
@@ -59,7 +59,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'llava', 'blip')")
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task to evaluate")
-    parser.add_argument("--batch_size", type=int, default=50, help="Batch size")
+    parser.add_argument("--batch_size", type=int, default=100, help="Batch size")
     parser.add_argument("--split", type=str, default="test", choices=["train", "test"], help="Split to evaluate on")
     parser.add_argument("--task_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
     
