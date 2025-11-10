@@ -78,7 +78,7 @@ def finetune(config):
     t0 = time.time()
     test_dataset.set_dataloader(
         with_rationale=False,
-        shuffle_choices=True,
+        shuffle_choices=False,
     )
     print(f"Test dataloader setup in {time.time() - t0:.2f}s", flush=True)
     
