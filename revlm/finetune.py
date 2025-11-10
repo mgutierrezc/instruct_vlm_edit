@@ -11,7 +11,7 @@ from .models import *
 from .dataset import *
 from .editors import *
 from .editors.utils import explore_layers, validate_and_correct_param_name
-from .config_utils import configure_args
+from .config_utils import configure_args, update_config
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s', level=logging.INFO)
 # LOG = logging.getLogger(__name__)
@@ -52,10 +52,10 @@ def finetune(config):
     # Load datasets
     print("Loading datasets...", flush=True)
     t0 = time.time()
-    config.experiment.split = "train"
-    train_dataset = VQADataset(config)
-    config.experiment.split = "test"
-    test_dataset = VQADataset(config)
+    train_config = update_config(config, split="train")
+    train_dataset = VQADataset(train_config)
+    test_config = update_config(config, split="test")
+    test_dataset = VQADataset(test_config)
     print(f"Datasets loaded in {time.time() - t0:.2f}s (train: {len(train_dataset)}, test: {len(test_dataset)})", flush=True)
     
     subsample = getattr(config, 'subsample', 0)

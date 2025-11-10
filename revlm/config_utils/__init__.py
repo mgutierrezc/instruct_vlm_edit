@@ -152,23 +152,54 @@ def configure_args(args, config_path=None):
     return NestedConfig(**to_ns(nested).__dict__)
 
 
-def build_args_from_yaml(config_path: str) -> NestedConfig:
-    """Return a NestedConfig from a YAML file (for notebooks)."""
-    cfg = load_yaml(config_path)
-    # Coerce editor string to nested
-    if isinstance(cfg.get("editor"), str):
-        cfg["editor"] = {"_name": cfg["editor"]}
-    cfg.setdefault("model", {})
-    cfg.setdefault("experiment", {})
-    nested = {
-        "batch_size": cfg.get("batch_size", 1),
-        "n_iter": cfg.get("n_iter", 100),
-        "max_n_edits": cfg.get("max_n_edits", 5000),
-        "seed": cfg.get("seed", 42),
-        "device": cfg.get("device", "cuda"),
-        "ckpt_dir": cfg.get("ckpt_dir", None),
-        "model": cfg.get("model", {}),
-        "editor": cfg.get("editor", {}),
-        "experiment": cfg.get("experiment", {}),
+# def build_args_from_yaml(config_path: str) -> NestedConfig:
+#     """Return a NestedConfig from a YAML file (for notebooks)."""
+#     cfg = load_yaml(config_path)
+#     # Coerce editor string to nested
+#     if isinstance(cfg.get("editor"), str):
+#         cfg["editor"] = {"_name": cfg["editor"]}
+#     cfg.setdefault("model", {})
+#     cfg.setdefault("experiment", {})
+#     nested = {
+#         "batch_size": cfg.get("batch_size", 1),
+#         "n_iter": cfg.get("n_iter", 100),
+#         "max_n_edits": cfg.get("max_n_edits", 5000),
+#         "seed": cfg.get("seed", 42),
+#         "device": cfg.get("device", "cuda"),
+#         "ckpt_dir": cfg.get("ckpt_dir", None),
+#         "model": cfg.get("model", {}),
+#         "editor": cfg.get("editor", {}),
+#         "experiment": cfg.get("experiment", {}),
+#     }
+#     return NestedConfig(**to_ns(nested).__dict__)
+
+
+from types import SimpleNamespace
+
+def update_config(config, *, config_path=None, **overrides):
+    # defaults from the current NestedConfig
+    payload = {
+        "editor": overrides.get("editor", getattr(config.editor, "_name", None)),
+        "model_name": overrides.get("model_name", config.model.get("name")),
+        "dataset_name": overrides.get("dataset_name", config.experiment.get("dataset_name")),
+        "task": overrides.get("task", config.experiment.get("task")),
+        "split": overrides.get("split", config.experiment.get("split")),
+        "batch_size": overrides.get("batch_size", config.batch_size),
+        "n_iter": overrides.get("n_iter", config.n_iter),
+        "max_n_edits": overrides.get("max_n_edits", config.max_n_edits),
+        "seed": overrides.get("seed", config.seed),
+        "device": overrides.get("device", config.device),
+        "ckpt_dir": overrides.get("ckpt_dir", config.ckpt_dir),
+        "task_dir": overrides.get("task_dir", config.task_dir),
+        "edit_dir": overrides.get("edit_dir", config.edit_dir),
+        "pred_dir": overrides.get("pred_dir", config.pred_dir),
+        "suffix": overrides.get("suffix", config.experiment.get("suffix", "")),
+        "subsample": overrides.get("subsample", getattr(config, "subsample", 0)),
+        "overwrite": overrides.get("overwrite", getattr(config, "overwrite", False)),
+        "rationale": overrides.get("rationale", getattr(config, "rationale", False)),
     }
-    return NestedConfig(**to_ns(nested).__dict__)
+    ns = SimpleNamespace(**payload)
+    return configure_args(ns, config_path=config_path or getattr(config, "config_path", None))
+
+# usage example:
+# config = update_config(config, batch_size=16, n_iter=3)     # returns a fresh NestedConfig
