@@ -151,20 +151,23 @@ def nll_to_probs(label_losses: Dict[str, Dict[str, float]], use_avg: bool = Fals
     return {lbl: v / Z for lbl, v in exps.items()}
 
 
-def load_inner_params_from_ckpt(model_wrapper, config, layer_idx=0):
+def load_inner_params_from_ckpt(model, ckpt_dir, layer_idx=0):
     """Load finetuned inner parameter weights into a model wrapper."""
     from revlm.editors.utils import validate_and_correct_param_name
 
-    layer_dir = os.path.join(config.ckpt_dir, config.model.name, f"layer_{layer_idx}")
+    ckpt_base = ckpt_dir or ckpt_dir
+    model_name = model.config.model.name
+    layer_dir = os.path.join(ckpt_base, model_name, f"layer_{layer_idx}")
     layer_path = os.path.join(layer_dir, "layer.pt")
     layer_name_path = os.path.join(layer_dir, "layer_name.pt")
 
     inner_param_name = torch.load(layer_name_path)
-    resolved_name = validate_and_correct_param_name(model_wrapper.model, inner_param_name)
+    resolved_name = validate_and_correct_param_name(model.model, inner_param_name)
 
     param_tensor = torch.load(layer_path)
-    target_param = dict(model_wrapper.model.named_parameters())[resolved_name]
+    target_param = dict(model.model.named_parameters())[resolved_name]
     target_param.data.copy_(param_tensor.to(target_param.data.device))
+    print(f"Loaded finetuned layer '{inner_param_name}' from {layer_dir}")
     return resolved_name
 
 
@@ -174,8 +177,9 @@ def save_inner_params_to_ckpt(model, config, layer_idx=0):
     ckpt_dir = config.ckpt_dir
     inner_param = config.model.inner_params[layer_idx]
     param_tensor = dict(model.model.named_parameters())[inner_param]
+    model_name = model.config.model.name
 
-    save_root = os.path.join(ckpt_dir, config.model.name)
+    save_root = os.path.join(ckpt_dir, model_name)
     layer_dir = os.path.join(save_root, f"layer_{layer_idx}")
     layer_path = os.path.join(layer_dir, "layer.pt")
     layer_name_path = os.path.join(layer_dir, "layer_name.pt")
@@ -183,6 +187,7 @@ def save_inner_params_to_ckpt(model, config, layer_idx=0):
     os.makedirs(layer_dir, exist_ok=True)
     torch.save(param_tensor.detach().cpu().clone(), layer_path)
     torch.save(inner_param, layer_name_path)
+    print(f"Saved finetuned layer '{inner_param}' to {layer_dir}")
 
     
 
