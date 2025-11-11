@@ -21,6 +21,8 @@ class VQADataset(Dataset):
             path_in_repo = "FVQA"
         elif self.config.experiment.dataset_name == "aokvqa":
             path_in_repo = "AOKVQA"
+        elif self.config.experiment.dataset_name == "simulation":
+            path_in_repo = "simulation"
         else:
             raise ValueError(f"Unknown dataset: {self.config.experiment.dataset_name}")
         split_paths = data_download_parquet_splits(

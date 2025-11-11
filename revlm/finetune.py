@@ -150,17 +150,27 @@ def finetune(config):
     
     # Save checkpoint if requested
     if config.ckpt_dir:
-        os.makedirs(config.ckpt_dir, exist_ok=True)
-        model_tag = config.model.name.split("/")[-1].replace(" ", "_")
-        dataset_tag = config.experiment.dataset_name
-        editor_tag = config.editor._name
-        rationale_tag = "rationale" if config.rationale else "norationale"
-        ckpt_path = os.path.join(
-            config.ckpt_dir, 
-            f"{model_tag}_{dataset_tag}_{editor_tag}_{rationale_tag}.pt"
-        )
-        torch.save(model.model.state_dict(), ckpt_path)
-        print(f"Saved checkpoint: {ckpt_path}", flush=True)
+        save_root = os.path.join(config.ckpt_dir, config.model.name)
+        os.makedirs(save_root, exist_ok=True)
+        inner_param = None
+        if hasattr(config.model, "inner_params") and config.model.inner_params:
+            inner_param = config.model.inner_params[0]
+        if not inner_param:
+            print("No inner_params specified; skipping checkpoint save.", flush=True)
+        else:
+            named_params = dict(model.model.named_parameters())
+            resolved_name = validate_and_correct_param_name(model.model, inner_param)
+            param_tensor = named_params.get(resolved_name)
+            if param_tensor is None:
+                print(f"WARNING: Could not find parameter '{inner_param}' (resolved: '{resolved_name}'); skipping.", flush=True)
+            else:
+                layer_dir = os.path.join(save_root, "layer_0")
+                os.makedirs(layer_dir, exist_ok=True)
+                layer_path = os.path.join(layer_dir, "layer.pt")
+                layer_name_path = os.path.join(layer_dir, "layer_name.pt")
+                torch.save(param_tensor.detach().cpu().clone(), layer_path)
+                torch.save(inner_param, layer_name_path)
+                print(f"Saved inner parameter '{inner_param}' to {layer_dir}", flush=True)
     
     # Explicit cleanup to free GPU memory before script exits
     del model
