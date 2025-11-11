@@ -52,7 +52,7 @@ def finetune(config):
     # Load datasets
     print("Loading datasets...", flush=True)
     t0 = time.time()
-    train_config = update_config(config, split="train")
+    train_config = update_config(config, split=config.experiment.split)
     train_dataset = VQADataset(train_config)
     test_config = update_config(config, split="test")
     test_dataset = VQADataset(test_config)
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     parser.add_argument("--model_name", type=str, default=None, help="Model name: 'qwen3', 'llava', 'blip'")
     parser.add_argument("--inner_params", type=str, nargs='+', default=[], help="Layer to finetune (auto-selected if empty)")
     parser.add_argument("--dataset_name", type=str, required=True, choices=["aokvqa", "fvqa", "simulation"], help="Dataset name")
-    parser.add_argument("--split", type=str, default="train", choices=["train", "test"], help="Split to finetune on")
+    parser.add_argument("--split", type=str, default="train", choices=["train", "test", "all"], help="Split to finetune on")
     parser.add_argument("--task", type=str, default=None, choices=["mc", "mci", "qa"], help="Task type (uses config.yaml if not provided)")
     parser.add_argument("--rationale", action="store_true", help="Include rationale in prompts (uses config.yaml if not provided)")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size")

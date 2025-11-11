@@ -5,4 +5,7 @@
 
 set -euo pipefail
 
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mc --batch_size "$BATCH_SIZE" --ckpt_dir "ckpts_new/ft_sim" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" \
+       --split "all" --n_iter 2 --task mc \
+       --batch_size "$BATCH_SIZE" --subsample 100 --ckpt_dir "ckpts_new/ft_sim" \
+       --overwrite || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
