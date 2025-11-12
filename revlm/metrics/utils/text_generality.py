@@ -13,7 +13,7 @@ from revlm import VQADataset, configure_args
 
 
 class TextGeneralizer:
-    def __init__(self, dataset_name, n_batches=10, openai_key=None):
+    def __init__(self, dataset_name, openai_key=None):
         self.dataset_name = dataset_name
         self.batch_dir = Path(f"./data/related_text/{dataset_name}/requests/")
         self.batch_dir.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,13 @@ class TextGeneralizer:
         self.output_dir = Path(f"./data/related_text/{dataset_name}/outputs/")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.client = OpenAI(api_key=openai_key)
-        self.n_batches = n_batches
+        if self.dataset_name == "fvqa":
+            self.n_batches = 50
+        elif self.dataset_name == "aokvqa":
+            self.n_batches = 100
+        else:
+            raise ValueError(f"Unknown dataset: {self.dataset_name}")
+        print(f"dataset: {self.dataset_name} has {self.n_batches} batches")
 
 
     def format_prompt(self, question, num_versions=10):
@@ -109,27 +115,32 @@ class TextGeneralizer:
             self._run_request_batch(b)
 
     def _run_request_batch(self, b):
-        batch_input_file = self.client.files.create(
-            file=open(f"{str(self.batch_dir)}/batch_{b}.jsonl", "rb"),
-            purpose="batch"
-        )
-        meta = self.client.batches.create(
-            input_file_id=batch_input_file.id,
-            endpoint="/v1/chat/completions",
-            completion_window="24h",
-            metadata={
-                "description": "prepare related questions: 10 rephrased questions per question.",
-                "dataset": self.dataset_name,
-                "batch_id": str(b),
-            }
-        )
-        self._save_meta(b, meta.id, meta.created_at)
+        if not (self.meta_dir / f"meta_{b}.json").exists():
+            batch_input_file = self.client.files.create(
+                file=open(f"{str(self.batch_dir)}/batch_{b}.jsonl", "rb"),
+                purpose="batch"
+            )
+            meta = self.client.batches.create(
+                input_file_id=batch_input_file.id,
+                endpoint="/v1/chat/completions",
+                completion_window="24h",
+                metadata={
+                    "description": "prepare related questions: 10 rephrased questions per question.",
+                    "dataset": self.dataset_name,
+                    "batch_id": str(b),
+                }
+            )
+            self._save_meta(b, meta.id, meta.created_at)
 
     
     def get_related_texts(self):
         related_texts = {}
         for b in range(self.n_batches):
-            related_texts.update(self.get_related_texts_batch(b))
+            try:
+                related_texts.update(self.get_related_texts_batch(b))
+            except Exception as e:
+                print(f"Error getting batch {b}: {e}")
+                continue
         return related_texts
    
     def get_related_texts_batch(self, b):
