@@ -223,3 +223,78 @@ def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, Lis
     return reliability(model_new, ds)
 
 
+def rationale_generality(model_new: Any, edit_ds: Any, related_rationale: Dict[str, List[str]]) -> float:
+    """Accuracy on paraphrased/related rationale using the same images and questions.
+
+    related_rationale_pairs: {"uid": ["uid1", "uid2", ...]} aligned to edit_ds.data indices.
+    uid1 and uid2 ... share the same rationale with uid
+    """
+
+    df = edit_ds.load_df()
+    ds = copy.deepcopy(edit_ds)
+    related_uids = {
+        uid for uid_list in related_rationale.values() for uid in uid_list
+    }
+
+    if not related_uids:
+        return 0.0
+
+    related_df = df.loc[df["uid"].isin(related_uids)].reset_index(drop=True)
+    if related_df.empty:
+        return 0.0
+
+    ds.data = ds.df2data(related_df)
+    ds.set_dataloader(shuffle_choices=False)
+    return reliability(model_new, ds)
+
+
+def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
+	# Leave-one-out style: for each example, edit a fresh copy of model_old on that
+	# example using the provided editor, then evaluate on the remaining examples.
+	n = len(edit_ds.data)
+	if n == 0:
+		return 0.0
+	# Keep code simple: only support single-example edits
+	correct_total = 0
+	num_total = 0
+
+	for i in range(n):
+		# fresh model copy for this edit
+		new_model = copy.deepcopy(model_old)
+		# bind editor to this model copy
+		if hasattr(editor, "model"):
+			editor.model = new_model.model if hasattr(new_model, "model") else new_model
+		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
+		if hasattr(new_model, "model"):
+			new_model.model.train()
+
+		# build a one-sample training loader
+		train_ds = copy.deepcopy(edit_ds)
+		train_ds.data = [edit_ds.data[i]]
+		train_ds.set_dataloader(
+			with_rationale=getattr(edit_ds.config, "rationale", False),
+			rationale_in_prompt=False,
+			shuffle_choices=True,
+		)
+		batch = next(iter(train_ds.loader))
+		tokens = new_model.prepare_training_batch(batch)
+		editor.edit(edit_ds.config, tokens, batch_history=None)
+		del tokens
+
+		# evaluate on remaining examples
+		remain_examples = [edit_ds.data[j] for j in range(n) if j != i]
+		if not remain_examples:
+			continue
+		ds_eval = copy.deepcopy(edit_ds)
+		ds_eval.data = remain_examples
+		ds_eval.set_dataloader(shuffle_choices=False)
+
+		if hasattr(new_model, "model"):
+			new_model.model.eval()
+		pairs = generation(new_model, ds_eval)
+		correct_total += sum(1 for t, p in pairs if p == t)
+		num_total += len(pairs)
+
+	if num_total == 0:
+		return 0.0
+	return correct_total / num_total
