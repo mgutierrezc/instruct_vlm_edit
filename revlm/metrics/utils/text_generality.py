@@ -110,6 +110,17 @@ class TextGeneralizer:
         self.gen_request(df)
         self.split_file(self.n_batches)
     
+    def resubmit_request(self, b_list):
+        for b in b_list:
+            meta_path = self.meta_dir / f"meta_{b}.json"
+            if meta_path.exists():
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                    job_id = meta["job_id"]
+                    self.client.batches.cancel(job_id)
+                meta_path.unlink()
+            self._run_request_batch(b)
+    
     def run_request(self):
         for b in range(self.n_batches):
             self._run_request_batch(b)
