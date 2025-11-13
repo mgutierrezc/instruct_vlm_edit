@@ -28,7 +28,7 @@ class TextGeneralizer:
             self.n_batches = 100
         else:
             raise ValueError(f"Unknown dataset: {self.dataset_name}")
-        print(f"dataset: {self.dataset_name} has {self.n_batches} batches")
+        print(f"process {self.dataset_name} in {self.n_batches} batches")
 
 
     def format_prompt(self, question, num_versions=10):
