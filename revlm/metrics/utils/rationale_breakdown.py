@@ -154,26 +154,36 @@ class RationaleBreaker:
             self._save_meta(b, meta.id, meta.created_at)
 
     
-    def get_related_texts(self):
-        related_texts = {}
+    def get_rationale_breakdown(self):
+        rationale_breakdown = {}
         for b in range(self.n_batches):
             try:
-                related_texts.update(self.get_related_texts_batch(b))
+                rationale_breakdown.update(self._get_rationale_breakdown_batch(b))
             except Exception as e:
                 print(f"Error getting batch {b}: {e}")
                 continue
-        return related_texts
+        return rationale_breakdown
    
-    def get_related_texts_batch(self, b):
+    def _get_rationale_breakdown_batch(self, b):
         records = self._get_response_batch(b)
-        rb_df = pd.DataFrame(columns=["uid", "rationale_breakdown", "objects", "relation"])
+        rb_df = pd.DataFrame(columns=["uid", "rationale_breakdown", "objects", "reason"])
         for rec in records:
             uid = str(rec["uid"])
             answer = rec["content"]
             objects = answer.split("Reason:")[0].strip()
-            relation = answer.split("Reason:")[1].strip()
-            rb_df = rb_df.append({"uid": uid, "rationale_breakdown": answer, "objects": objects, "relation": relation}, ignore_index=True)
+            reason = answer.split("Reason:")[1].strip()
+            rb_df = rb_df.append({"uid": uid, "rationale_breakdown": answer, "objects": objects, "reason": reason}, ignore_index=True)
         return rb_df
+    
+    def get_response(self):
+        response = {}
+        for b in range(self.n_batches):
+            try:
+                response.update(self.get_response_batch(b))
+            except Exception as e:
+                print(f"Error getting batch {b}: {e}")
+                continue
+        return response
     
     def _get_response_batch(self, b):
         save_path = self.output_dir / f"outputs_{b}.jsonl"
