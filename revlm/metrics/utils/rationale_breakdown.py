@@ -36,16 +36,21 @@ class RationaleBreaker:
             f"Given (question: {question}, answer: {answer}, rationale: {rationale}). "
             "Which visual object(s) in the image are mentioned or implied in the rationale to support the answer? "
             "List all relevant objects. "
-            "Then as if you are reasoning it out without knowing the answer beforehand, expand the given rationale to explain how these objects lead to that answer. "
-            "Use natural language and no more than 30 words. Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
-            "Respond in the format:\n[object1, object2, ...]\nReason: <expanded rationale>."
+            "Then as if you are reasoning it out without knowing the answer beforehand, "
+            "rewrite the rationale as 2–3 short sentences explaining how these objects lead to that answer. "
+            "Use simple, declarative sentences separated by periods. "
+            "Sentences should be self-contained. Do not use 'this' or 'it' to refer to earlier sentences. "
+            # "For example, 'Crouching lowers the center of gravity. This position helps maintain balance on the board.' "
+            # "should be changed to 'Crouching lowers the center of gravity. Crouching helps maintain balance on the board.' "
+            "Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
+            "Respond in the format:\n[object1, object2, ...]\nReason: <2–3 short declarative sentences>."
         )# "Then rewrite the rationale to show how these objects lead to the answer, as if you are reasoning it out without knowing the answer beforehand. "
         return user_message
 
     def gen_request(self, df):
         system_message = (
             "You are an assistant that reasons like a human to explain how visual evidence supports an answer. "
-            "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale to explain how these objects support the answer."
+            "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale as 2–3 short declarative sentences."
         )
         # Construct JSON structure
         json_data = []
@@ -155,31 +160,36 @@ class RationaleBreaker:
 
     
     def get_rationale_breakdown(self):
-        rationale_breakdown = {}
+        rationale_breakdown_df = pd.DataFrame(columns=["uid", "rationale_breakdown", "objects", "reason"])
         for b in range(self.n_batches):
-            try:
-                rationale_breakdown.update(self._get_rationale_breakdown_batch(b))
-            except Exception as e:
-                print(f"Error getting batch {b}: {e}")
-                continue
-        return rationale_breakdown
+            rationale_breakdown_df = pd.concat([rationale_breakdown_df, self._get_rationale_breakdown_batch(b)], ignore_index=True)
+        return rationale_breakdown_df
    
     def _get_rationale_breakdown_batch(self, b):
-        records = self._get_response_batch(b)
         rb_df = pd.DataFrame(columns=["uid", "rationale_breakdown", "objects", "reason"])
+        try:
+            records = self._get_response_batch(b)
+        except Exception as e:
+            print(f"Error getting response for batch {b}: {e}")
+            return rb_df
+        
         for rec in records:
-            uid = str(rec["uid"])
-            answer = rec["content"]
-            objects = answer.split("Reason:")[0].strip()
-            reason = answer.split("Reason:")[1].strip()
-            rb_df = rb_df.append({"uid": uid, "rationale_breakdown": answer, "objects": objects, "reason": reason}, ignore_index=True)
+            try:
+                uid = str(rec["uid"])
+                answer = rec["content"]
+                objects = answer.split("Reason:")[0].strip()
+                reason = answer.split("Reason:")[1].strip()
+                rb_df = rb_df.append({"uid": uid, "rationale_breakdown": answer, "objects": objects, "reason": reason}, ignore_index=True)
+            except Exception as e:
+                print(f"Error getting rationale breakdown for batch {b} uid {uid} with answer '{answer}'\n{e}")
+                continue
         return rb_df
     
     def get_response(self):
         response = {}
         for b in range(self.n_batches):
             try:
-                response.update(self.get_response_batch(b))
+                response.update(self._get_response_batch(b))
             except Exception as e:
                 print(f"Error getting batch {b}: {e}")
                 continue
