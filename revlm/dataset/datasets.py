@@ -30,6 +30,19 @@ class VQADataset(Dataset):
             path_in_repo=path_in_repo,
         )
         df = data_load_split_df(split_paths.get(self.config.experiment.split))
+
+        if self.config.experiment.dataset_name == "fvqa":
+            df["image_info_source"] = df["image_path"].str.extract(r'/(COCO|ILSVRC)', expand=False)
+            df["image_info_split"] = df["image_path"].str.extract(r'_(train|val|test)', expand=False)
+            df["image_info_id"] = df["image_path"].str.extract(r'_(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
+            df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
+            
+        if self.config.experiment.dataset_name == "aokvqa":
+            df["image_info_source"] = "COCO"
+            df["image_info_split"] = df["image_path"].str.extract(r'/(train|val)\d+', expand=False)
+            df["image_info_id"] = df["image_path"].str.extract(r'/(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
+            df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
+        
         return df
     
     def df2data(self, df: pd.DataFrame) -> List[Dict]:
