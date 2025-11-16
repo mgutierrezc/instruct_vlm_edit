@@ -27,16 +27,16 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 # Evaluate Qwen3 on train sets
 # Each command runs in a separate Python process which should free memory on exit
 # Added explicit cleanup in eval.py for safety
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mci || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mci --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mc || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task mc --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task qa || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name fvqa --split train --task qa --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name fvqa --split train --task mci || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name fvqa --split train --task mci --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name fvqa --split train --task mc || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name fvqa --split train --task mc --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name fvqa --split train --task qa || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name fvqa --split train --task qa --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
 
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mci || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mci --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mc || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mc --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task qa || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.eval  --model_name qwen3 --dataset_name aokvqa --split train --task qa --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mci || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mci --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mc || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name aokvqa --split train --task mc --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name aokvqa --split train --task qa || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.eval  --model_name qwen3 --dataset_name aokvqa --split train --task qa --rationale || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }

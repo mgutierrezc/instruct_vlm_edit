@@ -5,9 +5,9 @@
 
 set -euo pipefail
 
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mc --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mc --rationale --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mci --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mci --rationale --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task qa --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
-python -m revlm.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task qa --rationale --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mc --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mc --rationale --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mci --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task mci --rationale --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task qa --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }
+python -m revlm.run.finetune --editor ft --model_name "$MODEL_NAME" --dataset_name "$DATA" --task qa --rationale --batch_size "$BATCH_SIZE" || { echo "Command failed, checking GPU memory"; nvidia-smi; exit 1; }

@@ -1,17 +1,23 @@
 import argparse
 import logging
 import os
-import torch
-import numpy as np
+import sys
+import time
 import json
 import random
-import time
+from pathlib import Path
 
-from .models import *
-from .dataset import *
-from .editors import *
-from .editors.utils import explore_layers, validate_and_correct_param_name
-from .config_utils import configure_args, update_config
+import torch
+import numpy as np
+
+# Add project root to path so we can run as a module or script
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
+
+from revlm import *
+from revlm.editors.utils import explore_layers, validate_and_correct_param_name
+from revlm.config_utils import configure_args, update_config
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s [%(filename)s:%(lineno)d] %(message)s', level=logging.INFO)
 # LOG = logging.getLogger(__name__)

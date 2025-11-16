@@ -3,13 +3,17 @@ import copy
 import json
 import os
 import random
-import torch
-from PIL import Image
+import sys
+from pathlib import Path
 
-from .config_utils import *
-from .dataset import *
-from .models import *
-# from .metrics import *
+import torch
+
+# Add project root to path so we can run as a module or script
+PROJECT_ROOT = Path(__file__).parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+os.chdir(PROJECT_ROOT)
+
+from revlm import *
 
 
 def run_eval(config):
