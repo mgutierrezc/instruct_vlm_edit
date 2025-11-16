@@ -12,14 +12,14 @@ from openai import OpenAI
 from revlm import VQADataset, configure_args
 
 
-class RationaleBreaker:
+class CoTBreaker:
     def __init__(self, dataset_name, openai_key=None):
         self.dataset_name = dataset_name
-        self.batch_dir = Path(f"./data/rationale_breakdown/{dataset_name}/requests/")
+        self.batch_dir = Path(f"./data/cot/{dataset_name}/requests/")
         self.batch_dir.mkdir(parents=True, exist_ok=True)
-        self.meta_dir = Path(f"./data/rationale_breakdown/{dataset_name}/meta/")
+        self.meta_dir = Path(f"./data/cot/{dataset_name}/meta/")
         self.meta_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir = Path(f"./data/rationale_breakdown/{dataset_name}/outputs/")
+        self.output_dir = Path(f"./data/cot/{dataset_name}/outputs/")
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.client = OpenAI(api_key=openai_key)
         if self.dataset_name == "fvqa":
@@ -32,22 +32,58 @@ class RationaleBreaker:
 
 
     def format_prompt(self, question, rationale, answer):
+        # user_message = (
+        #     f"Given (question: {question}, answer: {answer}, rationale: {rationale}). "
+        #     "Which visual object(s) in the image are mentioned or implied in the rationale to support the answer? "
+        #     "List all relevant objects. "
+        #     "Then as if you are reasoning it out without knowing the answer beforehand, "
+        #     "rewrite the rationale as 2–3 short sentences explaining how these objects lead to that answer. "
+        #     "Use simple, declarative sentences separated by periods. Do not use 'this' or 'it' to refer to earlier sentences. "
+        #     "Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
+        #     "Respond in the format:\n[object1, object2, ...]\nReason: <2–3 short declarative sentences>."
+        # )
         user_message = (
             f"Given (question: {question}, answer: {answer}, rationale: {rationale}). "
-            "Which visual object(s) in the image are mentioned or implied in the rationale to support the answer? "
-            "List all relevant objects. "
-            "Then as if you are reasoning it out without knowing the answer beforehand, "
-            "rewrite the rationale as 2–3 short sentences explaining how these objects lead to that answer. "
-            "Use simple, declarative sentences separated by periods. Do not use 'this' or 'it' to refer to earlier sentences. "
-            "Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
-            "Respond in the format:\n[object1, object2, ...]\nReason: <2–3 short declarative sentences>."
-        )# "Then rewrite the rationale to show how these objects lead to the answer, as if you are reasoning it out without knowing the answer beforehand. "
+            "Which visual object(s) in the image are mentioned or implied in the rationale to support the answer? List all relevant objects. "
+            "Then as if you are reasoning it out step by step without knowing the answer beforehand, "
+            "rewrite the rationale into 3-5 chain-of-thought sentences that explain how these objects lead to that answer."
+            "\n\n"
+            "Guidelines for the chain of thought:\n"
+            "- Each sentence should be declarative, fact-based, and self-contained.\n"
+            "- Use simple, short sentences separated by periods.\n"
+            "- Do not use 'this' or 'it' to refer to earlier sentences; repeat the key nouns instead.\n"
+            "- Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
+            "\n\n"
+            "Chain-of-thought template:\n"
+            "The image shows [object1, object2, ...]. "
+            "[Fact sentence 1, Fact sentence 2, ...] "
+            "So [conclusion consistent with the answer]."
+            "\n\n"
+            "Chain of thought examples:\n"
+            "Example 1:\n"
+            "The image shows a person standing on a board in the water ."
+            "There are waves around the board. "
+            "A person on a board in the ocean waves is usually surfing. "
+            "So the person is likely surfing."
+            "\n\n"
+            "Example 2:\n"
+            "The image shows a round fruit. "
+            "The peel is bright orange. "
+            "Oranges are round fruits with bright orange peels. "
+            "So the fruit is most likely an orange. "
+            "\n\n"
+            "Respond in the format:\n[object1, object2, ...]\nReason: <chain of thought sentences>."
+        )
         return user_message
 
     def gen_request(self, df):
+        # system_message = (
+        #     "You are an assistant that reasons like a human to explain how visual evidence supports an answer. "
+        #     "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale as 2–3 short declarative sentences."
+        # )
         system_message = (
             "You are an assistant that reasons like a human to explain how visual evidence supports an answer. "
-            "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale as 2–3 short declarative sentences."
+            "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale as step-by-step chain of thought."
         )
         # Construct JSON structure
         json_data = []
@@ -156,31 +192,30 @@ class RationaleBreaker:
             self._save_meta(b, meta.id, meta.created_at)
 
     
-    def get_rationale_breakdown(self):
-        rationale_breakdown_df = pd.DataFrame(columns=["uid", "rationale_breakdown", "objects", "reason"])
+    def get_cot(self):
+        cot_df = pd.DataFrame(columns=["uid", "cot", "objects", "reason"])
         for b in range(self.n_batches):
-            rationale_breakdown_df = pd.concat([rationale_breakdown_df, self._get_rationale_breakdown_batch(b)], ignore_index=True)
-        return rationale_breakdown_df
+            cot_df = pd.concat([cot_df, self._get_cot_batch(b)], ignore_index=True)
+        return cot_df
    
-    def _get_rationale_breakdown_batch(self, b):
-        rb_df = pd.DataFrame(columns=["uid", "rationale_breakdown", "objects", "reason"])
+    def _get_cot_batch(self, b):
+        cot_df = pd.DataFrame(columns=["uid", "cot", "objects", "reason"])
         try:
             records = self._get_response_batch(b)
         except Exception as e:
             print(f"Error getting response for batch {b}: {e}")
-            return rb_df
-        
+            return cot_df
         for rec in records:
             try:
                 uid = str(rec["uid"])
                 answer = rec["content"]
                 objects = answer.split("Reason:")[0].strip()
                 reason = answer.split("Reason:")[1].strip()
-                rb_df = rb_df.append({"uid": uid, "rationale_breakdown": answer, "objects": objects, "reason": reason}, ignore_index=True)
+                cot_df = cot_df.append({"uid": uid, "cot": answer, "objects": objects, "reason": reason}, ignore_index=True)
             except Exception as e:
                 print(f"Error getting rationale breakdown for batch {b} uid {uid} with answer '{answer}'\n{e}")
                 continue
-        return rb_df
+        return cot_df
     
     def get_response(self):
         response = {}

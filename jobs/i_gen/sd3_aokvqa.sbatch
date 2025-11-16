@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=i_gen_sd3_aokvqa
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1  
+#SBATCH --gres=gpu:1  
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=200G
 #SBATCH -t 10:00:00
@@ -26,8 +26,8 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 
 # Generate images with sd3 for aokvqa
-python -m revlm.run.image_generality \
+python -m revlm.run.i_gen \
     --dataset_name aokvqa \
     --model_name sd3 \
-    --num_images 5 \
+    --num_images 2 \
     --device cuda

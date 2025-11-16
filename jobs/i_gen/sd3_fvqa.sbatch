@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=i_gen_sd3_fvqa
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a100:1  
+#SBATCH --gres=gpu:1  
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=200G
 #SBATCH -t 10:00:00
@@ -26,8 +26,8 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 
 # generate images with sd3 for fvqa
-python -m revlm.run.image_generality \
+python -m revlm.run.i_gen \
     --dataset_name fvqa \
     --model_name sd3 \
-    --num_images 5 \
+    --num_images 2 \
     --device cuda
