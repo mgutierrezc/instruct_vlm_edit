@@ -7,20 +7,21 @@ import json
 import math
 import os
 import pandas as pd
-
+from huggingface_hub import snapshot_download
 from openai import OpenAI
-from revlm import VQADataset, configure_args
 
 
-class CoTBreaker:
+class QAGenerator:
     def __init__(self, dataset_name, openai_key=None):
         self.dataset_name = dataset_name
-        self.batch_dir = Path(f"./data/cot/{dataset_name}/requests/")
+        self.batch_dir = Path(f"./data/r_gen/qa/{dataset_name}/requests/")
         self.batch_dir.mkdir(parents=True, exist_ok=True)
-        self.meta_dir = Path(f"./data/cot/{dataset_name}/meta/")
+        self.meta_dir = Path(f"./data/r_gen/qa/{dataset_name}/meta/")
         self.meta_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir = Path(f"./data/cot/{dataset_name}/outputs/")
+        self.output_dir = Path(f"./data/r_gen/qa/{dataset_name}/outputs/")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.all_subsets_dir = Path(f"./data/r_gen/qa/all_subsets/")
+        self.all_subsets_dir.mkdir(parents=True, exist_ok=True)
         self.client = OpenAI(api_key=openai_key)
         if self.dataset_name == "fvqa":
             self.n_batches = 50
@@ -31,72 +32,45 @@ class CoTBreaker:
         print(f"process {self.dataset_name} in {self.n_batches} batches")
 
 
-    def format_prompt(self, question, rationale, answer):
+    def format_prompt(self, facts):
         # user_message = (
-        #     f"Given (question: {question}, answer: {answer}, rationale: {rationale}). "
-        #     "Which visual object(s) in the image are mentioned or implied in the rationale to support the answer? "
-        #     "List all relevant objects. "
-        #     "Then as if you are reasoning it out without knowing the answer beforehand, "
-        #     "rewrite the rationale as 2–3 short sentences explaining how these objects lead to that answer. "
-        #     "Use simple, declarative sentences separated by periods. Do not use 'this' or 'it' to refer to earlier sentences. "
-        #     "Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
-        #     "Respond in the format:\n[object1, object2, ...]\nReason: <2–3 short declarative sentences>."
+        #     f"Given these facts: {facts}\n\n"
+        #     "Generate a question and its correct answer, as well as three wrong answers. "
+        #     "Format: question? correct_answer; wrong_answer1; wrong_answer2; wrong_answer3"
         # )
         user_message = (
-            f"Given (question: {question}, answer: {answer}, rationale: {rationale}). "
-            "Which visual object(s) in the image are mentioned or implied in the rationale to support the answer? List all relevant objects. "
-            "Then as if you are reasoning it out step by step without knowing the answer beforehand, "
-            "rewrite the rationale into 3-5 chain-of-thought sentences that explain how these objects lead to that answer."
-            "\n\n"
-            "Guidelines for the chain of thought:\n"
-            "- Each sentence should be declarative, fact-based, and self-contained.\n"
-            "- Use simple, short sentences separated by periods.\n"
-            "- Do not use 'this' or 'it' to refer to earlier sentences; repeat the key nouns instead.\n"
-            "- Avoid meta phrases like 'support the answer', 'support the conclusion', 'evidence', 'question', or 'answer'."
-            "\n\n"
-            "Chain-of-thought template:\n"
-            "The image shows [object1, object2, ...]. "
-            "[Fact sentence 1, Fact sentence 2, ...] "
-            "So [conclusion consistent with the answer]."
-            "\n\n"
-            "Chain of thought examples:\n"
-            "Example 1:\n"
-            "The image shows a person standing on a board in the water ."
-            "There are waves around the board. "
-            "A person on a board in the ocean waves is usually surfing. "
-            "So the person is likely surfing."
-            "\n\n"
-            "Example 2:\n"
-            "The image shows a round fruit. "
-            "The peel is bright orange. "
-            "Oranges are round fruits with bright orange peels. "
-            "So the fruit is most likely an orange. "
-            "\n\n"
-            "Respond in the format:\n[object1, object2, ...]\nReason: <chain of thought sentences>."
+            f"You are creating a multiple-choice question from the given facts: {facts}\n\n"
+            "Task:\n"
+            "1. Write one question that can be answered using only these facts.\n"
+            "2. Write one correct answer.\n"
+            "3. Write three incorrect but plausible answers.\n\n"
+            "Constraints:\n"
+            "- Use only information that is implied by the facts; do not invent new facts.\n"
+            "- The correct answer must be clearly correct.\n"
+            "- Each wrong answer must be clearly wrong given the facts.\n"
+            "- Answers should be a word or a phrase, not a full sentence.\n"
+            "Respond in the format:\n"
+            "Question: question?\n Answers: correct_answer | wrong_answer1 | wrong_answer2 | wrong_answer3"
         )
         return user_message
 
     def gen_request(self, df):
-        # system_message = (
-        #     "You are an assistant that reasons like a human to explain how visual evidence supports an answer. "
-        #     "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale as 2–3 short declarative sentences."
-        # )
         system_message = (
-            "You are an assistant that reasons like a human to explain how visual evidence supports an answer. "
-            "Identify the visual objects mentioned or implied in the rationale, and rewrite the rationale as step-by-step chain of thought."
+            "You create clean multiple-choice questions from given facts. "
+            "Follow the format exactly and output only the requested line."
         )
         # Construct JSON structure
         json_data = []
         for _, row in df.iterrows():
             entry = {
-                "custom_id": str(row["uid"]),
+                "custom_id": str(row["sid"]),
                 "method": "POST",
                 "url": "/v1/chat/completions",
                 "body": {
-                    "model": "gpt-4o", # Change this to the model you want to use
+                    "model": "gpt-4o-mini", # Change this to the model you want to use
                     "messages": [
                         {"role": "system", "content": system_message},
-                        {"role": "user", "content": self.format_prompt(row["question"], row["rationale"], row["answer"])},
+                        {"role": "user", "content": self.format_prompt(row["rationale"])},
                     ],
                     "max_tokens": 100, # Change this to the desired max tokens
                     "temperature": 0.1
@@ -109,6 +83,27 @@ class CoTBreaker:
             for data in json_data:
                 f.write(json.dumps(data) + "\n")
         print(f"JSON file created as '{input_file}'")
+
+    def gen_all_subsets(self, df):
+        all_rows = []
+        for _, row in df.iterrows():
+            #row['rationale']  has multiple sentences "s1. s2. s3. ..."
+            # find all ordered subsets of sentences
+            sentences = row['reason'].split('. ')
+            sentences = sentences[:-1] # remove the last sentence because it is the answer
+            sid = 0
+            for i in range(len(sentences)):
+                for j in range(i+1, len(sentences)+1):
+                    sid += 1
+                    subset = sentences[i:j]
+                    sub_reason = '. '.join(subset)
+                    if not sub_reason.endswith("."):
+                        sub_reason += "."
+                    all_rows.append({"sid": str(row["uid"]) + "_" + str(sid), "rationale": sub_reason})
+        df = pd.DataFrame(all_rows, columns=["sid", "rationale"])
+        parquet_path = self.all_subsets_dir / f"{self.dataset_name}.parquet"
+        df.to_parquet(parquet_path)
+        print(f"All subsets saved to {parquet_path}")
 
     def split_file(self, n_batches, remove_original=True):
         input_file = self.batch_dir / "batch.jsonl"
@@ -149,10 +144,15 @@ class CoTBreaker:
 
     # ----- runner functions -----
     def run_input(self):
-        args = argparse.Namespace( split="all", dataset_name=self.dataset_name)
-        config = configure_args(args, config_path=None)
-        ds = VQADataset(config)
-        df = ds.load_df()
+        repo_id = "JJoy333/RationaleVQA"
+        local_root = snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            allow_patterns=["r_gen/cot/*.parquet"],
+        )
+        df = pd.read_parquet(os.path.join(local_root, "r_gen", "cot", f"{self.dataset_name}.parquet"))
+        self.gen_all_subsets(df)
+        df = pd.read_parquet(self.all_subsets_dir / f"{self.dataset_name}.parquet")
         self.gen_request(df)
         self.split_file(self.n_batches)
     
@@ -175,16 +175,17 @@ class CoTBreaker:
 
     def _run_request_batch(self, b):
         if not (self.meta_dir / f"meta_{b}.json").exists():
-            batch_input_file = self.client.files.create(
-                file=open(f"{str(self.batch_dir)}/batch_{b}.jsonl", "rb"),
-                purpose="batch"
-            )
+            with open(f"{str(self.batch_dir)}/batch_{b}.jsonl", "rb") as f:
+                batch_input_file = self.client.files.create(
+                    file=f,
+                    purpose="batch"
+                )
             meta = self.client.batches.create(
                 input_file_id=batch_input_file.id,
                 endpoint="/v1/chat/completions",
                 completion_window="24h",
                 metadata={
-                    "description": "break down the rationale into visual objects and their relationships to the answer.",
+                    "description": "create a multiple-choice question from the given facts.",
                     "dataset": self.dataset_name,
                     "batch_id": str(b),
                 }
@@ -192,40 +193,62 @@ class CoTBreaker:
             self._save_meta(b, meta.id, meta.created_at)
 
     
-    def get_cot(self):
-        cot_df = pd.DataFrame(columns=["uid", "cot", "objects", "reason"])
+    def get_qa(self):
+        qa_df = pd.DataFrame(columns=["uid", "sid", "question", "answers", "response"])
         for b in range(self.n_batches):
-            cot_df = pd.concat([cot_df, self._get_cot_batch(b)], ignore_index=True)
-        return cot_df
+            qa_df = pd.concat([qa_df, self._get_qa_batch(b)], ignore_index=True)
+        return qa_df
    
-    def _get_cot_batch(self, b):
-        cot_df = pd.DataFrame(columns=["uid", "cot", "objects", "reason"])
+    def _get_qa_batch(self, b):
+        rows = []
         try:
             records = self._get_response_batch(b)
         except Exception as e:
             print(f"Error getting response for batch {b}: {e}")
-            return cot_df
+            return pd.DataFrame(columns=["uid", "sid", "question", "answers", "response"])
         for rec in records:
             try:
                 uid = str(rec["uid"])
-                answer = rec["content"]
-                objects = answer.split("Reason:")[0].strip()
-                reason = answer.split("Reason:")[1].strip()
-                cot_df = cot_df.append({"uid": uid, "cot": answer, "objects": objects, "reason": reason}, ignore_index=True)
+                sid = str(rec["sid"])
+                response = rec["content"]
+                # Parse format: "Question: ...\n Answers: ... | ... | ... | ..."
+                if "Question:" in response and "Answers:" in response:
+                    question = response.split("Question:")[1].split("\n")[0].strip()
+                    answers = response.split("Answers:")[1].strip()
+                    rows.append({
+                        "uid": uid,
+                        "sid": sid,
+                        "question": question,
+                        "answers": answers,
+                        "response": response
+                    })
+                else:
+                    # Fallback for unexpected format
+                    rows.append({
+                        "uid": uid,
+                        "sid": sid,
+                        "question": "",
+                        "answers": response,
+                        "response": response    # keep the original response for debugging
+                    })
             except Exception as e:
-                print(f"Error getting rationale breakdown for batch {b} uid {uid} with answer '{answer}'\n{e}")
+                print(f"Error parsing response for batch {b} uid {uid} with response '{response}'\n{e}")
                 continue
-        return cot_df
+        df = pd.DataFrame(rows, columns=["uid", "sid", "question", "answers", "response"])
+        # load all_subsets_dir / f"{self.dataset_name}.parquet" back, merge to df on sid
+        all_subsets_df = pd.read_parquet(self.all_subsets_dir / f"{self.dataset_name}.parquet")
+        df = df.merge(all_subsets_df, on="sid", how="left")
+        return df
     
     def get_response(self):
-        response = {}
+        all_records = []
         for b in range(self.n_batches):
             try:
-                response.update(self._get_response_batch(b))
+                all_records.extend(self._get_response_batch(b))
             except Exception as e:
                 print(f"Error getting batch {b}: {e}")
                 continue
-        return response
+        return all_records
     
     def _get_response_batch(self, b):
         save_path = self.output_dir / f"outputs_{b}.jsonl"
@@ -245,8 +268,10 @@ class CoTBreaker:
                 if not line:
                     continue
                 payload = json.loads(line)
+                custom_id = payload.get("custom_id", "")
                 records.append({
-                    "uid": payload.get("custom_id"),
+                    "uid": custom_id.split("_")[0] if custom_id else "",
+                    "sid": custom_id,
                     "content": payload.get("response", {}).get("body", {}).get("choices", [{}])[0].get("message", {}).get("content", ""),
                 })
             with open(save_path, "w", encoding="utf-8") as f:
