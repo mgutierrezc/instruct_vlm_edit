@@ -48,7 +48,8 @@ class QAGenerator:
             "- Use only information that is implied by the facts; do not invent new facts.\n"
             "- The correct answer must be clearly correct.\n"
             "- Each wrong answer must be clearly wrong given the facts.\n"
-            "- Answers should be a word or a phrase, not a full sentence.\n"
+            # "- Answers should be a word or a phrase, not a full sentence.\n"
+            "- Answers should be no more than 3 words, not full sentences.\n"
             "Respond in the format:\n"
             "Question: question?\n Answers: correct_answer | wrong_answer1 | wrong_answer2 | wrong_answer3"
         )
@@ -73,7 +74,7 @@ class QAGenerator:
                         {"role": "user", "content": self.format_prompt(row["rationale"])},
                     ],
                     "max_tokens": 100, # Change this to the desired max tokens
-                    "temperature": 0.1
+                    "temperature": 1.0
                 }
             }
             json_data.append(entry)
@@ -167,6 +168,9 @@ class QAGenerator:
                     if status in {"validating", "queued", "in_progress"}:
                         self.client.batches.cancel(job_id)
                 meta_path.unlink()
+            output_path = self.output_dir / f"outputs_{b}.jsonl"
+            if output_path.exists():
+                os.remove(output_path)
             self._run_request_batch(b)
     
     def run_request(self):
