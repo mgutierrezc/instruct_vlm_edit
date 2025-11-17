@@ -6,6 +6,7 @@ from .grace import GRACE
 from .rome_base import ROME
 from .defer import Defer
 from .memory import MemoryNetwork
+from .balancedit import BalancEdit
 
 
 def get_editor(config, model):
@@ -40,6 +41,8 @@ def get_editor(config, model):
         editor = MemoryNetwork(config, model)
     elif editor_name == "defer":
         editor = Defer(config, model)
+    elif editor_name == "balancedit":
+        editor = BalancEdit(config, model)
     else:
         raise ValueError(f"Unknown editor: {editor_name}")
     

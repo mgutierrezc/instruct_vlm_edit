@@ -1,5 +1,5 @@
 import torch
-from .utils import brackets_to_periods, parent_module
+from .utils import param_subset, brackets_to_periods
 
 
 class Finetune(torch.nn.Module):
@@ -11,7 +11,6 @@ class Finetune(torch.nn.Module):
         self.model = model.model if hasattr(model, 'model') else model
         self.tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
         
-        # Keep original pname for logging / compatibility
         self.pnames = [brackets_to_periods(config.inner_params[0])]
         self.device = config.device
         self.edit_lr = float(config.edit_lr)  # Ensure float type (YAML may parse 1e-4 as string)
@@ -21,16 +20,6 @@ class Finetune(torch.nn.Module):
         model_dtype = getattr(first_param, 'dtype', torch.bfloat16)
         self.autocast_dtype = torch.float16 if model_dtype == torch.float16 else torch.bfloat16
         self.scaler = torch.amp.GradScaler('cuda') if self.autocast_dtype == torch.float16 else None
-
-        # Resolve inner_params[0] to a module (so we can finetune weight + bias together)
-        layer_spec = config.inner_params[0]
-        suffixes = [".weight", ".bias"]
-        layer = layer_spec.rsplit(".", 1)[0] if any(layer_spec.endswith(s) for s in suffixes) else layer_spec
-        self.layer_path = brackets_to_periods(layer)
-
-        edit_module = parent_module(self.model, self.layer_path)
-        layer_name = layer.rsplit(".", 1)[-1]
-        self.layer_module = getattr(edit_module, layer_name)
         
         # Reduce memory and ensure gradients flow with checkpointing (LLaVA/Qwen3)
         if any(n in config.model.name.lower() for n in ("llava", "qwen3")):
@@ -45,12 +34,13 @@ class Finetune(torch.nn.Module):
         elif hasattr(self.model, 'enable_gradient_checkpointing'):
             self.model.enable_gradient_checkpointing()
         
-        # Freeze all parameters except those in the target module (weight + bias together)
-        train_params = set(self.layer_module.parameters())
-        for p in self.model.parameters():
-            p.requires_grad = p in train_params
-        if train_params:
-            print(f"Finetuning module {layer}")
+        # Freeze all parameters except the ones to edit
+        for n, p in self.model.named_parameters():
+            if n != self.pnames[0]:
+                p.requires_grad = False
+            else:
+                print(f"Finetuning {n}")
+                p.requires_grad = True
 
     def generate(self, *args, **kwargs):
         return self.model.generate(*args, **kwargs)
@@ -59,8 +49,7 @@ class Finetune(torch.nn.Module):
         return self.model(*inputs, **kwargs)
 
     def edit(self, config, tokens, batch_history):
-        # Optimize only parameters of the selected module
-        params = list(self.layer_module.parameters())
+        params = param_subset(self.model.named_parameters(), self.pnames)
         opt = torch.optim.Adam(params, lr=self.edit_lr)
         self.losses = []
         

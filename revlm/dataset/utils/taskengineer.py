@@ -134,7 +134,7 @@ class MCTaskEngineer(TaskIOEngineer):
         """Evaluate MC task using ex['pred'] and ex['gold'].
         Returns dict with accuracies and counts for text extraction and max-prob methods.
         """
-        for i in range(10):
+        for i in range(min(10, len(vlmdataset.data))):
             print(vlmdataset.data[i])
             print("-"*50)
 
