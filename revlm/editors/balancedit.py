@@ -1,3 +1,4 @@
+import importlib
 import torch
 import torch.nn.functional as F
 from copy import deepcopy
@@ -65,9 +66,11 @@ class BalancEdit(torch.nn.Module):
     """BalancEdit: Balanced Editing with Key-Value Retrieval"""
     
     def __init__(self, config, model):
-        super(BalancEdit, self).__init__()
+        super().__init__()
         self.config = config
         self.log_dict = {}
+        # Keep both wrapper (VQAModel) and inner HF model
+        self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, 'model') else model
         self.tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
         self.device = config.device
@@ -127,6 +130,53 @@ class BalancEdit(torch.nn.Module):
         for layer in self.layers:
             layer_module = self._get_layer_module(layer)
             setattr(layer_module, "other_is_training", False)
+
+    def prepare_balancedit_tokens(self, batch, ex):
+        """Build tokens, rephrase_tokens, locality_tokens using current model."""
+        try:
+            Image = importlib.import_module("PIL.Image")
+        except ModuleNotFoundError as exc:  # pragma: no cover
+            raise ImportError("Pillow is required for BalancEdit locality tokens.") from exc
+        # Main edit tokens
+        tokens = self.wrapper.prepare_training_batch(batch)
+
+        # Rephrase question with the VQAModel (Qwen3)
+        question = ex.get("question", "")
+        gold_label = batch["golds"][0].get("label", "")
+        choices = ex.get("choices", "")
+
+        rephrase_instruction = (
+            "Rephrase the following question while keeping the meaning the same. "
+            "Only output the rephrased question.\n\n"
+            f"Question: {question}"
+        )
+        img = batch["images"][0] if isinstance(batch["images"], list) else batch["images"]
+        rephrased = self.wrapper.generate([img], [rephrase_instruction], max_new_tokens=64, temperature=0.0)[0]
+        rephrase_question = rephrased.strip() or question
+
+        rephrase_prompt = f"Choose the correct answer from the options. {rephrase_question} Options: {choices}"
+        rephrase_batch = {
+            "images": batch["images"],
+            "prompts": [rephrase_prompt],
+            "golds": batch["golds"],
+            "idxs": batch["idxs"],
+        }
+        rephrase_tokens = self.wrapper.prepare_training_batch(rephrase_batch)
+
+        # Locality / negative tokens: black image + original prompt + wrong answer
+        blank_image = Image.new("RGB", (364, 364), color="black")
+        choices_list = ex.get("gold", {}).get("choices", {}).get("ls", [])
+        wrong_answer = next((c for c in choices_list if c != gold_label), gold_label)
+
+        locality_batch = {
+            "images": [blank_image],
+            "prompts": batch["prompts"],
+            "golds": [{"label": wrong_answer, "label_train": wrong_answer}],
+            "idxs": batch["idxs"],
+        }
+        locality_tokens = self.wrapper.prepare_training_batch(locality_batch)
+
+        return tokens, rephrase_tokens, locality_tokens
     
     def edit_layer(self, config, tokens, rephrase_tokens=None, locality_tokens=None):
         """Edit a single layer: learn local correction + optional epsilon (radius)."""
@@ -148,9 +198,14 @@ class BalancEdit(torch.nn.Module):
         # --- train edited value (local correction) ---
         self.losses = []
         n_iter = config.editor.n_iter
-        edit_lr = float(config.editor.edit_lr) * 0.01
+        edit_lr = float(config.editor.edit_lr)
 
-        opt = torch.optim.Adam(self.model.parameters(), edit_lr, eps=1e-4)
+        # Ensure some parameters require gradients (Qwen/LLaVA may load with grads disabled)
+        # We primarily care about adapter params, so restrict optimizer to this layer.
+        for p in layer_module.parameters():
+            p.requires_grad = True
+        train_params = list(layer_module.parameters())
+        opt = torch.optim.Adam(train_params, edit_lr, eps=1e-4)
         for i in range(n_iter):
             setattr(layer_module, "iter", i)
 
@@ -173,7 +228,8 @@ class BalancEdit(torch.nn.Module):
         # --- train epsilon (radius) if locality + rephrase tokens provided ---
         if locality_tokens is not None and rephrase_tokens is not None:
             setattr(layer_module, "calculate_eps", True)
-            opt_eps = torch.optim.Adam(self.model.parameters(), float(config.editor.edit_lr), eps=1e-4)
+            # Radius learning also only needs adapter parameters
+            opt_eps = torch.optim.Adam(train_params, float(config.editor.edit_lr), eps=1e-4)
             for i in range(n_iter):
                 setattr(layer_module, "iter", i)
 
@@ -228,6 +284,7 @@ class BalancEditAdapter(torch.nn.Module):
         self.device = layer.weight.device
         self.config = config
         self.alpha = getattr(config, "alpha", 0.5)
+        self.eps_dtype = layer.weight.dtype
         self.val_init = getattr(config, 'val_init', 'warm')
         self.val_train = getattr(config, 'val_train', 'standard')
         self.num_pert = getattr(config, 'num_pert', 10)
@@ -256,7 +313,7 @@ class BalancEditAdapter(torch.nn.Module):
         """Add new key-value pair"""
         keys = torch.vstack([self.keys, new_key.detach()])
         values = torch.nn.Parameter(torch.vstack([self.values, new_value]), requires_grad=True)
-        new_epsilon = torch.tensor(self.init_epsilon, device=self.device).view(1)
+        new_epsilon = torch.tensor(self.init_epsilon, device=self.device, dtype=self.eps_dtype).view(1)
         epsilons = torch.vstack([self.epsilons, new_epsilon])
         key_labels = self.key_labels + [self.edit_label]
         return keys, values, epsilons, key_labels
@@ -264,7 +321,7 @@ class BalancEditAdapter(torch.nn.Module):
     def init_key_value(self, query, value):
         """Initialize key-value pair"""
         key = query.detach()
-        epsilon = torch.tensor(self.init_epsilon, device=self.device, requires_grad=False).view(1)
+        epsilon = torch.tensor(self.init_epsilon, device=self.device, dtype=self.eps_dtype, requires_grad=False).view(1)
         key_label = [self.edit_label]
         return key, value, epsilon, key_label
 
@@ -276,8 +333,10 @@ class BalancEditAdapter(torch.nn.Module):
 
     def split_epsilons_in_half(self, nearest_key, smallest_distance):
         """Split epsilon values when conflict occurs"""
-        self.epsilons[nearest_key] = (smallest_distance / 2) - 1e-5
-        self.epsilons[-1] = smallest_distance / 2
+        half = (smallest_distance / 2).to(self.eps_dtype)
+        eps_offset = torch.tensor(1e-5, device=self.device, dtype=self.eps_dtype)
+        self.epsilons[nearest_key] = half - eps_offset
+        self.epsilons[-1] = half
     
     def mid_epsilons(self, rephrase_key, locality_key):
         """Combine rephrase and locality distances into epsilons (radius)."""
@@ -286,7 +345,7 @@ class BalancEditAdapter(torch.nn.Module):
         locality_key = locality_key.detach().to(torch.float32)
         locality_dists = dist(keys, locality_key, self.dist_fn)
         rephrase_dists = dist(keys, rephrase_key, self.dist_fn)
-        epsilons = (1 - self.alpha) * locality_dists + self.alpha * rephrase_dists
+        epsilons = ((1 - self.alpha) * locality_dists + self.alpha * rephrase_dists).to(self.eps_dtype)
         self.epsilons = epsilons
         return epsilons
     
