@@ -16,14 +16,17 @@ import transformers
 #   (so its weight and bias are edited together).
 
 
-def euc(query, key):
+def _euc(query, key):
     """Euclidean distance"""
     if len(key.shape) < 2:
         key = key.view(1, -1)
+    # Cast to float32 for consistent dtype
+    key = key.to(torch.float32)
+    query = query.to(torch.float32)
     return torch.cdist(key, query, p=2).view(-1, len(query))
 
 
-def cos(query, keys):
+def _cos(query, keys):
     """Cosine distance"""
     # Ensure query is 2D: [num_queries, hidden_dim]
     if len(query.shape) == 3:
@@ -34,6 +37,10 @@ def cos(query, keys):
     # Ensure keys is 2D: [num_keys, hidden_dim]
     if len(keys.shape) == 1:
         keys = keys.unsqueeze(0)  # [hidden_dim] -> [1, hidden_dim]
+    
+    # Cast to float32 for consistent dtype (keys might be bfloat16, query might be float32 or vice versa)
+    keys = keys.to(torch.float32)
+    query = query.to(torch.float32)
     
     keys_normalized = F.normalize(keys, p=2, dim=-1)  # [num_keys, hidden_dim]
     query_normalized = F.normalize(query, p=2, dim=-1)  # [num_queries, hidden_dim]
@@ -46,12 +53,12 @@ def cos(query, keys):
 def dist(keys, query, fn):
     """Distance function wrapper"""
     if fn == "euc":
-        return euc(query, keys)
+        return _euc(query, keys)
     elif fn == "cos":
-        return cos(query, keys)
+        return _cos(query, keys)
     else:
         # assume valid fn name; keep simple
-        return euc(query, keys)
+        return _euc(query, keys)
 
 
 def perturb_values(chosen_value, num_pert, device):
@@ -436,11 +443,11 @@ class BalancEditAdapter(torch.nn.Module):
                 else:
                     if smallest_distance > self.epsilons[nearest_key]:
                         if self.eps_expand == "coverage":
-                            self.epsilons[nearest_key] = smallest_distance
+                            self.epsilons[nearest_key] = smallest_distance.to(self.eps_dtype)
                         elif self.eps_expand == "moving_average":
                             a = 0.5
                             self.keys[nearest_key] = a * self.keys[nearest_key] + (1 - a) * query
-                            self.epsilons[nearest_key] = smallest_distance
+                            self.epsilons[nearest_key] = smallest_distance.to(self.eps_dtype)
 
         # Retrieve value
         dists = dist(self.keys, query, self.dist_fn)
