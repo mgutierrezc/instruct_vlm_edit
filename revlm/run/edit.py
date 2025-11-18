@@ -24,21 +24,45 @@ def run_edit(config):
     # Build model
     model = VQAModel(config)
 
+    pred_snapshot = getattr(config, "pred_path", None)
+    if not pred_snapshot:
+        pred_snapshot = os.path.join(config.pred_dir, config.fname)
+
     # Load dataset
     ds = VQADataset(config)
-    if config.subsample and len(ds) > config.subsample:
-        ds.data = random.sample(ds.data, config.subsample)
 
-    # Step 1: find error subset (edit set) under base model
-    ds.set_dataloader(
-        with_rationale=config.rationale,
-        rationale_in_prompt=True,
-        shuffle_choices=True,
-        unpaired=True,
-    )
-    ds.task_generate(model, use_cache=True)
+    if pred_snapshot and os.path.exists(pred_snapshot):
+        print(f"Loading saved predictions from {pred_snapshot}", flush=True)
+        with open(pred_snapshot, "r") as f:
+            ds.data = json.load(f)
+        print(f"Loaded {len(ds.data)} saved examples", flush=True)
+        if config.subsample:
+            print("Warning: subsample requested but snapshot already fixed. Ignoring subsample.", flush=True)
+    else:
+        if config.subsample and len(ds) > config.subsample:
+            ds.data = random.sample(ds.data, config.subsample)
+
+        # Step 1: run task generation on the dataset
+        ds.set_dataloader(
+            with_rationale=config.rationale,
+            rationale_in_prompt=True,
+            shuffle_choices=True,
+            unpaired=True,
+        )
+        ds.task_generate(model, use_cache=False)
+
+        # Save snapshot of predictions for reuse
+        snap_path = pred_snapshot or None
+        if snap_path:
+            out_dir = os.path.dirname(snap_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            ds.snap(out_path=snap_path)
+            print(f"Saved predictions to {snap_path}", flush=True)
+        else:
+            ds.snap()
+
     edit_ds = ds.get_edits()
-
     print(f"Total examples: {len(ds)}, edit subset (errors): {len(edit_ds.data)}", flush=True)
 
     # Save a copy of the unedited model
@@ -47,13 +71,6 @@ def run_edit(config):
     # Step 2: apply edits on edit_ds with chosen editor
     editor = get_editor(config, model)
     editor.generate = model.model.generate if hasattr(model, "model") else model.generate
-
-    # Use a simple loop over the edit dataloader (no history by default)
-    edit_ds.set_dataloader(
-        with_rationale=config.rationale,
-        rationale_in_prompt=False,
-        shuffle_choices=True,
-    )
 
     if hasattr(model, "model"):
         model.model.train()
@@ -103,12 +120,12 @@ if __name__ == "__main__":
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task type")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size for edit dataloader")
     parser.add_argument("--split", type=str, default="all", choices=["train", "test", "all"], help="Split to search for edit examples")
-    parser.add_argument("--task_dir", type=str, default=None, help="Result directory (overrides config.yaml if provided)")
+    parser.add_argument("--edit_dir", type=str, default=None, help="Edit evaluation result directory (overrides config.yaml if provided)")
 
     # Args
     parser.add_argument("--rationale", action="store_true", help="Append rationale to prompts if available")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
-    parser.add_argument("--overwrite", action="store_true", help="Unused here; kept for interface compatibility")
+    parser.add_argument("--pred_path", type=str, default=None, help="Optional path to saved edit dataset. If it exists the file is loaded, otherwise it is written after error discovery.")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -116,8 +133,8 @@ if __name__ == "__main__":
     config = configure_args(args, config_path=args.config)
 
     # current run-specific settings
-    config.overwrite = args.overwrite
     config.subsample = args.subsample
     config.rationale = args.rationale
+    config.pred_path = args.pred_path
 
     run_edit(config)
