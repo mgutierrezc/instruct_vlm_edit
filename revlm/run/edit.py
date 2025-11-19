@@ -31,7 +31,7 @@ def run_edit(config):
     # Load dataset
     ds = VQADataset(config)
 
-    if pred_snapshot and os.path.exists(pred_snapshot):
+    if os.path.exists(pred_snapshot) and not config.overwrite:
         print(f"Loading saved predictions from {pred_snapshot}", flush=True)
         with open(pred_snapshot, "r") as f:
             ds.data = json.load(f)
@@ -45,22 +45,18 @@ def run_edit(config):
         # Step 1: run task generation on the dataset
         ds.set_dataloader(
             with_rationale=config.rationale,
-            rationale_in_prompt=True,
-            shuffle_choices=True,
+            rationale_in_prompt=False,
+            shuffle_choices=False,
             unpaired=True,
         )
         ds.task_generate(model, use_cache=False)
 
         # Save snapshot of predictions for reuse
-        snap_path = pred_snapshot or None
-        if snap_path:
-            out_dir = os.path.dirname(snap_path)
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-            ds.snap(out_path=snap_path)
-            print(f"Saved predictions to {snap_path}", flush=True)
-        else:
-            ds.snap()
+        out_dir = os.path.dirname(pred_snapshot)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        ds.snap(out_path=pred_snapshot)
+        print(f"Saved predictions to {pred_snapshot}", flush=True)
 
     edit_ds = ds.get_edits()
     print(f"Total examples: {len(ds)}, edit subset (errors): {len(edit_ds.data)}", flush=True)
@@ -126,6 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--rationale", action="store_true", help="Append rationale to prompts if available")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--pred_path", type=str, default=None, help="Optional path to saved edit dataset. If it exists the file is loaded, otherwise it is written after error discovery.")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -136,5 +133,5 @@ if __name__ == "__main__":
     config.subsample = args.subsample
     config.rationale = args.rationale
     config.pred_path = args.pred_path
-
+    config.overwrite = args.overwrite
     run_edit(config)

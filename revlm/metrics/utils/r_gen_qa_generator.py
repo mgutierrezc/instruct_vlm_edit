@@ -68,7 +68,7 @@ class QAGenerator:
                 "method": "POST",
                 "url": "/v1/chat/completions",
                 "body": {
-                    "model": "gpt-4o-mini", # Change this to the model you want to use
+                    "model": "gpt-4o", # Change this to the model you want to use
                     "messages": [
                         {"role": "system", "content": system_message},
                         {"role": "user", "content": self.format_prompt(row["rationale"])},
