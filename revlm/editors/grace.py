@@ -251,12 +251,14 @@ class GRACEAdaptor(torch.nn.Module):
                 else:
                     # Same label: possibly expand epsilon
                     if smallest_distance > self.epsilons[nearest_key]:
+                        # Cast distance to match epsilons dtype (e.g., bfloat16 for Qwen3)
+                        sd = smallest_distance.to(self.epsilons.dtype)
                         if self.eps_expand == "coverage":
-                            self.epsilons[nearest_key] = smallest_distance
+                            self.epsilons[nearest_key] = sd
                         elif self.eps_expand == "moving_average":
                             a = 0.5
                             self.keys[nearest_key] = a * self.keys[nearest_key] + (1 - a) * query
-                            self.epsilons[nearest_key] = smallest_distance
+                            self.epsilons[nearest_key] = sd
                     self.chosen_key = nearest_key
         else:
             # No codebook change; just use nearest key

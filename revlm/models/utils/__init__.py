@@ -33,23 +33,25 @@ def get_processor(config):
     model_name = config.model.name
     ckpt_cache = cache_dir()
     try:
+        # First try local cache only (fast path if already downloaded)
         return transformers.AutoProcessor.from_pretrained(
             model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=True
         )
     except Exception as e:
-        if "not found" in str(e).lower() or "does not exist" in str(e).lower():
-            original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
-            os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
-            try:
-                return transformers.AutoProcessor.from_pretrained(
-                    model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=False
-                )
-            finally:
-                if original_timeout is not None:
-                    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
-                elif "HF_HUB_DOWNLOAD_TIMEOUT" in os.environ:
-                    del os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]
-        raise
+        # If local cache load fails for any reason, fall back to allowing download.
+        # This is needed when adding a new model like Qwen/Qwen3-VL-4B-Instruct
+        # whose processor is not yet cached.
+        original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
+        os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+        try:
+            return transformers.AutoProcessor.from_pretrained(
+                model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=False
+            )
+        finally:
+            if original_timeout is not None:
+                os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
+            elif "HF_HUB_DOWNLOAD_TIMEOUT" in os.environ:
+                del os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]
 
 
 

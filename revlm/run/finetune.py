@@ -172,7 +172,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VLM Finetuning")
     parser.add_argument("--config", type=str, default="revlm/config/config.yaml", help="Path to YAML config file (CLI overrides YAML)")
     parser.add_argument("--editor", type=str, required=True, choices=["ft", "ft_ewc", "ft_retrain"], help="Editor method")
-    parser.add_argument("--model_name", type=str, default=None, help="Model name: 'qwen3', 'llava', 'blip'")
+    parser.add_argument("--model_name", type=str, default=None, help="Model name: 'qwen3', 'qwen3_4b', 'llava', 'blip'")
     parser.add_argument("--inner_params", type=str, nargs='+', default=[], help="Layer to finetune (auto-selected if empty)")
     parser.add_argument("--dataset_name", type=str, required=True, choices=["aokvqa", "fvqa", "simulation"], help="Dataset name")
     parser.add_argument("--split", type=str, default="train", choices=["train", "test", "all"], help="Split to finetune on")

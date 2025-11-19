@@ -8,7 +8,8 @@ pt: null
 # - language_model.model.layers.0.self_attn.q_proj.weight
 # - language_model.lm_head.weight (default)
 # - language_projection.weight # Projects Q-Former output to language model embedding space
-inner_params: ["language_projection.weight"]  
+# inner_params: ["language_projection.weight"]  # vision layer
+inner_params: ["language_model.model.layers.31.mlp.gate_proj.weight"] # langauge layer
 processor_class: null
 tokenizer_class: null
 temperature: 0.0

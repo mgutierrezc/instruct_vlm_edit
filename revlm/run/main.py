@@ -107,7 +107,7 @@ if __name__ == "__main__":
     
     # CLI overrides
     parser.add_argument("--editor", type=str, required=True, choices=["ft", "ft_ewc", "ft_retrain", "mend", "grace", "rome", "memory", "defer"], help="Editor method to use")
-    parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'llava', 'blip')")
+    parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")
     parser.add_argument("--inner_params", type=str, nargs='+', default=[], help="Model parameters to edit (overrides YAML if provided)")
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
 

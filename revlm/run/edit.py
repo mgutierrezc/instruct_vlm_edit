@@ -111,7 +111,7 @@ if __name__ == "__main__":
     # Config
     parser.add_argument("--config", type=str, default="revlm/config/config.yaml", help="Path to YAML config file (CLI overrides YAML)")
     parser.add_argument("--editor", type=str, required=True, choices=["ft", "ft_ewc", "ft_retrain", "mend", "grace", "rome", "memory", "defer", "balancedit"], help="Editor method to use")
-    parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'llava', 'blip')")
+    parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task type")
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size for edit dataloader")

@@ -49,6 +49,8 @@ def configure_args(args, config_path=None):
     if model_name_provided:
         short_to_full = {
             "qwen3": "Qwen/Qwen3-VL-8B-Instruct",
+            "qwen3_4b": "Qwen/Qwen3-VL-4B-Instruct",
+            "qwen3-4b": "Qwen/Qwen3-VL-4B-Instruct",
             "llava": "llava-hf/llava-1.5-7b-hf",
             "blip": "Salesforce/instructblip-vicuna-7b",
         }
