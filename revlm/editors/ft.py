@@ -32,12 +32,13 @@ class Finetune(torch.nn.Module):
         layer_name = layer.rsplit(".", 1)[-1]
         self.layer_module = getattr(edit_module, layer_name)
         
-        # Reduce memory and ensure gradients flow with checkpointing (LLaVA/Qwen3)
-        if any(n in config.model.name.lower() for n in ("llava", "qwen3")):
-            if hasattr(self.model, "config"):
-                self.model.config.use_cache = False
-            if hasattr(self.model, "enable_input_require_grads"):
-                self.model.enable_input_require_grads()
+        # Reduce memory and ensure gradients flow with checkpointing
+        # Disable KV cache for training (if model supports it)
+        if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
+            self.model.config.use_cache = False
+        # BLIP (InstructBLIP) is an encoder-decoder model that also needs enable_input_require_grads()
+        if hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
 
         # Enable gradient checkpointing if available (memory saving)
         if hasattr(self.model, 'gradient_checkpointing_enable'):
@@ -59,6 +60,9 @@ class Finetune(torch.nn.Module):
         return self.model(*inputs, **kwargs)
 
     def edit(self, config, tokens, batch_history):
+        # Ensure model is in training mode for gradient computation
+        self.model.train()
+        
         # Optimize only parameters of the selected module
         params = list(self.layer_module.parameters())
         opt = torch.optim.Adam(params, lr=self.edit_lr)
