@@ -38,6 +38,7 @@ def editeval(
     edit_ds: Any,
     related_texts: Mapping[int, Sequence[str]],
     related_images: Mapping[int, Sequence[Any]],
+    related_r_gen_df: pd.DataFrame,
     unrelated_ds=None,
     loc_sample_size=100,
     lambda_gen: float = 1.0,
@@ -51,12 +52,13 @@ def editeval(
     rel = reliability(model_new, edit_ds)
     tgen = text_generality(model_new, edit_ds, related_texts)
     igen = image_generality(model_new, edit_ds, related_images)
+    rgen = rationale_generality(model_new, edit_ds, related_r_gen_df)
     loc = locality(model_old, model_new, edit_ds, unrelated_ds=unrelated_ds, sample_size=loc_sample_size)
 
     if gen_agg == "harmonic":
-        gen = 0.0 if (tgen == 0 or igen == 0) else 2.0 / (1.0 / tgen + 1.0 / igen)
+        gen = 0.0 if (tgen == 0 or igen == 0 or rgen == 0) else 3.0 / (1.0 / tgen + 1.0 / igen + 1.0 / rgen)
     else:
-        gen = 0.5 * (tgen + igen)
+        gen = 0.5 * (tgen + igen + rgen)
 
     score = rel + lambda_gen * gen + lambda_loc * loc
 
@@ -64,8 +66,9 @@ def editeval(
         "reliability": float(rel),
         "text_generality": float(tgen),
         "image_generality": float(igen),
+        "rationale_generality": float(rgen),
         "locality": float(loc),
-        "combined": float(score),
+        "hm": float(score),
     }
 
 
@@ -223,27 +226,16 @@ def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, Lis
     return reliability(model_new, ds)
 
 
-def rationale_generality(model_new: Any, edit_ds: Any, related_rationale: Dict[str, List[str]]) -> float:
+def rationale_generality(model_new: Any, edit_ds: Any, related_r_gen_df: pd.DataFrame) -> float:
     """Accuracy on paraphrased/related rationale using the same images and questions.
-
-    related_rationale_pairs: {"uid": ["uid1", "uid2", ...]} aligned to edit_ds.data indices.
-    uid1 and uid2 ... share the same rationale with uid
+    related_r_gen_df: pd.DataFrame with "uid" and "rationale" columns
     """
-
-    df = edit_ds.load_df()
     ds = copy.deepcopy(edit_ds)
-    related_uids = {
-        uid for uid_list in related_rationale.values() for uid in uid_list
-    }
+    edit_uid = [str(ex["uid"]) for ex in edit_ds.data]
+    related_r_gen_df = related_r_gen_df[related_r_gen_df["uid"].isin(edit_uid)]
+    related_r_gen_df['uid'] = related_r_gen_df['sid'].astype(str)
 
-    if not related_uids:
-        return 0.0
-
-    related_df = df.loc[df["uid"].isin(related_uids)].reset_index(drop=True)
-    if related_df.empty:
-        return 0.0
-
-    ds.data = ds.df2data(related_df)
+    ds.data = ds.df2data(related_r_gen_df)
     ds.set_dataloader(shuffle_choices=False)
     return reliability(model_new, ds)
 

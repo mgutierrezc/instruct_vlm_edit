@@ -84,25 +84,20 @@ def run_edit(config):
 
     model_new = model
 
-    # Step 3: compute reliability before and after edits on the edit subset
+    # Run the full evaluation 
+    related_texts = get_t_gen_input(config.experiment.dataset_name, edit_ds)
+    related_images = get_i_gen_input(config.experiment.dataset_name, edit_ds, k_per_model=2)
+    out_dict = editeval(model_old, model_new, edit_ds, related_texts, related_images)
     rel_old = reliability(model_old, edit_ds)
-    rel_new = reliability(model_new, edit_ds)
+    out_dict['reliability_old'] = rel_old
+    print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
+    print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
 
-    print(f"Reliability (model_old, on edit set): {rel_old:.4f}", flush=True)
-    print(f"Reliability (model_new, on edit set): {rel_new:.4f}", flush=True)
-
-    # Save simple edit-eval metrics under config.edit_dir
+    # Save edit-eval metrics under config.edit_dir
     out_path = os.path.join(config.edit_dir, config.fname)
     with open(out_path, "w") as f:
-        json.dump(
-            {
-                "reliability_old": float(rel_old),
-                "reliability_new": float(rel_new),
-                "n_edit_examples": len(edit_ds.data),
-            },
-            f,
-            indent=2,
-        )
+        json.dump(out_dict, f, indent=2)
+    print(f"Saved edit-eval metrics to {out_path}", flush=True)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=i_gen_sd3_aokvqa
+#SBATCH --job-name=i_gen_flux_aokvqa_6000_9000
 #SBATCH -p gpu
 #SBATCH --gres=gpu:1  
 #SBATCH --cpus-per-task=4
@@ -24,10 +24,12 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
-
-# Generate images with sd3 for aokvqa
+# Generate images with flux for aokvqa (rows 6000:9000)
 python -m revlm.run.i_gen \
     --dataset_name aokvqa \
-    --model_name sd3 \
+    --model_name flux \
     --num_images 2 \
-    --device cuda
+    --device cuda \
+    --start_idx 6000 \
+    --end_idx 9000
+
