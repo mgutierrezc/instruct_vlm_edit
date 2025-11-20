@@ -43,6 +43,7 @@ class VQADataset(Dataset):
             df["image_info_id"] = df["image_path"].str.extract(r'/(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
             df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
         
+        df["uid"] = df["uid"].astype(str)
         return df
     
     def df2data(self, df: pd.DataFrame) -> List[Dict]:
@@ -57,7 +58,7 @@ class VQADataset(Dataset):
         examples: List[Dict] = []
         for r in records:
             ex: Dict[str, object] = {
-                "uid": r["uid"],
+                "uid": str(r["uid"]),
                 "image": r["image_path"],
                 "question": r["question"],
                 "answer": r["answer"],

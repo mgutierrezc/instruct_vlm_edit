@@ -193,3 +193,25 @@ class TextGeneralizer:
         return records
 
     
+
+from huggingface_hub import snapshot_download
+import pandas as pd
+import os
+
+def get_t_gen_input(dataset_name, edit_ds):
+    edit_uids = [str(ex["uid"]) for ex in edit_ds.data]
+    repo_id = "JJoy333/RationaleVQA"
+    local_root = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        allow_patterns=["t_gen/*.parquet"],  # or "i_gen/*.parquet" if you rename on HF
+    )
+    t_gen = pd.read_parquet(os.path.join(local_root, "t_gen", f"{dataset_name}.parquet"))
+    # filter t_gen where t_gen["uid"] in edit_uids
+    t_gen = t_gen[t_gen["uid"].isin(edit_uids)]
+    # engineer into related_texts: {"uid": ["q1", "q2", ...]}
+    related_texts = {
+        str(row["uid"]): list(row["variants"])
+        for _, row in t_gen.iterrows()
+    }
+    return related_texts

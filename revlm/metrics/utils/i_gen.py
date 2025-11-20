@@ -68,33 +68,41 @@ class ImageGenerator:
         if hf_token:
             login(token=hf_token)
         
+        # Choose dtype depending on device.
+        # - Use float16 on GPU to save memory.
+        # - Use float32 on CPU (float16 on CPU is not supported by PyTorch / diffusers).
+        if str(device).startswith("cpu"):
+            load_dtype = torch.float32
+        else:
+            load_dtype = torch.float16
+        
         # Load appropriate pipeline based on model name
         if "flux" in self.model_name:
             model_id = "black-forest-labs/FLUX.1-schnell"
             self.pipe = FluxPipeline.from_pretrained(
                 model_id,
-                torch_dtype=torch.float16,
+                torch_dtype=load_dtype,
                 token=hf_token,
             )
         elif "sd3" in self.model_name or "stable-diffusion-3" in self.model_name:
             model_id = "stabilityai/stable-diffusion-3-medium-diffusers"
             self.pipe = StableDiffusion3Pipeline.from_pretrained(
                 model_id,
-                torch_dtype=torch.float16,
+                torch_dtype=load_dtype,
                 token=hf_token,
             )
         elif "sd2" in self.model_name or "stable-diffusion-2" in self.model_name:
             model_id = "stabilityai/stable-diffusion-2-1"
             self.pipe = StableDiffusionPipeline.from_pretrained(
                 model_id,
-                torch_dtype=torch.float16,
+                torch_dtype=load_dtype,
                 token=hf_token,
             )
         else:
             # Try to load as a custom model path
             self.pipe = StableDiffusionPipeline.from_pretrained(
                 model_name,
-                torch_dtype=torch.float16,
+                torch_dtype=load_dtype,
                 token=hf_token,
             )
         
@@ -134,3 +142,133 @@ class ImageGenerator:
             image.save(save_path)
         
         return image
+
+
+
+from pathlib import Path
+from typing import Dict, List
+from collections import defaultdict
+import os
+import pandas as pd
+from huggingface_hub import snapshot_download
+
+# # assumes ImageGenerator is defined above in this file
+# def get_i_gen_input(dataset_name: str, edit_ds, k_per_model: int = 2) -> Dict[str, List[str]]:
+#     """
+#     Build related_images mapping for image_generality:
+#         {"uid": ["path/to/rel_img1.png", "path/to/rel_img2.png", ...]}
+#     For each model (flux, sd3), if fewer than k_per_model images exist,
+#     generate the remaining ones (on CPU), and always cap at k_per_model.
+#     """
+#     # map image_path -> uid from the original HF dataset
+#     df_full = edit_ds.load_df()
+#     image2uid = dict(zip(df_full["image_path"], df_full["uid"].astype(str)))
+
+#     # images used in the current edit set
+#     edit_image_paths = {ex["image"] for ex in edit_ds.data}
+
+#     repo_id = "JJoy333/RationaleVQA"
+#     local_root = snapshot_download(
+#         repo_id=repo_id,
+#         repo_type="dataset",
+#         allow_patterns=["i_gen/*.parquet"],
+#     )
+#     i_gen = pd.read_parquet(os.path.join(local_root, "i_gen", f"{dataset_name}.parquet"))
+#     i_gen = i_gen[i_gen["image_path"].isin(edit_image_paths)]
+
+#     related_images: Dict[str, List[str]] = {}
+#     base_dir = Path("data/related_image") / dataset_name
+
+#     # reuse one generator per model on CPU
+#     generators: Dict[str, ImageGenerator] = {}
+
+#     for _, row in i_gen.iterrows():
+#         image_path = row["image_path"]
+#         uid = image2uid.get(image_path)
+#         if uid is None:
+#             continue
+
+#         image_info_id = str(row["image_info_id"])
+#         caption = row["caption"]
+
+#         img_dir = base_dir / image_info_id
+#         img_dir.mkdir(parents=True, exist_ok=True)
+
+#         # all existing images for this image_info_id
+#         img_paths = sorted(str(p) for p in img_dir.glob("*.png"))
+
+#         # group by model prefix
+#         by_model: Dict[str, List[str]] = defaultdict(list)
+#         for p in img_paths:
+#             model = os.path.basename(p).split("_")[0]  # "flux", "sd3", ...
+#             by_model[model].append(p)
+
+#         selected: List[str] = []
+#         for model_name in ["flux", "sd3"]:
+#             paths = sorted(by_model.get(model_name, []))
+#             n_exist = len(paths)
+
+#             # if fewer than k_per_model, generate the rest (on CPU)
+#             if n_exist < k_per_model:
+#                 print(f"Generating {k_per_model - n_exist} images for {model_name}")
+#                 if model_name not in generators:
+#                     generators[model_name] = ImageGenerator(model_name, device="cpu")
+#                 gen = generators[model_name]
+#                 for i in range(n_exist, k_per_model):
+#                     save_fname = img_dir / f"{model_name}_{i}.png"
+#                     if not save_fname.exists():
+#                         gen.generate(caption, save_path=str(save_fname))
+#                 # refresh paths for this model
+#                 paths = sorted(str(p) for p in img_dir.glob(f"{model_name}_*.png"))
+
+#             # cap at k_per_model
+#             selected.extend(paths[:k_per_model])
+
+#         if selected:
+#             related_images.setdefault(uid, []).extend(selected)
+
+#     return related_images
+
+
+
+def get_i_gen_input(dataset_name: str, edit_ds, k_per_model: int = 2) -> Dict[str, List[str]]:
+    """
+    Build related_images mapping for image_generality by reading existing images only.
+    Does NOT generate new images.
+    """
+    df_full = edit_ds.load_df()
+    image2uid = dict(zip(df_full["image_path"], df_full["uid"].astype(str)))
+    edit_image_paths = {ex["image"] for ex in edit_ds.data}
+
+    repo_id = "JJoy333/RationaleVQA"
+    local_root = snapshot_download(
+        repo_id=repo_id,
+        repo_type="dataset",
+        allow_patterns=["i_gen/*.parquet"],
+    )
+    i_gen = pd.read_parquet(os.path.join(local_root, "i_gen", f"{dataset_name}.parquet"))
+    i_gen = i_gen[i_gen["image_path"].isin(edit_image_paths)]
+
+    related_images: Dict[str, List[str]] = {}
+    base_dir = Path("data/related_image") / dataset_name
+
+    for _, row in i_gen.iterrows():
+        image_path = row["image_path"]
+        uid = image2uid.get(image_path)
+        if uid is None:
+            continue
+
+        image_info_id = str(row["image_info_id"])
+        img_dir = base_dir / image_info_id
+        if not img_dir.exists():
+            continue
+
+        img_paths = sorted(str(p) for p in img_dir.glob("*.png"))
+        if not img_paths:
+            continue
+
+        # optional: apply the k_per_model-per-generator cap
+
+        related_images.setdefault(uid, []).extend(img_paths)
+
+    return related_images
