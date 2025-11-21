@@ -7,6 +7,7 @@ from .rome_base import ROME
 from .defer import Defer
 from .memory import MemoryNetwork
 from .balancedit import BalancEdit
+from .ike import IKE
 
 
 def get_editor(config, model):
@@ -43,6 +44,8 @@ def get_editor(config, model):
         editor = Defer(config, model)
     elif editor_name == "balancedit":
         editor = BalancEdit(config, model)
+    elif editor_name == "ike":
+        editor = IKE(config, model)
     else:
         raise ValueError(f"Unknown editor: {editor_name}")
     
