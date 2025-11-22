@@ -35,65 +35,68 @@ def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
 
 
 def editeval(
-    model_old: Any,
-    model_new: Any,
-    edit_ds: Any,
-    editor: Any,
-    related_texts: Mapping[int, Sequence[str]],
-    related_images: Mapping[int, Sequence[Any]],
-    related_r_gen_df: pd.DataFrame,
-    unrelated_ds=None,
-    loc_sample_size=100,
-    lambda_gen: float = 1.0,
-    lambda_loc: float = 1.0,
-    gen_agg: str = "harmonic",
-) -> Dict[str, float]:
-    """Combined metric: rel + λ_gen * gen + λ_loc * loc.
+		model_old: Any,
+		model_new: Any,
+		edit_ds: Any,
+		editor: Any,
+		related_texts: Mapping[int, Sequence[str]],
+		related_images: Mapping[int, Sequence[Any]],
+		related_r_gen_df: pd.DataFrame,
+		unrelated_ds=None,
+		loc_sample_size=100,
+		lambda_gen: float = 1.0,
+		lambda_loc: float = 1.0,
+		gen_agg: str = "harmonic",
+	) -> Dict[str, float]:
+	"""Combined metric: rel + λ_gen * gen + λ_loc * loc.
 
-    gen can be mean or harmonic of text/image generality.
-    """
-    t_rel = time.time()
-    rel = reliability(model_new, edit_ds)
-    print(f"[Timing] reliability: {time.time() - t_rel:.2f}s", flush=True)
+	gen can be mean or harmonic of text/image generality.
+	"""
+	t_rel = time.time()
+	rel = reliability(model_new, edit_ds)
+	print(f"[Timing] reliability: {time.time() - t_rel:.2f}s", flush=True)
 
-    t_tgen = time.time()
-    tgen = text_generality(model_new, edit_ds, related_texts)
-    print(f"[Timing] text_generality: {time.time() - t_tgen:.2f}s", flush=True)
+	t_tgen = time.time()
+	tgen = text_generality(model_new, edit_ds, related_texts)
+	print(f"[Timing] text_generality: {time.time() - t_tgen:.2f}s", flush=True)
 
-    t_igen = time.time()
-    igen = image_generality(model_new, edit_ds, related_images)
-    print(f"[Timing] image_generality: {time.time() - t_igen:.2f}s", flush=True)
+	t_igen = time.time()
+	igen = image_generality(model_new, edit_ds, related_images)
+	print(f"[Timing] image_generality: {time.time() - t_igen:.2f}s", flush=True)
 
-    t_rgen = time.time()
-    rgen = rationale_generality(model_new, edit_ds, related_r_gen_df)
-    print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
+	t_rgen = time.time()
+	rgen = rationale_generality(model_new, edit_ds, related_r_gen_df)
+	print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
 
-    # If you re-enable edit1_generality, you can also time it here:
-    # t_edit1 = time.time()
-    # edit1 = edit1_generality(model_old, edit_ds, editor)
-    # print(f"[Timing] edit1_generality: {time.time() - t_edit1:.2f}s", flush=True)
-    edit1 = 0.0
+	t_edit1 = time.time()
+	edit1 = edit1_generality(model_old, edit_ds, editor)
+	print(f"[Timing] edit1_generality: {time.time() - t_edit1:.2f}s", flush=True)
 
-    t_loc = time.time()
-    loc = locality(model_old, model_new, edit_ds, unrelated_ds=unrelated_ds, sample_size=loc_sample_size)
-    print(f"[Timing] locality: {time.time() - t_loc:.2f}s", flush=True)
+	t_editk = time.time()
+	editk = editk_boot_generality(model_old, edit_ds, editor)
+	print(f"[Timing] editk_generality: {time.time() - t_editk:.2f}s", flush=True)
 
-    if gen_agg == "harmonic":
-        gen = 0.0 if (tgen == 0 or igen == 0 or rgen == 0) else 3.0 / (1.0 / tgen + 1.0 / igen + 1.0 / rgen)
-    else:
-        gen = 0.5 * (tgen + igen + rgen)
+	t_loc = time.time()
+	loc = locality(model_old, model_new, edit_ds, unrelated_ds=unrelated_ds, sample_size=loc_sample_size)
+	print(f"[Timing] locality: {time.time() - t_loc:.2f}s", flush=True)
 
-    score = rel + lambda_gen * gen + lambda_loc * loc
+	if gen_agg == "harmonic":
+		gen = 0.0 if (tgen == 0 or igen == 0 or rgen == 0) else 3.0 / (1.0 / tgen + 1.0 / igen + 1.0 / rgen)
+	else:
+		gen = 0.5 * (tgen + igen + rgen)
 
-    return {
-        "reliability": float(rel),
-        "text_generality": float(tgen),
-        "image_generality": float(igen),
-        "rationale_generality": float(rgen),
-        "locality": float(loc),
-        "edit1_generality": float(edit1),
-        "hm": float(score),
-    }
+	score = rel + lambda_gen * gen + lambda_loc * loc
+
+	return {
+		"reliability": float(rel),
+		"text_generality": float(tgen),
+		"image_generality": float(igen),
+		"rationale_generality": float(rgen),
+		"locality": float(loc),
+		"edit1_generality": float(edit1),
+		"editk_generality": float(editk),
+		"hm": float(score),
+	}
 
 
 def reliability(model_new: Any, edit_ds: Any) -> float:
@@ -330,7 +333,7 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 	return correct_total / num_total
 
 
-def editk_bootstrap_generality(
+def editk_boot_generality(
 	model_old: Any,
 	edit_ds: Any,
 	editor: Any,
