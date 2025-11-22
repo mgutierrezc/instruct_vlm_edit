@@ -21,7 +21,7 @@ import pandas as pd
 
 def generate_images(config):
     """Generate images from captions (simple version)."""
-    qa_df = load_r_gen_qa_dataframe(config.dataset_name)
+    qa_df = get_r_gen_input(config.dataset_name)
 
     if config.end_idx is None or config.end_idx > len(qa_df):
         config.end_idx = len(qa_df)

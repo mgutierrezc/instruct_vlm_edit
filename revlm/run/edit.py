@@ -100,13 +100,13 @@ def run_edit(config):
     out_dict['reliability_old'] = rel_old
     print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
     print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
-    
+
     out_path = os.path.join(config.edit_dir, config.fname)
     with open(out_path, "w") as f:
         json.dump(out_dict, f, indent=2)
     print(f"Saved edit-eval metrics to {out_path}", flush=True)
     print(f"[Timing] Step 3 (evaluation metrics): {time.time() - t3:.2f}s", flush=True)
-    
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VLM Editing Evaluation")
 
