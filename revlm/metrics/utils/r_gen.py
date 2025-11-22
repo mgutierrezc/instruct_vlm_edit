@@ -37,11 +37,11 @@ def to_mc_format(r_gen_df: pd.DataFrame) -> pd.DataFrame:
     def make_idx(xs):
         return "\n".join(f"({letters[i]}) {c}" for i, c in enumerate(xs))
 
-    r_gen_df["idx_choice"] = opts.apply(make_idx)
+    r_gen_df["idx_choices"] = opts.apply(make_idx)
 
     # final columns in the same order as your second dataframe
     wanted_cols = ["uid", "sid", "question",
-                   "answer", "rationale", "choices", "idx_choice"]
+                   "answer", "rationale", "choices", "idx_choices"]
     # drop image_path here if you don't have it yet
     return r_gen_df[wanted_cols].copy()
 
