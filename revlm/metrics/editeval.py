@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Tuple, Mapping, Sequence
 import pandas as pd
 import copy
+import time
+import random
 
 # ! Customize your task-specific generation function here
 # inputs: 
@@ -50,12 +52,31 @@ def editeval(
 
     gen can be mean or harmonic of text/image generality.
     """
+    t_rel = time.time()
     rel = reliability(model_new, edit_ds)
+    print(f"[Timing] reliability: {time.time() - t_rel:.2f}s", flush=True)
+
+    t_tgen = time.time()
     tgen = text_generality(model_new, edit_ds, related_texts)
+    print(f"[Timing] text_generality: {time.time() - t_tgen:.2f}s", flush=True)
+
+    t_igen = time.time()
     igen = image_generality(model_new, edit_ds, related_images)
+    print(f"[Timing] image_generality: {time.time() - t_igen:.2f}s", flush=True)
+
+    t_rgen = time.time()
     rgen = rationale_generality(model_new, edit_ds, related_r_gen_df)
-    edit1 = edit1_generality(model_old, edit_ds, editor)
+    print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
+
+    # If you re-enable edit1_generality, you can also time it here:
+    # t_edit1 = time.time()
+    # edit1 = edit1_generality(model_old, edit_ds, editor)
+    # print(f"[Timing] edit1_generality: {time.time() - t_edit1:.2f}s", flush=True)
+    edit1 = 0.0
+
+    t_loc = time.time()
     loc = locality(model_old, model_new, edit_ds, unrelated_ds=unrelated_ds, sample_size=loc_sample_size)
+    print(f"[Timing] locality: {time.time() - t_loc:.2f}s", flush=True)
 
     if gen_agg == "harmonic":
         gen = 0.0 if (tgen == 0 or igen == 0 or rgen == 0) else 3.0 / (1.0 / tgen + 1.0 / igen + 1.0 / rgen)
@@ -292,6 +313,96 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 
 		# evaluate on remaining examples
 		remain_examples = [edit_ds.data[j] for j in range(n) if j != i]
+		if not remain_examples:
+			continue
+		ds_eval = copy.deepcopy(edit_ds)
+		ds_eval.data = remain_examples
+		ds_eval.set_dataloader(shuffle_choices=False)
+
+		if hasattr(new_model, "model"):
+			new_model.model.eval()
+		pairs = generation(new_model, ds_eval)
+		correct_total += sum(1 for t, p in pairs if p == t)
+		num_total += len(pairs)
+
+	if num_total == 0:
+		return 0.0
+	return correct_total / num_total
+
+
+def editk_bootstrap_generality(
+	model_old: Any,
+	edit_ds: Any,
+	editor: Any,
+	B: int = 100,
+	k: int = 10,
+) -> float:
+	"""Bootstrap generality: repeatedly edit on k samples, test on the rest.
+
+	Args:
+		(model_old, edit_ds, editor): as in edit1_generality.
+		B: number of bootstrap rounds.
+		k: number of edit samples per round.
+	"""
+	n = len(edit_ds.data)
+	if n == 0 or k <= 0 or B <= 0:
+		return 0.0
+	k = min(k, n)
+
+	config = edit_ds.config
+	editor_name = getattr(config.editor, "_name", getattr(config, "editor", None))
+
+	# For IKE: build corpus once from full edit_ds (same for all iterations)
+	if editor_name == "ike":
+		editor.build_corpus_from_dataset(edit_ds.data)
+
+	# Pre-generate seeds for reproducible bootstrapping
+	base_seed = getattr(config, "seed", 333)
+	rng = random.Random(base_seed)
+	seeds = [rng.randint(0, 2**31 - 1) for _ in range(1000)]
+	B_eff = min(B, len(seeds))
+
+	correct_total = 0
+	num_total = 0
+
+	for b in range(B_eff):
+		rng_round = random.Random(seeds[b])
+		edit_indices = rng_round.sample(range(n), k)
+
+		# fresh model copy for this round
+		new_model = copy.deepcopy(model_old)
+		if hasattr(editor, "model"):
+			editor.model = new_model.model if hasattr(new_model, "model") else new_model
+		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
+
+		# apply edits on the k sampled examples
+		for i in edit_indices:
+			single_ds = copy.deepcopy(edit_ds)
+			single_ds.data = [edit_ds.data[i]]
+
+			if editor_name == "ike":
+				# IKE: retrieval-only, augment prompts via dataset API
+				if hasattr(new_model, "model"):
+					new_model.model.eval()
+				editor.edit(config, edit_ds=single_ds, train_ds=edit_ds)
+			else:
+				# Weight-updating editors: train on a single batch
+				if hasattr(new_model, "model"):
+					new_model.model.train()
+				single_ds.set_dataloader(
+					with_rationale=getattr(config, "rationale", False),
+					rationale_in_prompt=False,
+					shuffle_choices=True,
+				)
+				batch = next(iter(single_ds.loader))
+				tokens = new_model.prepare_training_batch(batch)
+				editor.edit(config, tokens, batch_history=None)
+				del tokens
+				if hasattr(new_model, "model"):
+					new_model.model.eval()
+
+		# evaluate on remaining examples (complement of edit_indices)
+		remain_examples = [edit_ds.data[j] for j in range(n) if j not in edit_indices]
 		if not remain_examples:
 			continue
 		ds_eval = copy.deepcopy(edit_ds)
