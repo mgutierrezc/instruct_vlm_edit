@@ -3,6 +3,8 @@ import pandas as pd
 import copy
 import time
 import random
+import gc
+import torch
 
 # ! Customize your task-specific generation function here
 # inputs: 
@@ -328,6 +330,14 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 		correct_total += sum(1 for t, p in pairs if p == t)
 		num_total += len(pairs)
 
+		# Clean up GPU memory before the next iteration
+		if hasattr(editor, "model"):
+			editor.model = None
+		del new_model
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
+
 	if num_total == 0:
 		return 0.0
 	return correct_total / num_total
@@ -417,6 +427,14 @@ def editk_boot_generality(
 		pairs = generation(new_model, ds_eval)
 		correct_total += sum(1 for t, p in pairs if p == t)
 		num_total += len(pairs)
+
+		# Clean up GPU memory before the next bootstrap round
+		if hasattr(editor, "model"):
+			editor.model = None
+		del new_model
+		gc.collect()
+		if torch.cuda.is_available():
+			torch.cuda.empty_cache()
 
 	if num_total == 0:
 		return 0.0
