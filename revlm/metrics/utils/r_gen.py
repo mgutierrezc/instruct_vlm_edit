@@ -3,7 +3,7 @@ import os
 from huggingface_hub import snapshot_download
 import string
 
-def get_i_gen_input(dataset_name):
+def get_r_gen_input(dataset_name):
     r_gen_df = load_r_gen_qa_dataframe(dataset_name)
 
 

@@ -211,45 +211,27 @@ class IKE(torch.nn.Module):
         config,
         tokens=None,
         batch_history=None,
-        train_ds=None,
         edit_ds=None,
+        train_ds=None,
     ):
-        """Run IKE retrieval/augmentation via a unified `.edit` API.
-
-        - For training-based editors (ft, grace, balancedit), `.edit` updates weights.
-        - For IKE, `.edit` is *retrieval-only*: it builds the corpus (if needed)
-          and augments prompts on `edit_ds`, but never changes model weights.
-
-        This keeps the signature compatible with the universal `run_edit` loop
-        (`editor.edit(config, tokens, batch_history)`), while also allowing
-        direct calls such as:
-
-            editor.edit(config, train_ds=retrieval_pool, edit_ds=edit_ds)
         """
-        # When called from the universal loop without datasets, do nothing.
-        if train_ds is None or edit_ds is None:
+        editor.edit(config, edit_ds=edit_ds)
+        """
+        # If there is no dataset to edit, do nothing.
+        if edit_ds is None:
             return self.model
 
-        # ------------------------------------------------------------------
-        # Build retrieval pool = full dataset minus edit examples
-        # ------------------------------------------------------------------
-        # Accept either a Dataset-like object with `.data` or a raw list.
-        full_data = getattr(train_ds, "data", train_ds)
-        edit_uids = {ex.get("uid") for ex in getattr(edit_ds, "data", [])}
-        retrieval_pool = [ex for ex in full_data if ex.get("uid") not in edit_uids]
-        if not retrieval_pool:
-            retrieval_pool = full_data
+        # Corpus of "new facts" is always built from the edit dataset:
+        # - In the common case, callers can pass only `edit_ds` (train_ds=None).
+        # - If `train_ds` is provided, we treat it as the corpus source explicitly.
+        corpus_source = train_ds if train_ds is not None else edit_ds
 
-        # ------------------------------------------------------------------
-        # Build corpus once, then reuse, using retrieval pool as the source.
-        # ------------------------------------------------------------------
+        # Build corpus once from the corpus source, then reuse it.
         if self.corpus_embeddings is None or self.corpus_sentences is None:
-            self.build_corpus_from_dataset(retrieval_pool)
+            self.build_corpus_from_dataset(corpus_source)
 
-        # ------------------------------------------------------------------
         # Augment all prompts in-place on `edit_ds` and cache a retrieval log.
-        # ------------------------------------------------------------------
-        self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, retrieval_pool)
+        self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, corpus_source)
         return self.model
 
 
@@ -278,7 +260,7 @@ class IKE(torch.nn.Module):
 
 # # 4) Run IKE: build corpus + augment prompts on edit_ds
 # #    (internally uses full ds minus edit_ds as retrieval pool)
-# editor.edit(config, train_ds=ds, edit_ds=edit_ds)
+# editor.edit(config, edit_ds=edit_ds)
 
 # # 5) Evaluate the edited (IKE-augmented) model on the edit set
 # ike_reliability = reliability(model, edit_ds)

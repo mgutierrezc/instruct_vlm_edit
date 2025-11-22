@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import torch
+import time
 
 # Add project root to path so we can run as a module or script
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -21,16 +22,14 @@ from revlm.metrics.editeval import reliability
 
 def run_edit(config):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
-    # Build model
     model = VQAModel(config)
-
     pred_snapshot = getattr(config, "pred_path", None)
     if not pred_snapshot:
         pred_snapshot = os.path.join(config.pred_dir, config.fname)
-
-    # Load dataset
     ds = VQADataset(config)
 
+    # Step 1: run task generation / load snapshot
+    t1 = time.time()
     if os.path.exists(pred_snapshot) and not config.overwrite:
         print(f"Loading saved predictions from {pred_snapshot}", flush=True)
         with open(pred_snapshot, "r") as f:
@@ -41,8 +40,6 @@ def run_edit(config):
     else:
         if config.subsample and len(ds) > config.subsample:
             ds.data = random.sample(ds.data, config.subsample)
-
-        # Step 1: run task generation on the dataset
         ds.set_dataloader(
             with_rationale=config.rationale,
             rationale_in_prompt=False,
@@ -50,62 +47,72 @@ def run_edit(config):
             unpaired=True,
         )
         ds.task_generate(model, use_cache=False)
-
-        # Save snapshot of predictions for reuse
         out_dir = os.path.dirname(pred_snapshot)
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         ds.snap(out_path=pred_snapshot)
         print(f"Saved predictions to {pred_snapshot}", flush=True)
-
     edit_ds = ds.get_edits()
-    print(f"Total examples: {len(ds)}, edit subset (errors): {len(edit_ds.data)}", flush=True)
-
-    # Save a copy of the unedited model
     model_old = copy.deepcopy(model)
+    print(f"Total examples: {len(ds)}, edit subset (errors): {len(edit_ds.data)}", flush=True)
+    print(f"[Timing] Step 1 (predictions/snapshot): {time.time() - t1:.2f}s", flush=True)
 
     # Step 2: apply edits on edit_ds with chosen editor
+    t2 = time.time()
     editor = get_editor(config, model)
     editor.generate = model.model.generate if hasattr(model, "model") else model.generate
 
-    if hasattr(model, "model"):
-        model.model.train()
+    if getattr(config.editor, "_name", "") == "ike":
+        if hasattr(model, "model"):
+            model.model.eval()
+        editor.edit(config, edit_ds=edit_ds)
+    else:
+        if hasattr(model, "model"):
+            model.model.train()
+        print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
+        for batch_idx, batch in enumerate(edit_ds.loader):
+            tokens = model.prepare_training_batch(batch)
+            editor.edit(config, tokens, batch_history=None)
+            del tokens
+            if (batch_idx + 1) % 10 == 0:
+                print(f"Edited {batch_idx + 1} batches", flush=True)
+        if hasattr(model, "model"):
+            model.model.eval()
+    print(f"[Timing] Step 2 (editing): {time.time() - t2:.2f}s", flush=True)
 
-    print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
-    for batch_idx, batch in enumerate(edit_ds.loader):
-        tokens = model.prepare_training_batch(batch)
-        editor.edit(config, tokens, batch_history=None)
-        del tokens
-        if (batch_idx + 1) % 10 == 0:
-            print(f"Edited {batch_idx + 1} batches", flush=True)
-
-    if hasattr(model, "model"):
-        model.model.eval()
-
+    # Step 3: evaluate the edited model
+    t3 = time.time()
     model_new = model
-
-    # Run the full evaluation 
-    related_texts = get_t_gen_input(config.experiment.dataset_name, edit_ds)
-    related_images = get_i_gen_input(config.experiment.dataset_name, edit_ds, k_per_model=2)
-    out_dict = editeval(model_old, model_new, edit_ds, related_texts, related_images)
+    dataset_name = config.experiment.dataset_name
+    related_texts = get_t_gen_input(dataset_name, edit_ds)
+    related_images = get_i_gen_input(dataset_name, edit_ds, k_per_model=2)
+    related_r_gen_df = get_r_gen_input(dataset_name)
+    out_dict = editeval(
+        model_old,
+        model_new,
+        edit_ds,
+        editor,
+        related_texts,
+        related_images,
+        related_r_gen_df,
+    )
     rel_old = reliability(model_old, edit_ds)
     out_dict['reliability_old'] = rel_old
     print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
     print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
-
-    # Save edit-eval metrics under config.edit_dir
+    
     out_path = os.path.join(config.edit_dir, config.fname)
     with open(out_path, "w") as f:
         json.dump(out_dict, f, indent=2)
     print(f"Saved edit-eval metrics to {out_path}", flush=True)
-
-
+    print(f"[Timing] Step 3 (evaluation metrics): {time.time() - t3:.2f}s", flush=True)
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VLM Editing Evaluation")
 
     # Config
     parser.add_argument("--config", type=str, default="revlm/config/config.yaml", help="Path to YAML config file (CLI overrides YAML)")
-    parser.add_argument("--editor", type=str, required=True, choices=["ft", "ft_ewc", "ft_retrain", "mend", "grace", "rome", "memory", "defer", "balancedit"], help="Editor method to use")
+    parser.add_argument("--editor", type=str, required=True, choices=["ft", "grace", "balancedit", "ike", "mend"], help="Editor method to use")
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task type")

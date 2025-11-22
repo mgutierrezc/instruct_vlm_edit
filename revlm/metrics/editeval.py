@@ -36,6 +36,7 @@ def editeval(
     model_old: Any,
     model_new: Any,
     edit_ds: Any,
+    editor: Any,
     related_texts: Mapping[int, Sequence[str]],
     related_images: Mapping[int, Sequence[Any]],
     related_r_gen_df: pd.DataFrame,
@@ -53,6 +54,7 @@ def editeval(
     tgen = text_generality(model_new, edit_ds, related_texts)
     igen = image_generality(model_new, edit_ds, related_images)
     rgen = rationale_generality(model_new, edit_ds, related_r_gen_df)
+    edit1 = edit1_generality(model_old, edit_ds, editor)
     loc = locality(model_old, model_new, edit_ds, unrelated_ds=unrelated_ds, sample_size=loc_sample_size)
 
     if gen_agg == "harmonic":
@@ -68,6 +70,7 @@ def editeval(
         "image_generality": float(igen),
         "rationale_generality": float(rgen),
         "locality": float(loc),
+        "edit1_generality": float(edit1),
         "hm": float(score),
     }
 
@@ -241,37 +244,51 @@ def rationale_generality(model_new: Any, edit_ds: Any, related_r_gen_df: pd.Data
 
 
 def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
-	# Leave-one-out style: for each example, edit a fresh copy of model_old on that
-	# example using the provided editor, then evaluate on the remaining examples.
+	"""Leave-one-out generality: edit on one example, test on the rest."""
 	n = len(edit_ds.data)
 	if n == 0:
 		return 0.0
-	# Keep code simple: only support single-example edits
+
 	correct_total = 0
 	num_total = 0
+	config = edit_ds.config
+	editor_name = getattr(config.editor, "_name", getattr(config, "editor", None))
+
+	# For IKE: build corpus once from full edit_ds (same for all iterations)
+	if editor_name == "ike":
+		editor.build_corpus_from_dataset(edit_ds.data)
 
 	for i in range(n):
 		# fresh model copy for this edit
 		new_model = copy.deepcopy(model_old)
-		# bind editor to this model copy
 		if hasattr(editor, "model"):
 			editor.model = new_model.model if hasattr(new_model, "model") else new_model
 		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
-		if hasattr(new_model, "model"):
-			new_model.model.train()
 
-		# build a one-sample training loader
-		train_ds = copy.deepcopy(edit_ds)
-		train_ds.data = [edit_ds.data[i]]
-		train_ds.set_dataloader(
-			with_rationale=getattr(edit_ds.config, "rationale", False),
-			rationale_in_prompt=False,
-			shuffle_choices=True,
-		)
-		batch = next(iter(train_ds.loader))
-		tokens = new_model.prepare_training_batch(batch)
-		editor.edit(edit_ds.config, tokens, batch_history=None)
-		del tokens
+		# dataset with just example i
+		single_ds = copy.deepcopy(edit_ds)
+		single_ds.data = [edit_ds.data[i]]
+
+		if editor_name == "ike":
+			# IKE: retrieval-only, augment prompts via dataset API
+			if hasattr(new_model, "model"):
+				new_model.model.eval()
+			editor.edit(config, edit_ds=single_ds, train_ds=edit_ds)
+		else:
+			# Weight-updating editors: train on a single batch
+			if hasattr(new_model, "model"):
+				new_model.model.train()
+			single_ds.set_dataloader(
+				with_rationale=getattr(config, "rationale", False),
+				rationale_in_prompt=False,
+				shuffle_choices=True,
+			)
+			batch = next(iter(single_ds.loader))
+			tokens = new_model.prepare_training_batch(batch)
+			editor.edit(config, tokens, batch_history=None)
+			del tokens
+			if hasattr(new_model, "model"):
+				new_model.model.eval()
 
 		# evaluate on remaining examples
 		remain_examples = [edit_ds.data[j] for j in range(n) if j != i]
