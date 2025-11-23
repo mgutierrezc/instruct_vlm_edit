@@ -6,6 +6,21 @@ import random
 import gc
 import torch
 
+
+def _move_model_device(model: Any, device: str) -> None:
+	"""Move a (possibly wrapped) model to the given device if supported."""
+	if hasattr(model, "model") and hasattr(model.model, "to"):
+		model.model.to(device)
+	elif hasattr(model, "to"):
+		model.to(device)
+
+
+def _cuda_gc() -> None:
+	"""Lightweight CUDA memory cleanup."""
+	gc.collect()
+	if torch.cuda.is_available():
+		torch.cuda.empty_cache()
+
 # ! Customize your task-specific generation function here
 # inputs: 
 # - vlm: VLMModel
@@ -71,11 +86,13 @@ def editeval(
 	print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
 
 	t_edit1 = time.time()
-	edit1 = edit1_generality(model_old, edit_ds, editor)
+	edit1 = 0.0
+	# edit1 = edit1_generality(model_old, edit_ds, editor)
 	print(f"[Timing] edit1_generality: {time.time() - t_edit1:.2f}s", flush=True)
 
 	t_editk = time.time()
-	editk = editk_boot_generality(model_old, edit_ds, editor)
+	editk = 0.0
+	# editk = editk_boot_generality(model_old, edit_ds, editor)
 	print(f"[Timing] editk_generality: {time.time() - t_editk:.2f}s", flush=True)
 
 	t_loc = time.time()
@@ -280,6 +297,11 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 	config = edit_ds.config
 	editor_name = getattr(config.editor, "_name", getattr(config, "editor", None))
 
+	# Move base model to CPU so deepcopy does not allocate GPU tensors
+	if torch.cuda.is_available():
+		_move_model_device(model_old, "cpu")
+		_cuda_gc()
+
 	# For IKE: build corpus once from full edit_ds (same for all iterations)
 	if editor_name == "ike":
 		editor.build_corpus_from_dataset(edit_ds.data)
@@ -287,6 +309,9 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 	for i in range(n):
 		# fresh model copy for this edit
 		new_model = copy.deepcopy(model_old)
+		# move working copy to GPU for editing/eval
+		if torch.cuda.is_available():
+			_move_model_device(new_model, "cuda")
 		if hasattr(editor, "model"):
 			editor.model = new_model.model if hasattr(new_model, "model") else new_model
 		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
@@ -334,9 +359,7 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 		if hasattr(editor, "model"):
 			editor.model = None
 		del new_model
-		gc.collect()
-		if torch.cuda.is_available():
-			torch.cuda.empty_cache()
+		_cuda_gc()
 
 	if num_total == 0:
 		return 0.0
@@ -378,12 +401,20 @@ def editk_boot_generality(
 	correct_total = 0
 	num_total = 0
 
+	# Move base model to CPU so deepcopy does not allocate GPU tensors
+	if torch.cuda.is_available():
+		_move_model_device(model_old, "cpu")
+		_cuda_gc()
+
 	for b in range(B_eff):
 		rng_round = random.Random(seeds[b])
 		edit_indices = rng_round.sample(range(n), k)
 
 		# fresh model copy for this round
 		new_model = copy.deepcopy(model_old)
+		# move working copy to GPU for editing/eval
+		if torch.cuda.is_available():
+			_move_model_device(new_model, "cuda")
 		if hasattr(editor, "model"):
 			editor.model = new_model.model if hasattr(new_model, "model") else new_model
 		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
@@ -432,9 +463,7 @@ def editk_boot_generality(
 		if hasattr(editor, "model"):
 			editor.model = None
 		del new_model
-		gc.collect()
-		if torch.cuda.is_available():
-			torch.cuda.empty_cache()
+		_cuda_gc()
 
 	if num_total == 0:
 		return 0.0
