@@ -98,6 +98,8 @@ def run_edit(config):
     )
     rel_old = reliability(model_old, edit_ds)
     out_dict['reliability_old'] = rel_old
+    # add a job finish time
+    out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
     print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
     print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
 
