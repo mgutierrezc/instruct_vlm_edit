@@ -22,15 +22,24 @@ from revlm.metrics.editeval import reliability
 
 def run_edit(config):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
+
+    # early return if edit evaluation result already exists
+    out_path = os.path.join(config.edit_dir, config.fname)
+    if os.path.exists(out_path) and not config.overwrite:
+        print(f"Edit evaluation result already exists at {out_path}. Skipping edit evaluation.", flush=True)
+        print("-"*50, flush=True)
+        return
+
+    # Step 0: load model and dataset
     model = VQAModel(config)
     pred_snapshot = getattr(config, "pred_path", None)
     if not pred_snapshot:
         pred_snapshot = os.path.join(config.pred_dir, config.fname)
     ds = VQADataset(config)
-
+    
     # Step 1: run task generation / load snapshot
     t1 = time.time()
-    if os.path.exists(pred_snapshot) and not config.overwrite:
+    if os.path.exists(pred_snapshot):# and not config.overwrite:
         print(f"Loading saved predictions from {pred_snapshot}", flush=True)
         with open(pred_snapshot, "r") as f:
             ds.data = json.load(f)
@@ -102,12 +111,13 @@ def run_edit(config):
     out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
     print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
     print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
-
-    out_path = os.path.join(config.edit_dir, config.fname)
     with open(out_path, "w") as f:
         json.dump(out_dict, f, indent=2)
-    print(f"Saved edit-eval metrics to {out_path}", flush=True)
     print(f"[Timing] Step 3 (evaluation metrics): {time.time() - t3:.2f}s", flush=True)
+    print(f"Saved edit-eval metrics to {out_path}", flush=True)
+    print("-"*50, flush=True)
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VLM Editing Evaluation")
