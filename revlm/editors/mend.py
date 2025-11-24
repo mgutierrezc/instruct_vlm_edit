@@ -1,76 +1,108 @@
 import torch
-import higher
-from higher.patch import monkeypatch as make_functional
-
-from .utils import get_inner_params, brackets_to_periods, parent_module
+from .utils import get_inner_params, brackets_to_periods, hook_model
 import transformers
 import torch.nn.functional as F
 
 
 class GradientTransform(torch.nn.Module):
-    """Transforms gradients for MEND"""
+    """Transforms gradients for MEND (same backbone as GRACE, lightly adapted)."""
+
     def __init__(self, x_dim, delta_dim):
         super(GradientTransform, self).__init__()
         self.mlp1 = torch.nn.Linear(x_dim, x_dim)
         self.mlp2 = torch.nn.Linear(delta_dim, delta_dim)
 
     def forward(self, x, delta):
+        # If we've got grads for each token, just grab the last representation
         if len(x.shape) == 3:
             x = x[:, -1, :]
             delta = delta[:, -1, :]
+
+        # Ensure dtypes match Linear weights (handles bf16 / fp16 backbones)
+        x = x.to(self.mlp1.weight.dtype)
+        delta = delta.to(self.mlp2.weight.dtype)
+
         return self.mlp1(x), self.mlp2(delta)
 
 
-def hook_model(model, pnames):
-    """Add hooks to model for MEND"""
-    from .utils import hook_model as _hook_model
-    _hook_model(model, pnames)
-
-
 def get_shape(p, model):
-    """Get shape for gradient transform"""
-    return p.shape if isinstance(model, transformers.GPT2LMHeadModel) else (p.shape[1], p.shape[0])
+    """Get shape for gradient transform (GRACE-style logic)."""
+    if isinstance(model, transformers.models.gpt2.modeling_gpt2.GPT2LMHeadModel):
+        return p.shape
+    # Generic linear layer: weight [out, in] → (in, out)
+    return (p.shape[1], p.shape[0])
 
 
 class MEND(torch.nn.Module):
-    """MEND: Model Editing Networks using Gradient Decomposition"""
+    """MEND: Model Editing Networks using Gradient Decomposition (GRACE version online editing)."""
+
     def __init__(self, config, model, tokenizer, device, mend=None):
-        super(MEND, self).__init__()
+        super().__init__()
+
+        # Unwrap VLM wrapper (e.g., VQAModel) to get underlying HF model
         if mend is None:
-            self.model = model.model if hasattr(model, 'model') else model
+            self.model = model.model if hasattr(model, "model") else model
         else:
             self.model = model
+
         self.tokenizer = tokenizer
         self.device = device
         self.config = config
-        
-        self.pnames = [brackets_to_periods(config.inner_params[0])]
-        
+
+        # Use revlm NestedConfig: inner_params is already flattened
+        params_dict = dict(self.model.named_parameters())
+        self.bias_map = {}
+        self.pnames = []
+        for inner in config.inner_params:
+            pname = brackets_to_periods(inner)
+            self.pnames.append(pname)
+            if pname.endswith(".weight"):
+                bias_name = pname[:-7] + ".bias"
+                if bias_name in params_dict:
+                    self.bias_map[pname] = bias_name
+
+        # Install hooks that populate p.weight.__x__ and p.weight.__delta__
         hook_model(self.model, self.pnames)
-        
-        if not isinstance(self.model, transformers.models.gpt2.modeling_gpt2.GPT2LMHeadModel):
+
+        # GPT-2 uses transposed convention; others (VLMs) use standard [out, in]
+        if not isinstance(
+            self.model, transformers.models.gpt2.modeling_gpt2.GPT2LMHeadModel
+        ):
             transpose = False
         else:
             transpose = True
-            
+        self._transpose = transpose
+
+        # Build (or re-use) the GradientTransform hypernets
         if mend is None:
             self.mend = torch.nn.ModuleDict({})
             for n, p in get_inner_params(self.model.named_parameters(), self.pnames):
                 shape = get_shape(p, self.model)
                 if transpose:
-                    self.mend[n.replace(".", "#")] = GradientTransform(shape[0], shape[1]).to(device)
+                    # GPT-2: keep original orientation
+                    self.mend[n.replace(".", "#")] = GradientTransform(
+                        shape[0], shape[1]
+                    ).to(device)
                 else:
-                    self.mend[n.replace(".", "#")] = GradientTransform(shape[1], shape[0]).to(device)
+                    # Generic (VLM) case: x_dim=in, delta_dim=out
+                    self.mend[n.replace(".", "#")] = GradientTransform(
+                        shape[0], shape[1]
+                    ).to(device)
         else:
             self.mend = mend
-            
+
+        self.loss = None
+        self.losses = []
+        self._key_idx = -1
+
     def outer_parameters(self):
         return list(self.mend.parameters())
-    
+
     def forward(self, **kwargs):
         return self.model(**kwargs)
 
     def get_model_loss(self, model, logits, batch):
+        # Optional hook for custom loss (kept from GRACE code)
         if hasattr(model, "get_loss"):
             return model.get_loss(logits, batch)
         if hasattr(model, "model") and hasattr(model.model, "get_loss"):
@@ -78,63 +110,129 @@ class MEND(torch.nn.Module):
         return None
 
     def edit(self, config, tokens, batch_history):
-        opt = torch.optim.Adam(self.outer_parameters(), lr=config.edit_lr)
-        n_iter = config.n_iter
+        """
+        Online training of the MEND hypernetwork on a single edit example.
+
+        Exactly the GRACE-style inner loop, but using revlm's `config.edit_lr`
+        and `config.n_iter` instead of Hydra dicts.
+        """
+        del batch_history  # not used in this simple variant
+
+        opt = torch.optim.Adam(self.outer_parameters(), lr=float(config.edit_lr))
+        n_iter = int(config.n_iter)
+
+        self.losses = []
+        self._key_idx = self._compute_key_idx(tokens)
 
         for i in range(n_iter):
-            edited_model = self.edit_step(tokens)
-            if i == 0:
-                with torch.no_grad():
-                    for p_new, p_old in zip(edited_model.parameters(), self.model.parameters()):
-                        p_old.copy_(p_new)
-            
-            self.loss = edited_model(**tokens).loss
+            self.edit_step(tokens)
+
+            outputs = self.model(**tokens)
+            loss = outputs.loss if hasattr(outputs, "loss") else None
+
+            if loss is None:
+                logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                if "labels" in tokens:
+                    loss = F.cross_entropy(
+                        logits.view(-1, logits.size(-1)),
+                        tokens["labels"].view(-1),
+                        ignore_index=-100,
+                    )
+                else:
+                    break
+
+            self.loss = loss
+            self.losses.append(self.loss.detach().cpu().numpy())
+
             self.loss.backward()
             opt.step()
             opt.zero_grad()
 
+        return self.model
+
     def edit_step(self, batch):
+        """
+        Single inner step:
+        - run base model on the edit batch to obtain gradients & hooks (x, δ),
+        - pass (x, δ) through GradientTransform,
+        - form low-rank updates and apply them via a functional copy.
+        """
         outputs = self.model(**batch)
         logits = outputs.logits if hasattr(outputs, "logits") else outputs
         loss = outputs.loss if hasattr(outputs, "loss") else None
-        
+
         if loss is None:
             if "labels" in batch:
-                loss = torch.nn.functional.cross_entropy(
-                    logits.view(-1, logits.size(-1)), 
-                    batch["labels"].view(-1), 
-                    ignore_index=-100
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)),
+                    batch["labels"].view(-1),
+                    ignore_index=-100,
                 )
             else:
                 return self.model
-        
+
+        # Backprop once to populate p.weight.__x__ and p.weight.__delta__ via hooks
         loss.backward()
 
-        transformed_factors = {
-            n: self.mend[n.replace(".", "#")](p.__x__, p.__delta__)
-            for n, p in get_inner_params(self.model.named_parameters(), self.pnames)
-        }
+        # Use hypernetwork to transform (x, δ) into update factors
+        transformed_factors = {}
+        for n, p in get_inner_params(self.model.named_parameters(), self.pnames):
+            x = self._select_token(p.__x__)
+            delta = self._select_token(p.__delta__)
+            transformed_factors[n] = self.mend[n.replace(".", "#")](x, delta)
 
+        # Build low-rank update (outer product) per parameter
         mean_grads = {
             n: torch.matmul(delta.view(-1, 1), x.view(1, -1))
             for n, (x, delta) in transformed_factors.items()
         }
-        
-        self.model.zero_grad()
-        
-        edited_model = self.model
-        if not isinstance(edited_model, higher.patch._MonkeyPatchBase):
-            edited_model = make_functional(edited_model, device=self.device)
 
-        new_params = []
+        # Clear gradients on base model before constructing functional version
+        self.model.zero_grad()
+
         updates = mean_grads
-        for n, p in edited_model.named_parameters():
-            if n in self.pnames:
-                new_params.append(p + updates[n].T)
-            else:
-                new_params.append(p)
+        bias_updates = {
+            n: delta.mean(dim=0) if delta.dim() > 1 else delta
+            for n, (_, delta) in transformed_factors.items()
+        }
+
+        param_dict = dict(self.model.named_parameters())
+
+        with torch.no_grad():
+            for n, p in param_dict.items():
+                if n in updates:
+                    upd = updates[n].T if self._transpose else updates[n]
+                    upd = upd.to(p.dtype)
+                    p.add_(upd)
+                    if n in self.bias_map:
+                        bias_name = self.bias_map[n]
+                        bias_param = param_dict[bias_name]
+                        b_upd = bias_updates[n]
+                        if b_upd.dim() == 2:
+                            b_upd = b_upd.mean(dim=0)
+                        b_upd = b_upd.to(bias_param.dtype)
+                        bias_param.add_(b_upd)
 
         loss.detach()
-        edited_model.update_params(new_params)
-        return MEND(self.config, edited_model, self.tokenizer, self.device, self.mend)
+
+    def _select_token(self, tensor):
+        if tensor.dim() == 3:
+            idx = self._key_idx if self._key_idx is not None and self._key_idx >= 0 else tensor.shape[1] - 1
+            idx = min(idx, tensor.shape[1] - 1)
+            tensor = tensor[:, idx, :]
+        return tensor
+
+    def _compute_key_idx(self, tokens):
+        labels = tokens.get("labels")
+        if labels is None:
+            return -1
+        if labels.dim() == 1:
+            non_masked = (labels != -100)
+            if non_masked.any():
+                return non_masked.nonzero().max().item()
+            return labels.numel() - 1
+        non_masked = (labels != -100)
+        if non_masked.any():
+            return non_masked.sum(dim=1).max().item() - 1
+        return labels.shape[1] - 1
 

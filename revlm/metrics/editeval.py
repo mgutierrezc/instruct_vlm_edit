@@ -115,6 +115,7 @@ def editeval(
 		"edit1_generality": float(edit1),
 		"editk_generality": float(editk),
 		"hm": float(score),
+		"n_edits": float(len(edit_ds.data)),
 	}
 
 
