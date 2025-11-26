@@ -274,7 +274,7 @@ def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, Lis
 
 
 def rationale_generality(model_new: Any, edit_ds: Any, related_r_gen_df: pd.DataFrame) -> float:
-    """Accuracy on paraphrased/related rationale using the same images and questions.
+    """Accuracy on new samples with the same rationale.
     related_r_gen_df: pd.DataFrame with "uid" and "rationale" columns
     """
     ds = copy.deepcopy(edit_ds)
