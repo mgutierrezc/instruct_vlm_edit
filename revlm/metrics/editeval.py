@@ -121,12 +121,16 @@ def editeval(
 
 def reliability(model_new: Any, edit_ds: Any) -> float:
     """Compute reliability via task-based generation on the dataset.
-
+    
+    This function is intentionally side-effect free on the caller's dataset:
+    it operates on a deepcopy so that task_generate() does not mutate edit_ds.data.
+    
     Args
     - model_new: VQAModel 
     - edit_ds: VQADataset
     """
-    pairs = generation(model_new, edit_ds)
+    ds = copy.deepcopy(edit_ds)
+    pairs = generation(model_new, ds)
     if not pairs:
         return 0.0
     correct = sum(1 for t, p in pairs if p == t)

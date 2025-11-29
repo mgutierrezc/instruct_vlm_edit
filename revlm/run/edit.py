@@ -20,6 +20,14 @@ from revlm.editors import get_editor
 from revlm.metrics.editeval import reliability
 
 
+def print10(dataset, label):
+    sample_size = min(10, len(dataset.data))
+    sampled_dataset = copy.deepcopy(dataset)
+    sampled_dataset.data = copy.deepcopy(dataset.data[:sample_size])
+    print(f"\n{label} predictions:", flush=True)
+    dataset.task_engineer.eval(sampled_dataset)
+
+
 def run_edit(config):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
 
@@ -62,6 +70,7 @@ def run_edit(config):
         ds.snap(out_path=pred_snapshot)
         print(f"Saved predictions to {pred_snapshot}", flush=True)
     edit_ds = ds.get_edits()
+    print10(edit_ds, label="model_old")
     model_old = copy.deepcopy(model)
     print(f"Total examples: {len(ds)}, edit subset (errors): {len(edit_ds.data)}", flush=True)
     print(f"[Timing] Step 1 (predictions/snapshot): {time.time() - t1:.2f}s", flush=True)
@@ -87,6 +96,7 @@ def run_edit(config):
                 print(f"Edited {batch_idx + 1} batches", flush=True)
         if hasattr(model, "model"):
             model.model.eval()
+    print10(edit_ds, label="model_new")
     print(f"[Timing] Step 2 (editing): {time.time() - t2:.2f}s", flush=True)
 
     # Step 3: evaluate the edited model
@@ -105,8 +115,11 @@ def run_edit(config):
         related_images,
         related_r_gen_df,
     )
+
+    # reliability() is side-effect free on edit_ds (operates on a deepcopy)
     rel_old = reliability(model_old, edit_ds)
     out_dict['reliability_old'] = rel_old
+    
     # add a job finish time
     out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
     print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)

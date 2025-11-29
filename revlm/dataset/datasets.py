@@ -143,6 +143,7 @@ class VQADataset(Dataset):
     
     def get_edits(self):
         pred_by = self.config.experiment.pred_by
+        print(f"getting edits predicted by: {pred_by}")
         for ex in self.data:
             if ex['gold']['label'] != ex['pred'][pred_by]:
                 ex['edit'] = True
