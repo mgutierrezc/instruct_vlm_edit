@@ -46,14 +46,13 @@ def run_edit(config):
     ds = VQADataset(config)
     
     # Step 1: run task generation / load snapshot
+    print("="*50, flush=True)
+    print("Step 1 (predictions)", flush=True)
     t1 = time.time()
     if os.path.exists(pred_snapshot):# and not config.overwrite:
-        print(f"Loading saved predictions from {pred_snapshot}", flush=True)
         with open(pred_snapshot, "r") as f:
             ds.data = json.load(f)
-        print(f"Loaded {len(ds.data)} saved examples", flush=True)
-        if config.subsample:
-            print("Warning: subsample requested but snapshot already fixed. Ignoring subsample.", flush=True)
+        print(f"Total samples {len(ds.data)} loaded from {pred_snapshot}", flush=True)
     else:
         if config.subsample and len(ds) > config.subsample:
             ds.data = random.sample(ds.data, config.subsample)
@@ -68,14 +67,16 @@ def run_edit(config):
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         ds.snap(out_path=pred_snapshot)
-        print(f"Saved predictions to {pred_snapshot}", flush=True)
-    edit_ds = ds.get_edits()
+        print(f"Total samples {len(ds.data)} saved to {pred_snapshot}", flush=True)
+    edit_ds = ds.get_edits() # ds is filtered to only include errors in place
     print10(edit_ds, label="model_old")
     model_old = copy.deepcopy(model)
-    print(f"Total examples: {len(ds)}, edit subset (errors): {len(edit_ds.data)}", flush=True)
-    print(f"[Timing] Step 1 (predictions/snapshot): {time.time() - t1:.2f}s", flush=True)
+    print(f"Edit subset (errors): {len(edit_ds.data)}", flush=True)
+    print(f"Total time: {time.time() - t1:.2f}s", flush=True)
 
     # Step 2: apply edits on edit_ds with chosen editor
+    print("="*50, flush=True)
+    print("Step 2 (editing)", flush=True)
     t2 = time.time()
     editor = get_editor(config, model)
     editor.generate = model.model.generate if hasattr(model, "model") else model.generate
@@ -96,10 +97,13 @@ def run_edit(config):
                 print(f"Edited {batch_idx + 1} batches", flush=True)
         if hasattr(model, "model"):
             model.model.eval()
+    edit_ds.task_generate(model, use_cache=False)
     print10(edit_ds, label="model_new")
-    print(f"[Timing] Step 2 (editing): {time.time() - t2:.2f}s", flush=True)
+    print(f"Total time: {time.time() - t2:.2f}s", flush=True)
 
     # Step 3: evaluate the edited model
+    print("="*50, flush=True)
+    print("Step 3 (evaluation)", flush=True)
     t3 = time.time()
     model_new = model
     dataset_name = config.experiment.dataset_name
@@ -126,9 +130,9 @@ def run_edit(config):
     print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
     with open(out_path, "w") as f:
         json.dump(out_dict, f, indent=2)
-    print(f"[Timing] Step 3 (evaluation metrics): {time.time() - t3:.2f}s", flush=True)
+    print(f"Total time: {time.time() - t3:.2f}s", flush=True)
     print(f"Saved edit-eval metrics to {out_path}", flush=True)
-    print("-"*50, flush=True)
+    print("="*50, flush=True)
 
 
 
