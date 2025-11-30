@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 import time
+import numpy as np
 
 # Add project root to path so we can run as a module or script
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -38,7 +39,13 @@ def run_edit(config):
         print("-"*50, flush=True)
         return
 
-    # Step 0: load model and dataset
+    # Step 0: determinism + load model and dataset
+    seed = getattr(config, "seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     model = VQAModel(config)
     pred_snapshot = getattr(config, "pred_path", None)
     if not pred_snapshot:
