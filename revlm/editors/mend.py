@@ -49,6 +49,20 @@ class MEND(torch.nn.Module):
         self.device = device
         self.config = config
 
+        # Memory-focused tweaks that do NOT change the editing algorithm:
+        # - disable KV cache during editing
+        # - enable gradient checkpointing when available
+        # - enable input gradients if the model supports it
+        core_model = self.model
+        if hasattr(core_model, "config") and hasattr(core_model.config, "use_cache"):
+            core_model.config.use_cache = False
+        if hasattr(core_model, "enable_input_require_grads"):
+            core_model.enable_input_require_grads()
+        if hasattr(core_model, "gradient_checkpointing_enable"):
+            core_model.gradient_checkpointing_enable()
+        elif hasattr(core_model, "enable_gradient_checkpointing"):
+            core_model.enable_gradient_checkpointing()
+
         # Use revlm NestedConfig: inner_params is already flattened
         params_dict = dict(self.model.named_parameters())
         self.bias_map = {}
