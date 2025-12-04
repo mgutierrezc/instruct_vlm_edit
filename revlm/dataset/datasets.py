@@ -2,6 +2,8 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import json
 from .utils import *
+from huggingface_hub import snapshot_download
+import pandas as pd
 
 class VQADataset(Dataset):
     def __init__(self, config):
@@ -16,7 +18,7 @@ class VQADataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
     
-    def load_df(self):
+    def load_df(self, cot=True):
         if self.config.experiment.dataset_name == "fvqa":
             path_in_repo = "FVQA"
         elif self.config.experiment.dataset_name == "aokvqa":
@@ -30,7 +32,6 @@ class VQADataset(Dataset):
             path_in_repo=path_in_repo,
         )
         df = data_load_split_df(split_paths.get(self.config.experiment.split))
-
         if self.config.experiment.dataset_name == "fvqa":
             df["image_info_source"] = df["image_path"].str.extract(r'/(COCO|ILSVRC)', expand=False)
             df["image_info_split"] = df["image_path"].str.extract(r'_(train|val|test)', expand=False)
@@ -42,8 +43,16 @@ class VQADataset(Dataset):
             df["image_info_split"] = df["image_path"].str.extract(r'/(train|val)\d+', expand=False)
             df["image_info_id"] = df["image_path"].str.extract(r'/(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
             df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
-        
         df["uid"] = df["uid"].astype(str)
+        # overwite rationale with cot if true
+        if cot: # Download caption parquet files from HF
+            repo_id = "JJoy333/RationaleVQA"
+            local_root = snapshot_download(repo_id=repo_id, repo_type="dataset", allow_patterns=["r_gen/cot/*.parquet"])
+            df_cot = pd.read_parquet(os.path.join(local_root, "r_gen", "cot", f"{self.config.experiment.dataset_name}.parquet"))
+            df_cot["reason"] = df_cot["reason"].str.replace(r"[^;.!?]*[;.!?]\s*$", "", regex=True)
+            df = df.merge(df_cot[["uid", "reason"]], on="uid", how="left")
+            df["rationale_raw"] = df["rationale"]
+            df["rationale"] = df["reason"].fillna(df["rationale"])
         return df
     
     def df2data(self, df: pd.DataFrame) -> List[Dict]:

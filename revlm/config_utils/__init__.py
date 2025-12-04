@@ -85,6 +85,7 @@ def configure_args(args, config_path=None):
         
     # ---- result saving dirs ----
     editor_tag = editor.get("_name") or "raw"
+    editor_tag = editor_tag + experiment['suffix'] 
     model_tag = (model.get("name", "").split("/")[-1] or "model").replace(" ", "_")
     dataset_tag = (experiment.get("dataset_name", "dataset") or "dataset").replace(" ", "_")
     task_tag = (experiment.get("task", "task") or "task").replace(" ", "_")
@@ -108,7 +109,7 @@ def configure_args(args, config_path=None):
     os.makedirs(pred_dir, exist_ok=True)
     print(f"Predictions will be saved to {pred_dir}")
     # unified filename to save
-    fname = f"{task_tag}_{experiment['split']}{experiment['suffix']}.json"
+    fname = f"{task_tag}_{experiment['split']}.json" # {experiment['suffix']}
     print(f"Unified filename to save: {fname}")
 
 
