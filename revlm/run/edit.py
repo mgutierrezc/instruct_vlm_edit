@@ -51,12 +51,16 @@ def run_edit(config):
     if not pred_snapshot:
         pred_snapshot = os.path.join(config.pred_dir, config.fname)
     ds = VQADataset(config)
+
+    # Simple: if COT mode is on, cache cot text from the fresh parquet-backed dataset
+    use_cot = getattr(config, "cot", False)
+    cot_map = ({str(ex.get("uid")): ex.get("cot", ex.get("rationale", "")) for ex in ds.data} if use_cot else None)
     
     # Step 1: run task generation / load snapshot
     print("="*50, flush=True)
     print("Step 1 (predictions)", flush=True)
     t1 = time.time()
-    if os.path.exists(pred_snapshot):# and not config.overwrite:
+    if os.path.exists(pred_snapshot):  # and not config.overwrite:
         with open(pred_snapshot, "r") as f:
             ds.data = json.load(f)
         print(f"Total samples {len(ds.data)} loaded from {pred_snapshot}", flush=True)
@@ -77,9 +81,16 @@ def run_edit(config):
         ds.snap(out_path=pred_snapshot)
         print(f"Total samples {len(ds.data)} saved to {pred_snapshot}", flush=True)
 
-    # Build edit subset (only errors) and configure its dataloader.
+    # Build edit subset (only errors)
     edit_ds = ds.get_edits()  # ds is filtered to only include errors in place
-    # For editing, allow switching rationale on/off and choosing between rationale vs COT
+    # In COT mode, ensure each edit example has 'cot' (from cached map or fallback to rationale)
+    if use_cot and cot_map:
+        for ex in edit_ds.data:
+            if "cot" not in ex:
+                uid = str(ex.get("uid"))
+                ex["cot"] = cot_map.get(uid, ex.get("rationale", ""))
+
+    # Configure its dataloader: choose between rationale vs COT in the target
     edit_ds.set_dataloader(
         with_rationale=config.rationale,
         use_cot=config.cot,
