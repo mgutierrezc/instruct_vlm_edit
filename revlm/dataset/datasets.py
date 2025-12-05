@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import json
+import os
 from .utils import *
 from huggingface_hub import snapshot_download
 import pandas as pd
@@ -18,7 +19,7 @@ class VQADataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
     
-    def load_df(self, cot=True):
+    def load_df(self):
         if self.config.experiment.dataset_name == "fvqa":
             path_in_repo = "FVQA"
         elif self.config.experiment.dataset_name == "aokvqa":
@@ -44,19 +45,19 @@ class VQADataset(Dataset):
             df["image_info_id"] = df["image_path"].str.extract(r'/(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
             df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
         df["uid"] = df["uid"].astype(str)
-        # overwite rationale with cot if true
-        if cot: # Download caption parquet files from HF
-            repo_id = "JJoy333/RationaleVQA"
-            local_root = snapshot_download(repo_id=repo_id, repo_type="dataset", allow_patterns=["r_gen/cot/*.parquet"])
-            df_cot = pd.read_parquet(os.path.join(local_root, "r_gen", "cot", f"{self.config.experiment.dataset_name}.parquet"))
-            df_cot["reason"] = df_cot["reason"].str.replace(r"[^;.!?]*[;.!?]\s*$", "", regex=True)
-            df = df.merge(df_cot[["uid", "reason"]], on="uid", how="left")
-            df["rationale_raw"] = df["rationale"]
-            df["rationale"] = df["reason"].fillna(df["rationale"])
+        
+        # add cot
+        repo_id = "JJoy333/RationaleVQA"
+        local_root = snapshot_download(repo_id=repo_id, repo_type="dataset", allow_patterns=["r_gen/cot/*.parquet"])
+        df_cot = pd.read_parquet(os.path.join(local_root, "r_gen", "cot", f"{self.config.experiment.dataset_name}.parquet"))
+        df_cot["reason"] = df_cot["reason"].str.replace(r"[^;.!?]*[;.!?]\s*$", "", regex=True)
+        df_cot["cot"] = df_cot["reason"]
+        df = df.merge(df_cot[["uid", "cot"]], on="uid", how="left")
+        df["cot"] = df["cot"].fillna(df["rationale"])
         return df
     
     def df2data(self, df: pd.DataFrame) -> List[Dict]:
-        cols = ["uid", "image_path", "question", "answer", "rationale", "choices", "idx_choices"]
+        cols = ["uid", "image_path", "question", "answer", "rationale", "cot", "choices", "idx_choices"]
         missing = set(cols) - set(df.columns)
         if missing:
             raise ValueError(f"Parquet missing required columns: {missing}")
@@ -72,6 +73,7 @@ class VQADataset(Dataset):
                 "question": r["question"],
                 "answer": r["answer"],
                 "rationale": r["rationale"],
+                "cot": r["cot"],
                 "choices": r["choices"],
                 "idx_choices": r["idx_choices"],
             }
@@ -80,6 +82,7 @@ class VQADataset(Dataset):
     
     def set_dataloader(self,
                         with_rationale=False,
+                        use_cot=False,
                         rationale_in_prompt=True,
                         shuffle_choices=False,
                         unpaired=True):
@@ -90,6 +93,7 @@ class VQADataset(Dataset):
 
         self.task_engineer = get_taskengineer(task, 
                                               with_rationale=with_rationale, 
+                                              use_cot=use_cot,
                                               rationale_in_prompt=rationale_in_prompt,
                                               shuffle_choices=shuffle_choices,
                                               unpaired=unpaired,

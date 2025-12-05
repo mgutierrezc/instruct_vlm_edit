@@ -71,6 +71,7 @@ class TaskIOEngineer:
 class MCTaskEngineer(TaskIOEngineer):
     def __init__(self, 
                 with_rationale=False,
+                use_cot=False,
                 rationale_in_prompt=True,
                 shuffle_choices=False, 
                 seed=333,
@@ -82,6 +83,7 @@ class MCTaskEngineer(TaskIOEngineer):
         self.shuffle_choices = shuffle_choices
         self.seed = seed
         self.rng = random.Random(seed)
+        self.use_cot = use_cot
     
 
     def _eng_choices(self, s: str):
@@ -99,7 +101,13 @@ class MCTaskEngineer(TaskIOEngineer):
         ex['gold']['choices'] = self._eng_choices(ex['choices'])
         # Training target: optionally include rationale instead of putting it in the prompt
         target = ex['gold']['label']
-        ex['gold']['label_train'] = f"{target} {ex.get('rationale','')}".strip() if (self.with_rationale and not self.rationale_in_prompt) else target
+        if self.with_rationale and not self.rationale_in_prompt:
+            if self.use_cot:
+                ex['gold']['label_train'] = f"{target}. {ex.get('cot','')}".strip()
+            else:
+                ex['gold']['label_train'] = f"{target}. {ex.get('rationale','')}".strip()
+        else:
+            ex['gold']['label_train'] = target
     
     def eng_prompt(self, ex):
         sys_prompt = "Choose the correct answer from the options."
@@ -186,6 +194,7 @@ class MCTaskEngineer(TaskIOEngineer):
 class MCITaskEngineer(TaskIOEngineer):
     def __init__(self, 
                 with_rationale=False,
+                use_cot=False,
                 rationale_in_prompt=True,
                 shuffle_choices=False,
                 unpaired=False,
@@ -199,6 +208,7 @@ class MCITaskEngineer(TaskIOEngineer):
         self.unpaired = unpaired
         self.seed = seed
         self.rng = random.Random(seed)
+        self.use_cot = use_cot
 
     def extract_choice_pairs(self, s: str):
         pairs = re.findall(r"\(([A-D])\)\s*(.+)", s)
@@ -246,7 +256,10 @@ class MCITaskEngineer(TaskIOEngineer):
         base_target = f"({ex['gold']['label_letter']}) {ex['gold']['label']}" if ex['gold']['label_letter'] else ex['gold']['label']
         # Optionally append rationale to target (when not injecting it into the prompt)
         if self.with_rationale and not self.rationale_in_prompt:
-            ex['gold']['label_train'] = f"{base_target} {ex.get('rationale','')}".strip()
+            if self.use_cot:
+                ex['gold']['label_train'] = f"{base_target}. {ex.get('cot','')}".strip()
+            else:
+                ex['gold']['label_train'] = f"{base_target}. {ex.get('rationale','')}".strip()
         else:
             ex['gold']['label_train'] = base_target
 
@@ -370,6 +383,7 @@ class MCITaskEngineer(TaskIOEngineer):
 class QATaskEngineer(TaskIOEngineer):
     def __init__(self, 
                  with_rationale=False, 
+                 use_cot=False,
                  rationale_in_prompt=True, 
                  **kwargs):
         super().__init__()
@@ -377,12 +391,19 @@ class QATaskEngineer(TaskIOEngineer):
         self.rationale_in_prompt = rationale_in_prompt
         self.name = "qa"
         self.seed = 333
+        self.use_cot = use_cot
 
     def eng_golds(self, ex): 
         ex['gold'] = {}
         ex['gold']['label'] = str(ex['answer']).lower().strip()
         target = ex['gold']['label']
-        ex['gold']['label_train'] = f"{target} {ex.get('rationale','')}".strip() if (self.with_rationale) and (not self.rationale_in_prompt) else target
+        if self.with_rationale and not self.rationale_in_prompt:
+            if self.use_cot:
+                ex['gold']['label_train'] = f"{target}. {ex.get('cot','')}".strip()
+            else:
+                ex['gold']['label_train'] = f"{target}. {ex.get('rationale','')}".strip()
+        else:
+            ex['gold']['label_train'] = target
     
     def eng_prompt(self, ex):
         sys_prompt = "Answer the question in one word or phrase."
