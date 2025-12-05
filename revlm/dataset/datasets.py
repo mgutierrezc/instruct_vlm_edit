@@ -57,10 +57,15 @@ class VQADataset(Dataset):
         return df
     
     def df2data(self, df: pd.DataFrame) -> List[Dict]:
-        cols = ["uid", "image_path", "question", "answer", "rationale", "cot", "choices", "idx_choices"]
+        cols = ["uid", "image_path", "question", "answer", "rationale", "choices", "idx_choices"]
         missing = set(cols) - set(df.columns)
         if missing:
             raise ValueError(f"Parquet missing required columns: {missing}")
+        # If 'cot' is missing (e.g., in related_r_gen_df), default it to the original rationale
+        if "cot" not in df.columns:
+            df = df.copy()
+            df["cot"] = df["reason"] if 'reason' in df.columns else df["rationale"]
+        cols = cols + ["cot"]
         if df.empty:
             return []
 
