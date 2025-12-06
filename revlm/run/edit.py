@@ -71,7 +71,7 @@ def run_edit(config):
             with_rationale=False,
             use_cot=False,
             rationale_in_prompt=False,
-            shuffle_choices=True,
+            shuffle_choices=False,
             unpaired=True,
         )
         ds.task_generate(model, use_cache=False)
@@ -95,7 +95,7 @@ def run_edit(config):
         with_rationale=config.rationale,
         use_cot=config.cot,
         rationale_in_prompt=False,
-        shuffle_choices=True,
+        shuffle_choices=False,
         unpaired=True,
     )
     print10(edit_ds, label="model_old")
