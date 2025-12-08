@@ -110,7 +110,8 @@ def run_edit(config):
     editor = get_editor(config, model)
     editor.generate = model.model.generate if hasattr(model, "model") else model.generate
 
-    if getattr(config.editor, "_name", "") == "ike":
+    editor_name = getattr(config.editor, "_name", "")
+    if editor_name in {"ike", "ike_cot"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
@@ -170,7 +171,13 @@ if __name__ == "__main__":
 
     # Config
     parser.add_argument("--config", type=str, default="revlm/config/config.yaml", help="Path to YAML config file (CLI overrides YAML)")
-    parser.add_argument("--editor", type=str, required=True, choices=["ft", "grace", "balancedit", "ike", "mend"], help="Editor method to use")
+    parser.add_argument(
+        "--editor",
+        type=str,
+        required=True,
+        choices=["ft", "grace", "balancedit", "ike", "ike_cot", "mend"],
+        help="Editor method to use",
+    )
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")
     parser.add_argument("--dataset_name", type=str, default="", help="Dataset name (overrides YAML if provided)")
     parser.add_argument("--task", type=str, default="mc", choices=["mc", "mci", "qa"], help="Task type")

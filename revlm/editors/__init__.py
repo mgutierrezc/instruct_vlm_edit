@@ -8,6 +8,7 @@ from .defer import Defer
 from .memory import MemoryNetwork
 from .balancedit import BalancEdit
 from .ike import IKE
+from .ike_cot import IKE_COT
 
 
 def get_editor(config, model):
@@ -23,7 +24,9 @@ def get_editor(config, model):
         Editor instance
     """
     device = config.device
-    editor_name = getattr(config.editor, "_name", config.editor if hasattr(config, "editor") else None)
+    editor_name = getattr(
+        config.editor, "_name", config.editor if hasattr(config, "editor") else None
+    )
     
     if editor_name == "ft":
         editor = Finetune(config, model)
@@ -46,6 +49,8 @@ def get_editor(config, model):
         editor = BalancEdit(config, model)
     elif editor_name == "ike":
         editor = IKE(config, model)
+    elif editor_name == "ike_cot":
+        editor = IKE_COT(config, model)
     else:
         raise ValueError(f"Unknown editor: {editor_name}")
     
