@@ -107,11 +107,18 @@ def run_edit(config):
     print("="*50, flush=True)
     print("Step 2 (editing)", flush=True)
     t2 = time.time()
-    editor = get_editor(config, model)
-    editor.generate = model.model.generate if hasattr(model, "model") else model.generate
-
     editor_name = getattr(config.editor, "_name", "")
-    if editor_name in {"ike", "ike_cot"}:
+
+    # For baseline, we skip constructing an editor and performing any edits; the model and prompts stay unchanged.
+    editor = None
+    if editor_name != "baseline":
+        editor = get_editor(config, model)
+        editor.generate = model.model.generate if hasattr(model, "model") else model.generate
+
+    if editor_name == "baseline":
+        if hasattr(model, "model"):
+            model.model.eval()
+    elif editor_name in {"ike", "ike_cot"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
@@ -175,7 +182,7 @@ if __name__ == "__main__":
         "--editor",
         type=str,
         required=True,
-        choices=["ft", "grace", "balancedit", "ike", "ike_cot", "mend"],
+        choices=["ft", "grace", "balancedit", "ike", "ike_cot", "mend", "baseline"],
         help="Editor method to use",
     )
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")
