@@ -66,26 +66,27 @@ def editeval(
 		gen_agg: str = "harmonic",
 	) -> Dict[str, float]:
 	"""Combined metric: rel + λ_gen * gen + λ_loc * loc.
-
+	
 	gen can be mean or harmonic of text/image generality.
 	"""
+
 	t_rel = time.time()
 	rel = reliability(model_new, edit_ds)
 	print(f"[Timing] reliability: {time.time() - t_rel:.2f}s", flush=True)
 	print(f"Reliability: {rel:.4f}", flush=True)
 
 	t_tgen = time.time()
-	tgen = text_generality(model_new, edit_ds, related_texts)
+	tgen = text_generality(model_new, edit_ds, related_texts, editor=editor)
 	print(f"[Timing] text_generality: {time.time() - t_tgen:.2f}s", flush=True)
 	print(f"Text Generality: {tgen:.4f}", flush=True)
 
 	t_igen = time.time()
-	igen = image_generality(model_new, edit_ds, related_images)
+	igen = image_generality(model_new, edit_ds, related_images, editor=editor)
 	print(f"[Timing] image_generality: {time.time() - t_igen:.2f}s", flush=True)
 	print(f"Image Generality: {igen:.4f}", flush=True)
 
 	t_rgen = time.time()
-	rgen = rationale_generality(model_new, edit_ds, related_r_gen_df)
+	rgen = rationale_generality(model_new, edit_ds, related_r_gen_df, editor=editor)
 	print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
 	print(f"Rationale Generality: {rgen:.4f}", flush=True)
 
@@ -234,7 +235,32 @@ def locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_ds=None, sa
 #     return correct / len(preds_old)
 
 
-def text_generality(model_new: Any, edit_ds: Any, related_texts: Dict[str, List[str]]) -> float:
+def _maybe_apply_ike(
+    editor: Any,
+    base_ds: Any,
+    target_ds: Any,
+) -> None:
+    if editor is None:
+        return
+    # Only apply for IKE-style editors; other editors modify model weights.
+    cfg = getattr(base_ds, "config", None)
+    editor_cfg = getattr(cfg, "editor", None)
+    editor_name = getattr(editor_cfg, "_name", None) if editor_cfg is not None else None
+    if editor_name != "ike":
+        return
+    if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+        # Ensure the inner model is in eval mode before generation.
+        if hasattr(editor.model, "eval"):
+            editor.model.eval()
+    editor.edit(cfg, edit_ds=target_ds, train_ds=base_ds)
+
+
+def text_generality(
+    model_new: Any,
+    edit_ds: Any,
+    related_texts: Dict[str, List[str]],
+    editor: Any = None,
+) -> float:
     """Accuracy on paraphrased/related texts using the same images.
 
     related_texts: {"uid": ["question_variant1", "question_variant2", ...]} aligned to edit_ds.data indices.
@@ -256,9 +282,17 @@ def text_generality(model_new: Any, edit_ds: Any, related_texts: Dict[str, List[
     )
     ds.data = ds.df2data(related_df)
     ds.set_dataloader(shuffle_choices=False)
+    
+    _maybe_apply_ike(editor, edit_ds, ds)
+
     return reliability(model_new, ds)
 
-def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, List[str]]) -> float:
+def image_generality(
+    model_new: Any,
+    edit_ds: Any,
+    related_images: Dict[str, List[str]],
+    editor: Any = None,
+) -> float:
     """Accuracy on paraphrased/related texts using the same images.
 
     related_images: {"uid": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
@@ -281,10 +315,18 @@ def image_generality(model_new: Any, edit_ds: Any, related_images: Dict[str, Lis
     )
     ds.data = ds.df2data(related_df) 
     ds.set_dataloader(shuffle_choices=False)
+
+    _maybe_apply_ike(editor, edit_ds, ds)
+
     return reliability(model_new, ds)
 
 
-def rationale_generality(model_new: Any, edit_ds: Any, related_r_gen_df: pd.DataFrame) -> float:
+def rationale_generality(
+    model_new: Any,
+    edit_ds: Any,
+    related_r_gen_df: pd.DataFrame,
+    editor: Any = None,
+) -> float:
     """Accuracy on new samples with the same rationale.
     related_r_gen_df: pd.DataFrame with "uid" and "rationale" columns
     """
@@ -295,6 +337,9 @@ def rationale_generality(model_new: Any, edit_ds: Any, related_r_gen_df: pd.Data
 
     ds.data = ds.df2data(related_r_gen_df)
     ds.set_dataloader(shuffle_choices=False)
+
+    _maybe_apply_ike(editor, edit_ds, ds)
+
     return reliability(model_new, ds)
 
 
