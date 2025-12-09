@@ -239,7 +239,8 @@ class IKE_CLIP(nn.Module):
         n = len(pairs)
 
         # Deterministic shuffling per run given self.seed (and fixed n).
-        g = torch.Generator(device=self.device)
+        # Use a CPU generator because torch.randperm expects a CPU generator.
+        g = torch.Generator(device="cpu")
         g.manual_seed(self.seed)
 
         for epoch in range(self.num_epochs):
