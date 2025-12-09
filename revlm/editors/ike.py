@@ -23,7 +23,7 @@ class IKE(torch.nn.Module):
         self.device = config.device
 
         editor_cfg = getattr(config, "editor", config)
-        self.k: int = int(getattr(editor_cfg, "k", 5))
+        self.k: int = int(getattr(editor_cfg, "k", 3))
         self.sentence_model_name: str = getattr(
             editor_cfg,
             "sentence_model_name",

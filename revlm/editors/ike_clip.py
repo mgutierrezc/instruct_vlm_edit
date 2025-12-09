@@ -39,6 +39,8 @@ class IKE_CLIP(nn.Module):
         editor_cfg = getattr(config, "editor", config)
         # For reproducibility, keep a local seed (falls back to global config.seed or 333).
         self.seed: int = int(getattr(config, "seed", 333))
+        # If True, use image-only features (ignore question text) for the VLM side of CLIP.
+        self.image_only: bool = bool(getattr(editor_cfg, "image_only", True))
         self.k: int = int(getattr(editor_cfg, "k", 3))
         self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 256))
         self.max_pairs: int = int(getattr(editor_cfg, "max_pairs", 512))
@@ -203,7 +205,11 @@ class IKE_CLIP(nn.Module):
         self.model.eval()
         self._last_activations = None
 
-        prompts = [str(q) for q in questions]
+        # For image-only mode, ignore question content when building VLM features.
+        if self.image_only:
+            prompts = ["" for _ in images]
+        else:
+            prompts = [str(q) for q in questions]
         imgs = [im if isinstance(im, PILImage.Image) else im for im in images]
 
         inputs = self.wrapper.encode(imgs, prompts, tokenize=False)
