@@ -34,17 +34,19 @@ class IKE_CLIP(nn.Module):
         # Keep both wrapper (VQAModel) and inner HF model, like other editors
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
-        self.tokenizer = getattr(model, "tokenizer", None)
         self.device = getattr(config, "device", torch.device("cpu"))
 
         editor_cfg = getattr(config, "editor", config)
-        self.k: int = int(getattr(editor_cfg, "k", 5))
-        self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 128))
+        # For reproducibility, keep a local seed (falls back to global config.seed or 333).
+        self.seed: int = int(getattr(config, "seed", 333))
+        self.k: int = int(getattr(editor_cfg, "k", 3))
+        self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 256))
         self.max_pairs: int = int(getattr(editor_cfg, "max_pairs", 512))
-        self.num_epochs: int = int(getattr(editor_cfg, "clip_epochs", 1))
-        self.batch_size: int = int(getattr(editor_cfg, "clip_batch_size", 8))
-        self.lr: float = float(getattr(editor_cfg, "clip_lr", 1e-3))
-        self.temperature: float = float(getattr(editor_cfg, "clip_temperature", 0.07))
+        # Allow aggressive fitting per edit by default; can be overridden in config.
+        self.num_epochs: int = int(getattr(editor_cfg, "clip_epochs", 50))
+        self.batch_size: int = int(getattr(editor_cfg, "clip_batch_size", 10))
+        self.lr: float = float(getattr(editor_cfg, "clip_lr", 1e-4))
+        self.temperature: float = float(getattr(editor_cfg, "clip_temperature", 1))
         self.sentence_model_name: str = getattr(
             editor_cfg,
             "sentence_model_name",
@@ -62,15 +64,22 @@ class IKE_CLIP(nn.Module):
         )
         self.sentence_model.eval()
 
-        # Locate inner layer to use for <image, question> representation
+        # Locate inner *module* (not the raw parameter) to use for <image, question> representation.
+        # Mirror BalancEdit/GRACE: strip trailing ".weight"/".bias" to get the module path.
         inner_params = getattr(getattr(config, "model", config), "inner_params", None) or []
         if not inner_params:
             raise ValueError(
                 "IKE_CLIP requires config.model.inner_params to contain at least one layer name."
             )
-        self.inner_param_name: str = inner_params[0]
-        edit_module = parent_module(self.model, brackets_to_periods(self.inner_param_name))
-        layer_name = self.inner_param_name.rsplit(".", 1)[-1]
+        raw_name: str = inner_params[0]
+        suffixes = [".weight", ".bias"]
+        module_name = raw_name.rsplit(".", 1)[0] if any(
+            raw_name.endswith(suf) for suf in suffixes
+        ) else raw_name
+
+        self.inner_param_name: str = module_name
+        edit_module = parent_module(self.model, brackets_to_periods(module_name))
+        layer_name = module_name.rsplit(".", 1)[-1]
         self.target_layer = getattr(edit_module, layer_name)
 
         # Hook to capture activations at the chosen layer
@@ -80,6 +89,9 @@ class IKE_CLIP(nn.Module):
         # CLIP projection heads (lazy initialization once dims are known)
         self.image_proj: Optional[nn.Linear] = None
         self.text_proj: Optional[nn.Linear] = None
+
+        # Accumulated training pairs across all past edits
+        self.all_pairs: List[Dict[str, Any]] = []
 
         # Retrieval index (projected rationale embeddings)
         self.rationale_texts: List[str] = []
@@ -107,11 +119,7 @@ class IKE_CLIP(nn.Module):
     # Internal utilities
     # -------------------------------------------------------------------------
     def _forward_hook(self, module, inputs, output):
-        """Capture activations at the configured inner layer.
-
-        This mirrors the "average embedding key" construction used in BalancEdit /
-        GRACE by later averaging over the sequence dimension.
-        """
+        """Capture activations at the configured inner layer."""
         x = inputs[0]
         if isinstance(x, torch.Tensor):
             self._last_activations = x.detach()
@@ -146,7 +154,12 @@ class IKE_CLIP(nn.Module):
             # Original rationale sentences paired with real image
             for s in base_sents:
                 pairs.append(
-                    {"image": image, "question": question, "rationale": s}
+                    {
+                        "image": image,
+                        "question": question,
+                        "rationale": s,
+                        "is_counterfactual": False,
+                    }
                 )
 
             # Counterfactual sentences paired with a black image
@@ -154,16 +167,14 @@ class IKE_CLIP(nn.Module):
             if self.wrapper is not None and base_sents:
                 for s in base_sents:
                     inst = (
-                        "Rewrite the following sentence so that it describes a "
-                        "different plausible fact about the same object, while "
-                        "staying consistent with everyday world knowledge. "
-                        "Avoid explicit negation; state an alternative fact.\n\n"
+                        "Rewrite the sentence to state a different plausible fact "
+                        "about the same object, using common knowledge. \n\n"
                         f"Original sentence: {s}\n\n"
                         "Rewritten sentence:"
                     )
                     try:
                         cf = self.wrapper.generate(
-                            [blank], [inst], max_new_tokens=64, temperature=0.7
+                            [blank], [inst], max_new_tokens=64, temperature=0.0
                         )[0]
                         cf = str(cf).strip()
                     except Exception:
@@ -171,7 +182,12 @@ class IKE_CLIP(nn.Module):
 
                     if cf and cf.lower() != s.lower():
                         pairs.append(
-                            {"image": blank, "question": question, "rationale": cf}
+                            {
+                                "image": blank,
+                                "question": question,
+                                "rationale": cf,
+                                "is_counterfactual": True,
+                            }
                         )
 
             if len(pairs) >= self.max_pairs:
@@ -180,11 +196,7 @@ class IKE_CLIP(nn.Module):
         return pairs[: self.max_pairs]
 
     def _encode_vlm_features(self, images: List[Any], questions: List[str]) -> torch.Tensor:
-        """Encode <image, question> pairs using the chosen inner layer.
-
-        Returns:
-            Tensor of shape [B, H] with average over sequence dimension.
-        """
+        """Encode <image, question> pairs using the chosen inner layer (avg over tokens)."""
         if self.wrapper is None or not hasattr(self.wrapper, "encode"):
             raise RuntimeError("IKE_CLIP requires a VQAModel wrapper with an `.encode` method.")
 
@@ -212,7 +224,7 @@ class IKE_CLIP(nn.Module):
         return feats.to(self.device, dtype=torch.float32)
 
     def _ensure_heads(self, img_dim: int, txt_dim: int) -> None:
-        """Lazily initialize CLIP projection heads."""
+        """Initialize CLIP projection heads if missing."""
         if self.image_proj is None:
             self.image_proj = nn.Linear(img_dim, self.clip_dim, bias=True).to(self.device)
         if self.text_proj is None:
@@ -223,17 +235,15 @@ class IKE_CLIP(nn.Module):
         if not pairs:
             return
 
-        self.model.eval()
-        for p in self.model.parameters():
-            p.requires_grad_(False)
-        for p in self.sentence_model.parameters():
-            p.requires_grad_(False)
-
         optimizer: Optional[torch.optim.Optimizer] = None
         n = len(pairs)
 
+        # Deterministic shuffling per run given self.seed (and fixed n).
+        g = torch.Generator(device=self.device)
+        g.manual_seed(self.seed)
+
         for epoch in range(self.num_epochs):
-            perm = torch.randperm(n)
+            perm = torch.randperm(n, generator=g)
             for start in range(0, n, self.batch_size):
                 idx = perm[start : start + self.batch_size]
                 batch = [pairs[i.item()] for i in idx]
@@ -243,9 +253,10 @@ class IKE_CLIP(nn.Module):
                 texts = [b["rationale"] for b in batch]
 
                 img_feats = self._encode_vlm_features(images, questions)  # [B, H_v]
+                # SentenceTransformer may return inference-mode tensors; clone to allow grad.
                 txt_feats_base = self.sentence_model.encode(
                     texts, convert_to_tensor=True, show_progress_bar=False
-                ).to(self.device, dtype=torch.float32)  # [B, H_t]
+                ).to(self.device, dtype=torch.float32).clone()  # [B, H_t]
 
                 self._ensure_heads(img_feats.shape[-1], txt_feats_base.shape[-1])
 
@@ -270,15 +281,24 @@ class IKE_CLIP(nn.Module):
                 loss.backward()
                 optimizer.step()
 
+    @torch.no_grad()
     def _build_rationale_index(self, pairs: List[Dict[str, Any]]) -> None:
         """Embed all rationale sentences and store them as a retrieval index."""
         if not pairs or self.text_proj is None:
             return
 
-        texts = [p["rationale"] for p in pairs]
+        # Only index *original* rationale sentences for retrieval; counterfactuals
+        # are used to train CLIP but not surfaced as \"New Facts\".
+        texts = [
+            p["rationale"]
+            for p in pairs
+            if not p.get("is_counterfactual", False)
+        ]
+        if not texts:
+            return
         txt_feats_base = self.sentence_model.encode(
             texts, convert_to_tensor=True, show_progress_bar=False
-        ).to(self.device, dtype=torch.float32)
+        ).to(self.device, dtype=torch.float32).clone()
 
         txt_emb = self.text_proj(txt_feats_base)
         txt_emb = F.normalize(txt_emb, dim=-1)
@@ -359,27 +379,33 @@ class IKE_CLIP(nn.Module):
         edit_ds=None,
         train_ds=None,
     ):
-        """Entry point used by `run/edit.py` when editor_name == 'ike_clip'."""
+        """Entry point used by `run/edit.py` when editor_name == 'ike_clip'.
+
+        CLIP is trained only on *edit* examples:
+        - For each edit (error case) and its rationale sentences, we update the
+          projection heads so that the <image, question> representation is close
+          to its sentences.
+        - Across multiple calls to `edit`, the same projection heads are further
+          refined, effectively doing incremental training as more edits arrive.
+        """
         # If there is no dataset to edit, do nothing.
         if edit_ds is None:
             return self.model
 
-        # Build CLIP-style rationale retriever from a corpus source
-        corpus_source = train_ds if train_ds is not None else edit_ds
-        pairs = self._build_pairs_from_dataset(corpus_source)
-        self._train_clip(pairs)
-        self._build_rationale_index(pairs)
+        # Build CLIP-style rationale retriever only from edits (error cases).
+        # We accumulate all past edit pairs so each call trains on (new edits + all previous edits).
+        new_pairs = self._build_pairs_from_dataset(edit_ds)
+        if new_pairs:
+            self.all_pairs.extend(new_pairs)
+            # Optionally cap memory to the most recent `max_pairs` examples
+            if len(self.all_pairs) > self.max_pairs:
+                self.all_pairs = self.all_pairs[-self.max_pairs :]
+
+        # Train CLIP on all accumulated edit pairs and rebuild the index.
+        self._train_clip(self.all_pairs)
+        self._build_rationale_index(self.all_pairs)
 
         # Augment all prompts in-place on `edit_ds` and cache a retrieval log.
         self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, inplace=True)
         return self.model
-
-    def __del__(self):
-        # Best-effort hook cleanup
-        if hasattr(self, "_hook_handle") and self._hook_handle is not None:
-            try:
-                self._hook_handle.remove()
-            except Exception:
-                pass
-
 

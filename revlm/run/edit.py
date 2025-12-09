@@ -118,7 +118,7 @@ def run_edit(config):
     if editor_name == "baseline":
         if hasattr(model, "model"):
             model.model.eval()
-    elif editor_name in {"ike", "ike_cot"}:
+    elif editor_name in {"ike", "ike_cot", "ike_clip"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
@@ -182,7 +182,7 @@ if __name__ == "__main__":
         "--editor",
         type=str,
         required=True,
-        choices=["ft", "grace", "balancedit", "ike", "ike_cot", "mend", "baseline"],
+        choices=["ft", "grace", "balancedit", "ike", "ike_cot", "ike_clip", "mend", "baseline"],
         help="Editor method to use",
     )
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")

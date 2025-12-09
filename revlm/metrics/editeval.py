@@ -246,13 +246,20 @@ def _maybe_apply_ike(
     cfg = getattr(train_ds, "config", None)
     editor_cfg = getattr(cfg, "editor", None)
     editor_name = getattr(editor_cfg, "_name", None) if editor_cfg is not None else None
-    if editor_name != "ike":
-        return
-    if hasattr(editor, "model") and hasattr(editor, "wrapper"):
-        # Ensure the inner model is in eval mode before generation.
-        if hasattr(editor.model, "eval"):
-            editor.model.eval()
-    editor.edit(cfg, edit_ds=edit_ds, train_ds=train_ds)
+    if editor_name == "ike":
+        # IKE: build text corpus from train_ds, then augment prompts on edit_ds.
+        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+            # Ensure the inner model is in eval mode before generation.
+            if hasattr(editor.model, "eval"):
+                editor.model.eval()
+        editor.edit(cfg, edit_ds=edit_ds, train_ds=train_ds)
+    elif editor_name == "ike_clip":
+        # IKE_CLIP: reuse the CLIP retriever learned during the main edit phase.
+        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+            if hasattr(editor.model, "eval"):
+                editor.model.eval()
+        # Apply retrieval-based prompt augmentation in-place.
+        editor.apply_to_dataset(edit_ds, inplace=True)
 
 
 def text_generality(
