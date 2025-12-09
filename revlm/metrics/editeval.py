@@ -237,8 +237,8 @@ def locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_ds=None, sa
 
 def _maybe_apply_ike(
     editor: Any,
-    base_ds: Any,
-    target_ds: Any,
+    edit_ds: Any,
+    train_ds: Any,
 ) -> None:
     if editor is None:
         return
@@ -252,7 +252,7 @@ def _maybe_apply_ike(
         # Ensure the inner model is in eval mode before generation.
         if hasattr(editor.model, "eval"):
             editor.model.eval()
-    editor.edit(cfg, edit_ds=target_ds, train_ds=base_ds)
+    editor.edit(cfg, edit_ds=edit_ds, train_ds=train_ds)
 
 
 def text_generality(
@@ -282,8 +282,8 @@ def text_generality(
     )
     ds.data = ds.df2data(related_df)
     ds.set_dataloader(shuffle_choices=False)
-    
-    _maybe_apply_ike(editor, edit_ds, ds)
+
+    _maybe_apply_ike(editor, ds, edit_ds)
 
     return reliability(model_new, ds)
 
@@ -316,7 +316,7 @@ def image_generality(
     ds.data = ds.df2data(related_df) 
     ds.set_dataloader(shuffle_choices=False)
 
-    _maybe_apply_ike(editor, edit_ds, ds)
+    _maybe_apply_ike(editor, ds, edit_ds)
 
     return reliability(model_new, ds)
 
@@ -338,7 +338,7 @@ def rationale_generality(
     ds.data = ds.df2data(related_r_gen_df)
     ds.set_dataloader(shuffle_choices=False)
 
-    _maybe_apply_ike(editor, edit_ds, ds)
+    _maybe_apply_ike(editor, ds, edit_ds)
 
     return reliability(model_new, ds)
 
