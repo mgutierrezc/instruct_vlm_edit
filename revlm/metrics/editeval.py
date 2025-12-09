@@ -243,7 +243,7 @@ def _maybe_apply_ike(
     if editor is None:
         return
     # Only apply for IKE-style editors; other editors modify model weights.
-    cfg = getattr(base_ds, "config", None)
+    cfg = getattr(train_ds, "config", None)
     editor_cfg = getattr(cfg, "editor", None)
     editor_name = getattr(editor_cfg, "_name", None) if editor_cfg is not None else None
     if editor_name != "ike":

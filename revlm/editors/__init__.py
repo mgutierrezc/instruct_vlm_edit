@@ -9,6 +9,7 @@ from .memory import MemoryNetwork
 from .balancedit import BalancEdit
 from .ike import IKE
 from .ike_cot import IKE_COT
+from .ike_clip import IKE_CLIP
 
 
 def get_editor(config, model):
@@ -51,6 +52,8 @@ def get_editor(config, model):
         editor = IKE(config, model)
     elif editor_name == "ike_cot":
         editor = IKE_COT(config, model)
+    elif editor_name == "ike_clip":
+        editor = IKE_CLIP(config, model)
     else:
         raise ValueError(f"Unknown editor: {editor_name}")
     
