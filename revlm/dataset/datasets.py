@@ -121,11 +121,22 @@ class VQADataset(Dataset):
         """Collate function that loads images and returns a batch dict.
         Expects items with keys: 'image' (path), 'prompt' (string), 'gold' (dict), 'idx' (int).
         """
-        images = [self._resize_image(Image.open(ex["image"]).convert("RGB")) for ex in batch]
-        # images = [Image.open(ex["image"]).convert("RGB") for ex in batch]
-        prompts = [ex["prompt"] for ex in batch]
-        golds = [ex["gold"] for ex in batch]
-        idxs = [ex["idx"] for ex in batch]
+        images = []
+        prompts = []
+        golds = []
+        idxs = []
+        for ex in batch:
+            img_path = ex["image"]
+            try:
+                img = self._resize_image(Image.open(img_path).convert("RGB"))
+            except Exception as exc: 
+                # Log the error type and offending image path, then skip this example.
+                print(f"[image_collate] Skipping bad image ({exc.__class__.__name__}): {img_path}. Error: {exc}", flush=True)
+                continue
+            images.append(img)
+            prompts.append(ex["prompt"])
+            golds.append(ex["gold"])
+            idxs.append(ex["idx"])
         return {
             "images": images,
             "prompts": prompts,
