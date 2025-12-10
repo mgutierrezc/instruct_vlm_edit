@@ -40,7 +40,7 @@ class IKE_CLIP(nn.Module):
         # For reproducibility, keep a local seed (falls back to global config.seed or 333).
         self.seed: int = int(getattr(config, "seed", 333))
         # If True, use image-only features (ignore question text) for the VLM side of CLIP.
-        self.image_only: bool = bool(getattr(editor_cfg, "image_only", True))
+        self.image_only: bool = bool(getattr(editor_cfg, "image_only", False))
         self.k: int = int(getattr(editor_cfg, "k", 3))
         self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 256))
         self.max_pairs: int = int(getattr(editor_cfg, "max_pairs", 512))

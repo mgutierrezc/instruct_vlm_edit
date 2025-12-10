@@ -152,6 +152,9 @@ class VQADataset(Dataset):
 
     def task_generate(self, model, use_cache=False):
         for batch in self.loader:
+            # Skip empty batches (all images failed to load, e.g., corrupted/truncated images)
+            if not batch["images"] or not batch["prompts"]:
+                continue
             try:
                 core = getattr(getattr(model, "model", model), "model", getattr(model, "model", model))
                 # Re-enable KV cache for faster eval
