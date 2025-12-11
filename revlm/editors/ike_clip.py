@@ -43,6 +43,10 @@ class IKE_CLIP(nn.Module):
         self.image_only: bool = bool(getattr(editor_cfg, "image_only", False))
         self.k: int = int(getattr(editor_cfg, "k", 3))
         self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 256))
+        # Include counterfactual sentences in retrieval index if True.
+        self.include_counterfactuals_in_index: bool = bool( getattr(editor_cfg, "include_counterfactuals_in_index", True))
+        # How many counterfactuals to generate per base sentence (0 = none).
+        self.num_counterfacts_per_sentence: int = int(getattr(editor_cfg, "num_counterfacts_per_sentence", 2))
         self.max_pairs: int = int(getattr(editor_cfg, "max_pairs", 512))
         # Allow aggressive fitting per edit by default; can be overridden in config.
         self.num_epochs: int = int(getattr(editor_cfg, "clip_epochs", 50))
@@ -166,31 +170,36 @@ class IKE_CLIP(nn.Module):
 
             # Counterfactual sentences paired with a black image
             blank = PILImage.new("RGB", (364, 364), color="black")
-            if self.wrapper is not None and base_sents:
+            if (
+                self.wrapper is not None
+                and base_sents
+                and self.num_counterfacts_per_sentence > 0
+            ):
                 for s in base_sents:
-                    inst = (
-                        "Rewrite the sentence to state a different plausible fact "
-                        "about the same object, using common knowledge. \n\n"
-                        f"Original sentence: {s}\n\n"
-                        "Rewritten sentence:"
-                    )
-                    try:
-                        cf = self.wrapper.generate(
-                            [blank], [inst], max_new_tokens=64, temperature=0.0
-                        )[0]
-                        cf = str(cf).strip()
-                    except Exception:
-                        cf = ""
-
-                    if cf and cf.lower() != s.lower():
-                        pairs.append(
-                            {
-                                "image": blank,
-                                "question": question,
-                                "rationale": cf,
-                                "is_counterfactual": True,
-                            }
+                    for _ in range(self.num_counterfacts_per_sentence):
+                        inst = (
+                            "Rewrite the sentence to state a different plausible fact "
+                            "about the same object, using common knowledge. \n\n"
+                            f"Original sentence: {s}\n\n"
+                            "Rewritten sentence:"
                         )
+                        try:
+                            cf = self.wrapper.generate(
+                                [blank], [inst], max_new_tokens=64, temperature=0.0
+                            )[0]
+                            cf = str(cf).strip()
+                        except Exception:
+                            cf = ""
+
+                        if cf and cf.lower() != s.lower():
+                            pairs.append(
+                                {
+                                    "image": blank,
+                                    "question": question,
+                                    "rationale": cf,
+                                    "is_counterfactual": True,
+                                }
+                            )
 
             if len(pairs) >= self.max_pairs:
                 break
@@ -294,13 +303,14 @@ class IKE_CLIP(nn.Module):
         if not pairs or self.text_proj is None:
             return
 
-        # Only index *original* rationale sentences for retrieval; counterfactuals
-        # are used to train CLIP but not surfaced as \"New Facts\".
-        texts = [
-            p["rationale"]
-            for p in pairs
-            if not p.get("is_counterfactual", False)
-        ]
+        if self.include_counterfactuals_in_index:
+            texts = [p["rationale"] for p in pairs]
+        else:
+            texts = [
+                p["rationale"]
+                for p in pairs
+                if not p.get("is_counterfactual", False)
+            ]
         if not texts:
             return
         txt_feats_base = self.sentence_model.encode(
