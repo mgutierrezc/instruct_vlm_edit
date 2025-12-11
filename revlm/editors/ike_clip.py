@@ -57,7 +57,7 @@ class IKE_CLIP(nn.Module):
         self.sentence_model = SentenceTransformer(self.sentence_model_name).to(self.device).eval()
 
         # Prompt prefix
-        self.prefix = getattr(editor_cfg, "cot_prefix", "")
+        self.prefix = getattr(editor_cfg, "cot_prefix", "New Fact: ")
 
         # Inner layer hook setup
         inner_params = getattr(getattr(config, "model", config), "inner_params", None) or []
