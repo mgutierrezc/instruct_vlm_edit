@@ -84,6 +84,7 @@ class IKE_CLIP(nn.Module):
 
         # Router configuration
         self.use_router = bool(getattr(editor_cfg, "use_router", True))
+        self.router_hidden = int(getattr(editor_cfg, "router_hidden", 10))
         self.router: Optional[nn.Sequential] = None
         self.router_lr = float(getattr(editor_cfg, "router_lr", 1e-3))
         self.router_epochs = int(getattr(editor_cfg, "router_epochs", 20))
@@ -386,13 +387,29 @@ class IKE_CLIP(nn.Module):
         return router_data
 
     def _train_router(self) -> None:
-        """Train logistic regression router on entropy features."""
+        """Train router on entropy features.
+
+        If router_hidden == 0 → simple logistic regression.
+        If router_hidden  > 0 → 1-hidden-layer MLP with ReLU.
+        """
         if len(self.router_data) < 2:
             return
 
-        # Initialize router if needed (simple logistic regression)
+        # Initialize router if needed
         if self.router is None:
-            self.router = nn.Sequential(nn.Linear(2, 1), nn.Sigmoid()).to(self.device)
+            if self.router_hidden > 0:
+                self.router = nn.Sequential(
+                    nn.Linear(2, self.router_hidden),
+                    nn.ReLU(),
+                    nn.Linear(self.router_hidden, 1),
+                    nn.Sigmoid(),
+                ).to(self.device)
+            else:
+                # Simple logistic regression
+                self.router = nn.Sequential(
+                    nn.Linear(2, 1),
+                    nn.Sigmoid(),
+                ).to(self.device)
 
         # Prepare training data
         X = torch.tensor([[e0, e1] for e0, e1, _ in self.router_data], dtype=torch.float32, device=self.device)
