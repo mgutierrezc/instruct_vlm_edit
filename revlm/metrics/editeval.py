@@ -103,7 +103,14 @@ def editeval(
 	print(f"Editk Generality: {editk:.4f}", flush=True)
 
 	t_loc = time.time()
-	loc = locality(model_old, model_new, edit_ds, unrelated_ds=unrelated_ds, sample_size=loc_sample_size)
+	loc = locality(
+		model_old,
+		model_new,
+		edit_ds,
+		unrelated_ds=unrelated_ds,
+		sample_size=loc_sample_size,
+		editor=editor,
+	)
 	print(f"[Timing] locality: {time.time() - t_loc:.2f}s", flush=True)
 	print(f"Locality: {loc:.4f}", flush=True)
 
@@ -145,13 +152,25 @@ def reliability(model_new: Any, edit_ds: Any) -> float:
     return correct / len(pairs)
 
 
-def locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_ds=None, sample_size=None) -> float:
+def locality(
+    model_old: Any,
+    model_new: Any,
+    edit_ds: Any,
+    unrelated_ds=None,
+    sample_size=None,
+    editor: Any = None,
+) -> float:
     """Agreement between base and new models on unrelated inputs.
     
     We form an unrelated set by excluding rows that share the same image or
     question as those in the current edit set, then sample.
+    
+    For IKE-style editors (\"ike\", \"ike_clip\"), we treat:
+      - model_old: baseline predictions on the unrelated set (no prompt augmentation)
+      - model_new: predictions with retrieval-based prompt augmentation applied
+        to the unrelated set via `_maybe_apply_ike`.
     """
-    if unrelated_ds is None: # generate unrelated_ds from edit_ds by sampling
+    if unrelated_ds is None:  # generate unrelated_ds from edit_ds by sampling
         unrelated_ds = copy.deepcopy(edit_ds)
         full_df = edit_ds.load_df()
         used_images = {ex.get("image") for ex in edit_ds.data}
@@ -161,13 +180,23 @@ def locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_ds=None, sa
         if pool_df.empty:
             raise ValueError("No unrelated inputs found")
         if sample_size is not None:
-            pool_df = pool_df.sample(n=min(sample_size, len(pool_df)), random_state=getattr(edit_ds.config, "seed", 333))
+            pool_df = pool_df.sample(
+                n=min(sample_size, len(pool_df)),
+                random_state=getattr(edit_ds.config, "seed", 333),
+            )
         unrelated_ds.data = unrelated_ds.df2data(pool_df)
         unrelated_ds.set_dataloader(shuffle_choices=False)
 
+    # Use separate dataset copies for baseline vs editor-augmented predictions
+    ds_old = copy.deepcopy(unrelated_ds)
+    ds_new = copy.deepcopy(unrelated_ds)
+
+    # Apply IKE / IKE_CLIP retrieval only to the "new" dataset
+    _maybe_apply_ike(editor, ds_new, edit_ds)
+
     # evaluate locality
-    pairs_old = generation(model_old, unrelated_ds)
-    pairs_new = generation(model_new, unrelated_ds)
+    pairs_old = generation(model_old, ds_old)
+    pairs_new = generation(model_new, ds_new)
     preds_old = [p for _, p in pairs_old]
     preds_new = [p for _, p in pairs_new]
     correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
