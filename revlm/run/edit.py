@@ -138,6 +138,14 @@ def run_edit(config):
     print10(edit_ds, label="model_new")
     print(f"Total time: {time.time() - t2:.2f}s", flush=True)
 
+    # Snap post-edit predictions on the edit set to a separate folder, analogous to `pred`.
+    pred_postedit_snapshot = os.path.join(
+        getattr(config, "pred_postedit_dir", config.pred_dir),
+        config.fname,
+    )
+    edit_ds.snap(out_path=pred_postedit_snapshot)
+    print(f"Post-edit predictions saved to {pred_postedit_snapshot}", flush=True)
+
     # Step 3: evaluate the edited model
     print("="*50, flush=True)
     print("Step 3 (evaluation)", flush=True)
@@ -197,6 +205,7 @@ if __name__ == "__main__":
     parser.add_argument("--cot", action="store_true", help="Use COT ('cot' field) instead of 'rationale' when rationale is enabled")
     parser.add_argument("--subsample", type=int, default=0, help="Evaluate on a random subset of this many examples (0=all)")
     parser.add_argument("--pred_path", type=str, default=None, help="Optional path to saved edit dataset. If it exists the file is loaded, otherwise it is written after error discovery.")
+    parser.add_argument("--pred_postedit_dir", type=str, default=None, help="Optional directory for saving post-edit predictions on the edit set.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
 
     args = parser.parse_args()
@@ -215,5 +224,6 @@ if __name__ == "__main__":
     config.rationale = args.rationale
     config.cot = args.cot
     config.pred_path = args.pred_path
+    config.pred_postedit_dir = args.pred_postedit_dir
     config.overwrite = args.overwrite
     run_edit(config)

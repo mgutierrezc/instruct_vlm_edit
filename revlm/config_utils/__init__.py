@@ -104,10 +104,14 @@ def configure_args(args, config_path=None):
     edit_dir = _normalize_cli_dir(getattr(args, "edit_dir", None)) or os.path.join("results", "ee", editor_tag, model_tag, dataset_tag)
     os.makedirs(edit_dir, exist_ok=True)
     print(f"Edit evaluation metrics will be saved to {edit_dir}")
-    # prediction saving dir
+    # prediction saving dir (pre-edit)
     pred_dir =  _normalize_cli_dir(getattr(args, "pred_dir", None)) or os.path.join("results", "pred", model_tag, dataset_tag)
     os.makedirs(pred_dir, exist_ok=True)
     print(f"Predictions will be saved to {pred_dir}")
+    # prediction saving dir (post-edit, e.g., edited model on edit set)
+    pred_postedit_dir = _normalize_cli_dir(getattr(args, "pred_postedit_dir", None)) or os.path.join("results", "pred_postedit", model_tag, dataset_tag)
+    os.makedirs(pred_postedit_dir, exist_ok=True)
+    print(f"Post-edit predictions will be saved to {pred_postedit_dir}")
     # unified filename to save
     fname = f"{task_tag}_{experiment['split']}.json" # {experiment['suffix']}
     print(f"Unified filename to save: {fname}")
@@ -146,6 +150,7 @@ def configure_args(args, config_path=None):
         "task_dir": task_dir,
         "edit_dir": edit_dir,
         "pred_dir": pred_dir,
+        "pred_postedit_dir": pred_postedit_dir,
         "fname": fname,
         "model": model,
         "editor": editor,
@@ -196,6 +201,7 @@ def update_config(config, *, config_path=None, **overrides):
         "task_dir": overrides.get("task_dir", config.task_dir),
         "edit_dir": overrides.get("edit_dir", config.edit_dir),
         "pred_dir": overrides.get("pred_dir", config.pred_dir),
+        "pred_postedit_dir": overrides.get("pred_postedit_dir", getattr(config, "pred_postedit_dir", None)),
         "suffix": overrides.get("suffix", getattr(config.experiment, "suffix", "")),
         "subsample": overrides.get("subsample", getattr(config, "subsample", 0)),
         "overwrite": overrides.get("overwrite", getattr(config, "overwrite", False)),

@@ -45,10 +45,8 @@ class IKE_CLIP(nn.Module):
         self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 256))
         # Include counterfactual sentences in retrieval index if True.
         self.include_counterfactuals_in_index: bool = bool( getattr(editor_cfg, "include_counterfactuals_in_index", True))
-        # How many counterfactuals to generate per base sentence (0 = none).
         self.num_counterfacts_per_sentence: int = int(getattr(editor_cfg, "num_counterfacts_per_sentence", 2))
         self.max_pairs: int = int(getattr(editor_cfg, "max_pairs", 512))
-        # Allow aggressive fitting per edit by default; can be overridden in config.
         self.num_epochs: int = int(getattr(editor_cfg, "clip_epochs", 50))
         self.batch_size: int = int(getattr(editor_cfg, "clip_batch_size", 10))
         self.lr: float = float(getattr(editor_cfg, "clip_lr", 1e-4))
@@ -324,10 +322,16 @@ class IKE_CLIP(nn.Module):
         self.rationale_embeddings = txt_emb
 
     @torch.no_grad()
-    def _retrieve_facts(self, image: Any, question: str, top_k: int) -> List[str]:
-        """Retrieve top‑k rationale sentences for a given <image, question>."""
+    def _retrieve_facts(
+        self, image: Any, question: str, top_k: int
+    ) -> Tuple[List[str], Optional[float]]:
+        """Retrieve top‑k rationale sentences for a given <image, question>.
+
+        Also returns the sample entropy of the softmax distribution over *all*
+        candidates in the index (higher = more diffuse / uncertain).
+        """
         if self.rationale_embeddings is None or not self.rationale_texts:
-            return []
+            return [], None
 
         img_feats = self._encode_vlm_features([image], [question])  # [1, H_v]
         self._ensure_heads(img_feats.shape[-1], self.rationale_embeddings.shape[-1])
@@ -336,12 +340,18 @@ class IKE_CLIP(nn.Module):
         img_emb = F.normalize(img_emb, dim=-1)  # [1, D]
 
         sims = torch.matmul(self.rationale_embeddings, img_emb.t()).squeeze(-1)  # [N]
+        # Softmax distribution over all candidates, using same temperature as CLIP loss.
+        probs = F.softmax(sims / self.temperature, dim=-1)
+        log_probs = probs.clamp_min(1e-12).log()
+        entropy = float(-(probs * log_probs).sum().item())
+
         k = min(top_k, sims.size(0))
         if k <= 0:
-            return []
+            return [], entropy
 
         topk = torch.topk(sims, k=k, largest=True)
-        return [self.rationale_texts[i] for i in topk.indices.tolist()]
+        facts = [self.rationale_texts[i] for i in topk.indices.tolist()]
+        return facts, entropy
 
     def apply_to_dataset(
         self, dataset, inplace: bool = True
@@ -368,18 +378,21 @@ class IKE_CLIP(nn.Module):
             if "prompt_orig" not in ex:
                 ex["prompt_orig"] = prompt
 
-            facts = self._retrieve_facts(image, question, self.k)
+            facts, entropy = self._retrieve_facts(image, question, self.k)
             if not facts:
                 continue
 
             facts_str = " ".join(facts)
             augmented_prompt = f"{self.prefix}{facts_str}\n\n{prompt}"
             ex["prompt"] = augmented_prompt
+            # Store entropy on the example for analysis
+            ex["retrieval_entropy"] = entropy
 
             log.append(
                 {
                     "uid": ex.get("uid"),
                     "retrieved": len(facts),
+                    "entropy": entropy,
                 }
             )
 
