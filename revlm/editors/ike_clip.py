@@ -30,78 +30,66 @@ class IKE_CLIP(nn.Module):
     def __init__(self, config, model):
         super().__init__()
         self.config = config
+        editor_cfg = getattr(config, "editor", config)
 
-        # Keep both wrapper (VQAModel) and inner HF model, like other editors
+        # Model setup
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.device = getattr(config, "device", torch.device("cpu"))
 
-        editor_cfg = getattr(config, "editor", config)
-        # For reproducibility, keep a local seed (falls back to global config.seed or 333).
-        self.seed: int = int(getattr(config, "seed", 333))
-        # If True, use image-only features (ignore question text) for the VLM side of CLIP.
-        self.image_only: bool = bool(getattr(editor_cfg, "image_only", False))
-        self.k: int = int(getattr(editor_cfg, "k", 3))
-        self.clip_dim: int = int(getattr(editor_cfg, "clip_dim", 256))
-        # Include counterfactual sentences in retrieval index if True.
-        self.include_counterfactuals_in_index: bool = bool( getattr(editor_cfg, "include_counterfactuals_in_index", True))
-        self.num_counterfacts_per_sentence: int = int(getattr(editor_cfg, "num_counterfacts_per_sentence", 2))
-        self.max_pairs: int = int(getattr(editor_cfg, "max_pairs", 512))
-        self.num_epochs: int = int(getattr(editor_cfg, "clip_epochs", 50))
-        self.batch_size: int = int(getattr(editor_cfg, "clip_batch_size", 10))
-        self.lr: float = float(getattr(editor_cfg, "clip_lr", 1e-4))
-        self.temperature: float = float(getattr(editor_cfg, "clip_temperature", 1))
-        self.sentence_model_name: str = getattr(
-            editor_cfg,
-            "sentence_model_name",
-            "sentence-transformers/all-MiniLM-L6-v2",
-        )
-        self.prefix: str = getattr(
-            editor_cfg,
-            "cot_prefix",
-            "New Facts: ",
-        )
+        # CLIP configuration
+        self.seed = int(getattr(config, "seed", 333))
+        self.image_only = bool(getattr(editor_cfg, "image_only", False))
+        self.k = int(getattr(editor_cfg, "k", 3))
+        self.clip_dim = int(getattr(editor_cfg, "clip_dim", 256))
+        self.num_epochs = int(getattr(editor_cfg, "clip_epochs", 50))
+        self.batch_size = int(getattr(editor_cfg, "clip_batch_size", 10))
+        self.lr = float(getattr(editor_cfg, "clip_lr", 1e-4))
+        self.temperature = float(getattr(editor_cfg, "clip_temperature", 1))
 
-        # Frozen sentence-level encoder (Sentence-BERT)
-        self.sentence_model = SentenceTransformer(self.sentence_model_name).to(
-            self.device
-        )
-        self.sentence_model.eval()
+        # Counterfactual configuration
+        self.include_counterfactuals_in_index = bool(getattr(editor_cfg, "include_counterfactuals_in_index", True))
+        self.num_counterfacts_per_sentence = int(getattr(editor_cfg, "num_counterfacts_per_sentence", 1))
+        self.max_pairs = int(getattr(editor_cfg, "max_pairs", 512))
 
-        # Locate inner *module* (not the raw parameter) to use for <image, question> representation.
-        # Mirror BalancEdit/GRACE: strip trailing ".weight"/".bias" to get the module path.
+        # Sentence model
+        self.sentence_model_name = getattr(editor_cfg, "sentence_model_name", "sentence-transformers/all-MiniLM-L6-v2")
+        self.sentence_model = SentenceTransformer(self.sentence_model_name).to(self.device).eval()
+
+        # Prompt prefix
+        self.prefix = getattr(editor_cfg, "cot_prefix", "")
+
+        # Inner layer hook setup
         inner_params = getattr(getattr(config, "model", config), "inner_params", None) or []
         if not inner_params:
-            raise ValueError(
-                "IKE_CLIP requires config.model.inner_params to contain at least one layer name."
-            )
-        raw_name: str = inner_params[0]
-        suffixes = [".weight", ".bias"]
-        module_name = raw_name.rsplit(".", 1)[0] if any(
-            raw_name.endswith(suf) for suf in suffixes
-        ) else raw_name
-
-        self.inner_param_name: str = module_name
-        edit_module = parent_module(self.model, brackets_to_periods(module_name))
-        layer_name = module_name.rsplit(".", 1)[-1]
-        self.target_layer = getattr(edit_module, layer_name)
-
-        # Hook to capture activations at the chosen layer
+            raise ValueError("IKE_CLIP requires config.model.inner_params to contain at least one layer name.")
+        raw_name = inner_params[0]
+        self.inner_param_name = raw_name.rsplit(".", 1)[0] if any(raw_name.endswith(s) for s in [".weight", ".bias"]) else raw_name
+        edit_module = parent_module(self.model, brackets_to_periods(self.inner_param_name))
+        self.target_layer = getattr(edit_module, self.inner_param_name.rsplit(".", 1)[-1])
         self._last_activations: Optional[torch.Tensor] = None
         self._hook_handle = self.target_layer.register_forward_hook(self._forward_hook)
 
-        # CLIP projection heads (lazy initialization once dims are known)
+        # CLIP projection heads (lazy initialization)
         self.image_proj: Optional[nn.Linear] = None
         self.text_proj: Optional[nn.Linear] = None
 
-        # Accumulated training pairs across all past edits
+        # Training data storage
         self.all_pairs: List[Dict[str, Any]] = []
 
-        # Retrieval index (projected rationale embeddings)
+        # Retrieval index
         self.rationale_texts: List[str] = []
         self.rationale_embeddings: Optional[torch.Tensor] = None
+        self.counterfactual_embeddings: Optional[torch.Tensor] = None
 
-        # For logging / inspection after editing
+        # Router configuration
+        self.use_router = bool(getattr(editor_cfg, "use_router", True))
+        self.router: Optional[nn.Sequential] = None
+        self.router_lr = float(getattr(editor_cfg, "router_lr", 1e-3))
+        self.router_epochs = int(getattr(editor_cfg, "router_epochs", 20))
+        self.router_data: List[Tuple[float, float, int]] = []
+
+        # Logging
         self.last_retrieval_log: Optional[List[Dict[str, Any]]] = None
 
     # -------------------------------------------------------------------------
@@ -321,37 +309,103 @@ class IKE_CLIP(nn.Module):
         self.rationale_texts = texts
         self.rationale_embeddings = txt_emb
 
+        # Build counterfactual embeddings for router entropy calculation
+        cf_pairs = [p for p in pairs if p.get("is_counterfactual", False)]
+        if cf_pairs:
+            cf_texts = [p["rationale"] for p in cf_pairs]
+            cf_feats = self.sentence_model.encode(
+                cf_texts, convert_to_tensor=True, show_progress_bar=False
+            ).to(self.device, dtype=torch.float32).clone()
+            self.counterfactual_embeddings = F.normalize(self.text_proj(cf_feats), dim=-1)
+        else:
+            self.counterfactual_embeddings = None
+
+    @torch.no_grad()
+    def _compute_entropy(self, embeddings: Optional[torch.Tensor], img_emb: torch.Tensor) -> Optional[float]:
+        """Compute entropy of similarity distribution over embeddings."""
+        if embeddings is None or embeddings.size(0) == 0:
+            return None
+        sims = torch.matmul(embeddings, img_emb.t()).squeeze(-1)
+        probs = F.softmax(sims / self.temperature, dim=-1)
+        log_probs = probs.clamp_min(1e-12).log()
+        return float(-(probs * log_probs).sum().item())
+
     @torch.no_grad()
     def _retrieve_facts(
         self, image: Any, question: str, top_k: int
-    ) -> Tuple[List[str], Optional[float]]:
-        """Retrieve top‑k rationale sentences for a given <image, question>.
+    ) -> Tuple[List[str], Optional[float], Optional[float]]:
+        """Retrieve top-k rationale sentences and compute entropies.
 
-        Also returns the sample entropy of the softmax distribution over *all*
-        candidates in the index (higher = more diffuse / uncertain).
+        Returns:
+            (facts, entropy_all, entropy_counterfactual)
         """
         if self.rationale_embeddings is None or not self.rationale_texts:
-            return [], None
+            return [], None, None
 
-        img_feats = self._encode_vlm_features([image], [question])  # [1, H_v]
+        img_feats = self._encode_vlm_features([image], [question])
         self._ensure_heads(img_feats.shape[-1], self.rationale_embeddings.shape[-1])
 
         img_emb = self.image_proj(img_feats)
-        img_emb = F.normalize(img_emb, dim=-1)  # [1, D]
+        img_emb = F.normalize(img_emb, dim=-1)
 
-        sims = torch.matmul(self.rationale_embeddings, img_emb.t()).squeeze(-1)  # [N]
-        # Softmax distribution over all candidates, using same temperature as CLIP loss.
-        probs = F.softmax(sims / self.temperature, dim=-1)
-        log_probs = probs.clamp_min(1e-12).log()
-        entropy = float(-(probs * log_probs).sum().item())
+        entropy_all = self._compute_entropy(self.rationale_embeddings, img_emb)
+        entropy_cf = self._compute_entropy(self.counterfactual_embeddings, img_emb) if self.counterfactual_embeddings is not None else None
 
+        sims = torch.matmul(self.rationale_embeddings, img_emb.t()).squeeze(-1)
         k = min(top_k, sims.size(0))
         if k <= 0:
-            return [], entropy
+            return [], entropy_all, entropy_cf
 
         topk = torch.topk(sims, k=k, largest=True)
         facts = [self.rationale_texts[i] for i in topk.indices.tolist()]
-        return facts, entropy
+        return facts, entropy_all, entropy_cf
+
+    def _collect_router_data(self, dataset) -> List[Tuple[float, float, int]]:
+        """Collect router training data: (entropy_all, entropy_cf, label).
+        
+        Returns training pairs:
+        - Label 1: (entropy_all, entropy_cf) for edit examples
+        - Label 0: (entropy_cf, entropy_all) as counterfactual negatives
+        """
+        router_data = []
+        data = getattr(dataset, "data", None)
+        if not data:
+            return router_data
+
+        for ex in data:
+            question = ex.get("question", "")
+            image = ex.get("image", None)
+            if not question or image is None:
+                continue
+
+            _, entropy_all, entropy_cf = self._retrieve_facts(image, question, self.k)
+            if entropy_all is not None and entropy_cf is not None:
+                router_data.append((entropy_all, entropy_cf, 1))  # Edit example
+                router_data.append((entropy_cf, entropy_all, 0))  # Counterfactual negative
+
+        return router_data
+
+    def _train_router(self) -> None:
+        """Train logistic regression router on entropy features."""
+        if len(self.router_data) < 2:
+            return
+
+        # Initialize router if needed (simple logistic regression)
+        if self.router is None:
+            self.router = nn.Sequential(nn.Linear(2, 1), nn.Sigmoid()).to(self.device)
+
+        # Prepare training data
+        X = torch.tensor([[e0, e1] for e0, e1, _ in self.router_data], dtype=torch.float32, device=self.device)
+        y = torch.tensor([[l] for _, _, l in self.router_data], dtype=torch.float32, device=self.device)
+
+        # Train router
+        optimizer = torch.optim.Adam(self.router.parameters(), lr=self.router_lr)
+        for _ in range(self.router_epochs):
+            pred = self.router(X)
+            loss = F.binary_cross_entropy(pred, y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
     def apply_to_dataset(
         self, dataset, inplace: bool = True
@@ -378,21 +432,33 @@ class IKE_CLIP(nn.Module):
             if "prompt_orig" not in ex:
                 ex["prompt_orig"] = prompt
 
-            facts, entropy = self._retrieve_facts(image, question, self.k)
+            facts, entropy_all, entropy_cf = self._retrieve_facts(image, question, self.k)
             if not facts:
                 continue
 
-            facts_str = " ".join(facts)
-            augmented_prompt = f"{self.prefix}{facts_str}\n\n{prompt}"
-            ex["prompt"] = augmented_prompt
-            # Store entropy on the example for analysis
-            ex["retrieval_entropy"] = entropy
+            # Use router to decide whether to apply facts
+            use_facts = True
+            if self.use_router and self.router is not None and entropy_all is not None and entropy_cf is not None:
+                with torch.no_grad():
+                    router_input = torch.tensor([[entropy_all, entropy_cf]], dtype=torch.float32, device=self.device)
+                    use_facts = self.router(router_input).item() > 0.5
+
+            if use_facts:
+                facts_str = " ".join(facts)
+                ex["prompt"] = f"{self.prefix}{facts_str}\n\n{prompt}"
+
+            # Store entropy values and router decision for logging
+            ex["retrieval_entropy"] = entropy_all
+            ex["retrieval_entropy_cf"] = entropy_cf
+            ex["router_use"] = use_facts
 
             log.append(
                 {
                     "uid": ex.get("uid"),
                     "retrieved": len(facts),
-                    "entropy": entropy,
+                    "entropy": entropy_all,
+                    "entropy_cf": entropy_cf,
+                    "router_use": use_facts,
                 }
             )
 
@@ -422,18 +488,26 @@ class IKE_CLIP(nn.Module):
         if edit_ds is None:
             return self.model
 
-        # Build CLIP-style rationale retriever only from edits (error cases).
-        # We accumulate all past edit pairs so each call trains on (new edits + all previous edits).
+        # Build and accumulate edit pairs
         new_pairs = self._build_pairs_from_dataset(edit_ds)
         if new_pairs:
             self.all_pairs.extend(new_pairs)
-            # Optionally cap memory to the most recent `max_pairs` examples
             if len(self.all_pairs) > self.max_pairs:
-                self.all_pairs = self.all_pairs[-self.max_pairs :]
+                self.all_pairs = self.all_pairs[-self.max_pairs:]
 
-        # Train CLIP on all accumulated edit pairs and rebuild the index.
+        # Train CLIP and build retrieval index
         self._train_clip(self.all_pairs)
         self._build_rationale_index(self.all_pairs)
+
+        # Collect router training data and train router (if enabled)
+        if self.use_router:
+            new_router_data = self._collect_router_data(edit_ds)
+            if new_router_data:
+                self.router_data.extend(new_router_data)
+                max_router_data = self.max_pairs * 2  # Each example adds 2 entries
+                if len(self.router_data) > max_router_data:
+                    self.router_data = self.router_data[-max_router_data:]
+            self._train_router()
 
         # Augment all prompts in-place on `edit_ds` and cache a retrieval log.
         self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, inplace=True)
