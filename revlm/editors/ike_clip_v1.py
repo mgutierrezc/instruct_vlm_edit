@@ -41,13 +41,11 @@ class IKE_CLIP(nn.Module):
         self.seed = int(getattr(config, "seed", 333))
         self.image_only = bool(getattr(editor_cfg, "image_only", False))
         self.k = int(getattr(editor_cfg, "k", 3))
-        self.clip_dim = int(getattr(editor_cfg, "clip_dim", 512))
-        self.num_epochs = int(getattr(editor_cfg, "clip_epochs", 100))
+        self.clip_dim = int(getattr(editor_cfg, "clip_dim", 256))
+        self.num_epochs = int(getattr(editor_cfg, "clip_epochs", 50))
         self.batch_size = int(getattr(editor_cfg, "clip_batch_size", 10))
         self.lr = float(getattr(editor_cfg, "clip_lr", 1e-4))
         self.temperature = float(getattr(editor_cfg, "clip_temperature", 1))
-        # Optional early-stopping based on retrieval accuracy (if <= 0 → disabled).
-        self.retrieval_acc_threshold = float(getattr(editor_cfg, "retrieval_acc_threshold", 0.9))
 
         # Counterfactual configuration
         self.include_counterfactuals_in_index = bool(getattr(editor_cfg, "include_counterfactuals_in_index", True))
@@ -85,11 +83,11 @@ class IKE_CLIP(nn.Module):
         self.counterfactual_embeddings: Optional[torch.Tensor] = None
 
         # Router configuration
-        self.use_router = bool(getattr(editor_cfg, "use_router", True))
+        self.use_router = bool(getattr(editor_cfg, "use_router", False)) # higher reliability
         self.router_hidden = int(getattr(editor_cfg, "router_hidden", 10))
         self.router: Optional[nn.Sequential] = None
         self.router_lr = float(getattr(editor_cfg, "router_lr", 1e-3))
-        self.router_epochs = int(getattr(editor_cfg, "router_epochs", 100))
+        self.router_epochs = int(getattr(editor_cfg, "router_epochs", 20))
         self.router_data: List[Tuple[float, float, int]] = []
 
         # Logging
@@ -127,12 +125,13 @@ class IKE_CLIP(nn.Module):
         text = (text or "").strip()
         if not text:
             return []
-        return [p.strip() for p in re.split(r"(?<=[.!?])\s+", text) if p.strip()]
+        parts = re.split(r"(?<=[.!?])\s+", text)
+        return [p.strip() for p in parts if p.strip()]
 
     def _build_pairs_from_dataset(self, dataset) -> List[Dict[str, Any]]:
         """Create (image, question, rationale_sentence) pairs (incl. counterfactuals)."""
         data = getattr(dataset, "data", None)
-        if not data:
+        if data is None:
             return []
 
         pairs: List[Dict[str, Any]] = []
@@ -203,7 +202,10 @@ class IKE_CLIP(nn.Module):
         self._last_activations = None
 
         # For image-only mode, ignore question content when building VLM features.
-        prompts = ["" for _ in images] if self.image_only else [str(q) for q in questions]
+        if self.image_only:
+            prompts = ["" for _ in images]
+        else:
+            prompts = [str(q) for q in questions]
         imgs = [im if isinstance(im, PILImage.Image) else im for im in images]
 
         inputs = self.wrapper.encode(imgs, prompts, tokenize=False)
@@ -212,7 +214,9 @@ class IKE_CLIP(nn.Module):
 
         acts = self._last_activations
         if acts is None:
-            raise RuntimeError("Forward hook did not capture activations for the configured inner layer.")
+            raise RuntimeError(
+                "Forward hook did not capture activations for the configured inner layer."
+            )
 
         if acts.dim() == 2:
             acts = acts.unsqueeze(0)
@@ -224,32 +228,16 @@ class IKE_CLIP(nn.Module):
     def _ensure_heads(self, img_dim: int, txt_dim: int) -> None:
         """Initialize CLIP projection heads if missing."""
         if self.image_proj is None:
-            self.image_proj = nn.Sequential(
-                nn.Linear(img_dim, self.clip_dim, bias=True),
-                nn.GELU(),
-                nn.Linear(self.clip_dim, self.clip_dim, bias=True),
-                nn.LayerNorm(self.clip_dim),
-            ).to(self.device)
+            self.image_proj = nn.Linear(img_dim, self.clip_dim, bias=True).to(self.device)
         if self.text_proj is None:
-            self.text_proj = nn.Sequential(
-                nn.Linear(txt_dim, self.clip_dim, bias=True),
-                nn.GELU(),
-                nn.Linear(self.clip_dim, self.clip_dim, bias=True),
-                nn.LayerNorm(self.clip_dim),
-            ).to(self.device)
+            self.text_proj = nn.Linear(txt_dim, self.clip_dim, bias=True).to(self.device)
 
-    def _train_clip(self, pairs: List[Dict[str, Any]], eval_ds=None) -> None:
-        """Train CLIP-style projection heads on (image, question, rationale) pairs.
-
-        If `self.retrieval_acc_threshold` > 0 and `eval_ds` is provided, we compute a
-        simple retrieval accuracy after each epoch (using top‑k = self.k) and stop
-        early once the threshold is reached.
-        """
+    def _train_clip(self, pairs: List[Dict[str, Any]]) -> None:
+        """Train CLIP-style projection heads on (image, question, rationale) pairs."""
         if not pairs:
             return
 
         optimizer: Optional[torch.optim.Optimizer] = None
-        scheduler = None
         n = len(pairs)
 
         # Deterministic shuffling per run given self.seed (and fixed n).
@@ -259,8 +247,6 @@ class IKE_CLIP(nn.Module):
 
         for epoch in range(self.num_epochs):
             perm = torch.randperm(n, generator=g)
-            epoch_loss = 0.0
-            num_batches = 0
             for start in range(0, n, self.batch_size):
                 idx = perm[start : start + self.batch_size]
                 batch = [pairs[i.item()] for i in idx]
@@ -293,90 +279,10 @@ class IKE_CLIP(nn.Module):
                 if optimizer is None:
                     params = list(self.image_proj.parameters()) + list(self.text_proj.parameters())
                     optimizer = torch.optim.Adam(params, lr=self.lr)
-                    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-                        optimizer, T_max=max(1, self.num_epochs)
-                    )
 
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
-
-                epoch_loss += float(loss.item())
-                num_batches += 1
-
-            avg_loss = epoch_loss / max(1, num_batches)
-            acc = None
-
-            if scheduler is not None:
-                scheduler.step()
-
-            # Compute retrieval accuracy if eval_ds is provided; optionally early stop.
-            if eval_ds is not None:
-                # Rebuild index with current text head so retrieval uses latest params.
-                self._build_rationale_index(pairs)
-                acc = self._compute_retrieval_accuracy(eval_ds)
-                if self.retrieval_acc_threshold > 0 and acc is not None and acc >= self.retrieval_acc_threshold:
-                    print(
-                        f"[IKE_CLIP] epoch {epoch+1}/{self.num_epochs} "
-                        f"- clip_loss: {avg_loss:.4f}, retr_acc@{self.k}: {acc:.3f} (early stop)"
-                    )
-                    break
-
-            msg = f"[IKE_CLIP] epoch {epoch+1}/{self.num_epochs} - clip_loss: {avg_loss:.4f}"
-            if acc is not None:
-                msg += f", retr_acc@{self.k}: {acc:.3f}"
-            print(msg)
-
-        # Final index build with latest parameters (no-op if already done above).
-        self._build_rationale_index(pairs)
-
-    @torch.no_grad()
-    def _compute_retrieval_accuracy(self, dataset) -> Optional[float]:
-        """Compute proportion of retrieved facts that are present in example rationales.
-
-        For each example with (image, question, rationale), we:
-          - Split the rationale into sentences (ground‑truth sentences).
-          - Retrieve top‑k facts from the current index (k = self.k).
-          - Count how many retrieved facts exactly match any rationale sentence.
-
-        Returns:
-            A float in [0, 1] or None if accuracy cannot be computed.
-        """
-        data = getattr(dataset, "data", None)
-        if not data or self.k <= 0:
-            return None
-
-        k = self.k
-
-        total_hits = 0
-        total_retrieved = 0
-
-        for ex in data:
-            rationale = ex.get("cot") or ex.get("rationale") or ""
-            question = ex.get("question", "")
-            image = ex.get("image", None)
-
-            if not rationale or image is None or not question:
-                continue
-
-            base_sents = self._split_sentences(str(rationale))
-            if not base_sents:
-                continue
-
-            facts, _, _ = self._retrieve_facts(image, question, k)
-            if not facts:
-                continue
-
-            base_set = set(base_sents)
-            for f in facts:
-                if f in base_set:
-                    total_hits += 1
-            total_retrieved += len(facts)
-
-        if total_retrieved == 0:
-            return None
-
-        return float(total_hits) / float(total_retrieved)
 
     @torch.no_grad()
     def _build_rationale_index(self, pairs: List[Dict[str, Any]]) -> None:
@@ -511,13 +417,12 @@ class IKE_CLIP(nn.Module):
 
         # Train router
         optimizer = torch.optim.Adam(self.router.parameters(), lr=self.router_lr)
-        for epoch in range(self.router_epochs):
+        for _ in range(self.router_epochs):
             pred = self.router(X)
             loss = F.binary_cross_entropy(pred, y)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-            print(f"[IKE_CLIP][router] epoch {epoch+1}/{self.router_epochs} - loss: {float(loss.item()):.4f}")
 
     def apply_to_dataset(
         self, dataset, inplace: bool = True
@@ -607,8 +512,9 @@ class IKE_CLIP(nn.Module):
             if len(self.all_pairs) > self.max_pairs:
                 self.all_pairs = self.all_pairs[-self.max_pairs:]
 
-        # Train CLIP (with optional retrieval-accuracy early stopping)
-        self._train_clip(self.all_pairs, eval_ds=edit_ds)
+        # Train CLIP and build retrieval index
+        self._train_clip(self.all_pairs)
+        self._build_rationale_index(self.all_pairs)
 
         # Collect router training data and train router (if enabled)
         if self.use_router:
