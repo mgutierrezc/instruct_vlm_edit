@@ -104,12 +104,12 @@ def configure_args(args, config_path=None):
     edit_dir = _normalize_cli_dir(getattr(args, "edit_dir", None)) or os.path.join("results", "ee", editor_tag, model_tag, dataset_tag)
     os.makedirs(edit_dir, exist_ok=True)
     print(f"Edit evaluation metrics will be saved to {edit_dir}")
-    # prediction saving dir (pre-edit)
+    # prediction saving dir (pre-edit) – shared across editors
     pred_dir =  _normalize_cli_dir(getattr(args, "pred_dir", None)) or os.path.join("results", "pred", model_tag, dataset_tag)
     os.makedirs(pred_dir, exist_ok=True)
     print(f"Predictions will be saved to {pred_dir}")
-    # prediction saving dir (post-edit, e.g., edited model on edit set)
-    pred_postedit_dir = _normalize_cli_dir(getattr(args, "pred_postedit_dir", None)) or os.path.join("results", "pred_postedit", model_tag, dataset_tag)
+    # prediction saving dir (post-edit, e.g., edited model on edit set) – per-editor
+    pred_postedit_dir = _normalize_cli_dir(getattr(args, "pred_postedit_dir", None)) or os.path.join("results", "pred_postedit", editor_tag, model_tag, dataset_tag)
     os.makedirs(pred_postedit_dir, exist_ok=True)
     print(f"Post-edit predictions will be saved to {pred_postedit_dir}")
     # unified filename to save
