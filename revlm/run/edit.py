@@ -139,10 +139,9 @@ def run_edit(config):
     print(f"Total time: {time.time() - t2:.2f}s", flush=True)
 
     # Snap post-edit predictions on the edit set to a separate folder, analogous to `pred`.
-    pred_postedit_snapshot = os.path.join(
-        getattr(config, "pred_postedit_dir", config.pred_dir),
-        config.fname,
-    )
+    # `configure_args` already guarantees `config.pred_postedit_dir` is a valid directory,
+    # so we can join directly here.
+    pred_postedit_snapshot = os.path.join(config.pred_postedit_dir, config.fname)
     edit_ds.snap(out_path=pred_postedit_snapshot)
     print(f"Post-edit predictions saved to {pred_postedit_snapshot}", flush=True)
 
@@ -224,6 +223,5 @@ if __name__ == "__main__":
     config.rationale = args.rationale
     config.cot = args.cot
     config.pred_path = args.pred_path
-    config.pred_postedit_dir = args.pred_postedit_dir
     config.overwrite = args.overwrite
     run_edit(config)
