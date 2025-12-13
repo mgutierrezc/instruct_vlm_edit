@@ -42,6 +42,8 @@ def to_mc_format(r_gen_df: pd.DataFrame) -> pd.DataFrame:
     # final columns in the same order as your second dataframe
     wanted_cols = ["uid", "sid", "question",
                    "answer", "rationale", "choices", "idx_choices"]
-    # drop image_path here if you don't have it yet
+    # Keep 'reason' column if it exists (contains generated COT for r_gen QA pairs)
+    if "reason" in r_gen_df.columns:
+        wanted_cols.append("reason")
     return r_gen_df[wanted_cols].copy()
 

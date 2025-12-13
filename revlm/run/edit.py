@@ -126,9 +126,21 @@ def run_edit(config):
         if hasattr(model, "model"):
             model.model.train()
         print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
+        batch_history = []
+        retrain_freq = getattr(config.editor, "retrain_frequency", 50)
         for batch_idx, batch in enumerate(edit_ds.loader):
             tokens = model.prepare_training_batch(batch)
-            editor.edit(config, tokens, batch_history=None)
+            editor.edit(config, tokens, batch_history=batch_history)
+
+            # Keep a lightweight history copy for methods that need replay/regularization
+            tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
+            batch_history.append(tokens_copy)
+
+            # Periodic retraining for ft_retrain
+            if editor_name == "ft_retrain" and retrain_freq > 0 and (batch_idx + 1) % retrain_freq == 0:
+                print(f"[ft_retrain] periodic retrain at batch {batch_idx + 1}", flush=True)
+                editor.retrain(config, batch_history)
+
             del tokens
             if (batch_idx + 1) % 10 == 0:
                 print(f"Edited {batch_idx + 1} batches", flush=True)
@@ -189,7 +201,7 @@ if __name__ == "__main__":
         "--editor",
         type=str,
         required=True,
-        choices=["ft", "grace", "balancedit", "ike", "ike_cot", "ike_clip", "mend", "baseline"],
+        choices=["ft", "ft_ewc", "ft_retrain", "grace", "balancedit", "ike", "ike_cot", "ike_clip", "mend", "baseline"],
         help="Editor method to use",
     )
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")

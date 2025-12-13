@@ -25,6 +25,9 @@ class Finetune_ewc(torch.nn.Module):
             else:
                 p.requires_grad = True
 
+    def generate(self, *args, **kwargs):
+        return self.model.generate(*args, **kwargs)
+
     def forward(self, *inputs, **kwargs):
         return self.model(*inputs, **kwargs)
 
@@ -58,12 +61,16 @@ class Finetune_ewc(torch.nn.Module):
 
         return fisher_dict, optpar_dict
 
-    def edit(self, config, tokens, batch_history):
+    def edit(self, config, tokens, batch_history=None):
         params = param_subset(self.model.named_parameters(), self.pnames)
         opt = torch.optim.Adam(params, lr=self.edit_lr)
         self.losses = []
         
-        fisher_dict, optpar_dict = self.compute_fisher_matrix(batch_history)
+        # Compute Fisher matrix if we have history, otherwise skip EWC regularization
+        if batch_history:
+            fisher_dict, optpar_dict = self.compute_fisher_matrix(batch_history)
+        else:
+            fisher_dict, optpar_dict = {}, {}
         n_iter = config.n_iter
         
         for _ in range(n_iter):
