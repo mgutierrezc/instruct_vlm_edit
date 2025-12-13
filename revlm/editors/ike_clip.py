@@ -89,7 +89,7 @@ class IKE_CLIP(nn.Module):
         self.router_hidden = int(getattr(editor_cfg, "router_hidden", 10))
         self.router: Optional[nn.Sequential] = None
         self.router_lr = float(getattr(editor_cfg, "router_lr", 1e-3))
-        self.router_epochs = int(getattr(editor_cfg, "router_epochs", 100))
+        self.router_epochs = int(getattr(editor_cfg, "router_epochs", 1000))
         self.router_data: List[Tuple[float, float, int]] = []
 
         # Logging
@@ -511,12 +511,16 @@ class IKE_CLIP(nn.Module):
 
         # Train router
         optimizer = torch.optim.Adam(self.router.parameters(), lr=self.router_lr)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(1, self.router_epochs)
+        )
         for epoch in range(self.router_epochs):
             pred = self.router(X)
             loss = F.binary_cross_entropy(pred, y)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            scheduler.step()
             print(f"[IKE_CLIP][router] epoch {epoch+1}/{self.router_epochs} - loss: {float(loss.item()):.4f}")
 
     def apply_to_dataset(
@@ -589,38 +593,44 @@ class IKE_CLIP(nn.Module):
     ):
         """Entry point used by `run/edit.py` when editor_name == 'ike_clip'.
 
-        CLIP is trained only on *edit* examples:
-        - For each edit (error case) and its rationale sentences, we update the
-          projection heads so that the <image, question> representation is close
-          to its sentences.
-        - Across multiple calls to `edit`, the same projection heads are further
-          refined, effectively doing incremental training as more edits arrive.
+        For sequential mode: pass train_ds=prior examples, edit_ds=current example.
+        CLIP is trained on train_ds, then edit_ds is augmented using that index.
         """
-        # If there is no dataset to edit, do nothing.
         if edit_ds is None:
             return self.model
 
-        # Build and accumulate edit pairs
-        new_pairs = self._build_pairs_from_dataset(edit_ds)
-        if new_pairs:
+        # Use train_ds for building pairs if provided (sequential mode), else edit_ds
+        pair_source = train_ds if train_ds is not None else edit_ds
+        new_pairs = self._build_pairs_from_dataset(pair_source)
+        
+        # In sequential mode, rebuild from train_ds; else accumulate
+        if train_ds is not None:
+            self.all_pairs = new_pairs[:self.max_pairs]
+        elif new_pairs:
             self.all_pairs.extend(new_pairs)
             if len(self.all_pairs) > self.max_pairs:
                 self.all_pairs = self.all_pairs[-self.max_pairs:]
 
-        # Train CLIP (with optional retrieval-accuracy early stopping)
-        self._train_clip(self.all_pairs, eval_ds=edit_ds)
+        # Train CLIP (skip if no pairs yet - first batch in sequential mode)
+        if self.all_pairs:
+            self._train_clip(self.all_pairs, eval_ds=edit_ds)
 
-        # Collect router training data and train router (if enabled)
-        if self.use_router:
-            new_router_data = self._collect_router_data(edit_ds)
-            if new_router_data:
-                self.router_data.extend(new_router_data)
-                max_router_data = self.max_pairs * 2  # Each example adds 2 entries
-                if len(self.router_data) > max_router_data:
-                    self.router_data = self.router_data[-max_router_data:]
-            self._train_router()
+            # Collect router training data and train router (if enabled)
+            if self.use_router:
+                new_router_data = self._collect_router_data(pair_source)
+                if new_router_data:
+                    if train_ds is not None:
+                        self.router_data = new_router_data
+                    else:
+                        self.router_data.extend(new_router_data)
+                    max_router_data = self.max_pairs * 2
+                    if len(self.router_data) > max_router_data:
+                        self.router_data = self.router_data[-max_router_data:]
+                self._train_router()
 
-        # Augment all prompts in-place on `edit_ds` and cache a retrieval log.
-        self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, inplace=True)
+        # Augment prompts in edit_ds (skip if no index yet)
+        if self.rationale_embeddings is not None:
+            self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, inplace=True)
+        
         return self.model
 
