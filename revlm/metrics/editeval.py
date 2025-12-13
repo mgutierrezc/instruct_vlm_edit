@@ -289,6 +289,14 @@ def _maybe_apply_ike(
                 editor.model.eval()
         # Apply retrieval-based prompt augmentation in-place.
         editor.apply_to_dataset(edit_ds, inplace=True)
+    elif editor_name == "ike_cot":
+        # IKE_COT: prepend each example's own COT/rationale as "New Facts" to the prompt.
+        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+            if hasattr(editor.model, "eval"):
+                editor.model.eval()
+        # Apply COT-based prompt augmentation in-place on the provided dataset.
+        if hasattr(editor, "apply_to_dataset"):
+            editor.apply_to_dataset(edit_ds, inplace=True)
 
 
 def text_generality(

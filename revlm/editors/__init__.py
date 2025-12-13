@@ -9,7 +9,8 @@ from .memory import MemoryNetwork
 from .balancedit import BalancEdit
 from .ike import IKE
 from .ike_cot import IKE_COT
-from .ike_clip_v1 import IKE_CLIP
+# from .ike_clip_v1 import IKE_CLIP
+from .ike_clip import IKE_CLIP
 
 
 def get_editor(config, model):
