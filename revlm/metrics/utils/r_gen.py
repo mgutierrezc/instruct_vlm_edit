@@ -3,7 +3,7 @@ import os
 from huggingface_hub import snapshot_download
 import string
 
-def get_r_gen_input(dataset_name):
+def get_r_gen_input(dataset_name, s: int = 2):
     """Load caption dataframe from HuggingFace dataset."""
     repo_id = "JJoy333/RationaleVQA"
     local_root = snapshot_download(
@@ -13,6 +13,11 @@ def get_r_gen_input(dataset_name):
     )
     r_gen_df = pd.read_parquet(os.path.join(local_root, "r_gen", "qa", f"{dataset_name}.parquet"))
     r_gen_df = to_mc_format(r_gen_df)
+    # filter rows where rationale has at least s sentences
+    if s > 0:
+        r = r_gen_df["rationale"].fillna("").astype(str)
+        n = r.str.split(r"[.!?]+\s*").apply(lambda x: len([p for p in x if p.strip()]))
+        r_gen_df = r_gen_df[n >= int(s)]
     # Derive image_path directly from sid (deterministic path pattern)
     r_gen_df["image_path"] = f"data/r_gen/image/{dataset_name}/" + r_gen_df["sid"].astype(str) + ".png"
     return r_gen_df

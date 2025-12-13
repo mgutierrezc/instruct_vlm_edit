@@ -165,7 +165,7 @@ def run_edit(config):
     dataset_name = config.experiment.dataset_name
     related_texts = get_t_gen_input(dataset_name, edit_ds)
     related_images = get_i_gen_input(dataset_name, edit_ds, k_per_model=2)
-    related_r_gen_df = get_r_gen_input(dataset_name)
+    related_r_gen_df = get_r_gen_input(dataset_name, s=2) # has at least 2 sentences of shared rationale
     out_dict = editeval(
         model_old,
         model_new,
