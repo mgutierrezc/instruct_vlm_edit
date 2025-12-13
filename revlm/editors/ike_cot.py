@@ -58,7 +58,8 @@ class IKE_COT(torch.nn.Module):
         - `prompt`: original prompt.
         - `cot` (preferred) or `rationale`: COT text to prepend as 'New Fact'.
         """
-        prompt = ex.get("prompt", "")
+        # Always augment from the original prompt if available to avoid stacking
+        prompt = ex.get("prompt_orig") or ex.get("prompt", "")
         cot = ex.get("cot") or ex.get("rationale") or ""
 
         if not prompt or not cot:
@@ -73,7 +74,18 @@ class IKE_COT(torch.nn.Module):
         if "prompt_orig" not in ex:
             ex["prompt_orig"] = prompt
 
-        augmented_prompt = f"{self.prefix}{cot_str}\n\n{prompt}"
+        # Insert COT near the end of the prompt (right before options) when possible.
+        # This is more robust to left-truncation than prepending at the very beginning.
+        insert_key = " Options:"
+        if insert_key in prompt:
+            idx = prompt.index(insert_key)
+            augmented_prompt = (
+                prompt[:idx]
+                + f"\n\n{self.prefix}{cot_str}\n\n"
+                + prompt[idx + 1 :]  # drop the leading space before 'Options:'
+            )
+        else:
+            augmented_prompt = f"{self.prefix}{cot_str}\n\n{prompt}"
         ex["prompt"] = augmented_prompt
 
         log_entry = {

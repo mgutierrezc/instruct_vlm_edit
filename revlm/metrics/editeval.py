@@ -148,7 +148,8 @@ def reliability(model_new: Any, edit_ds: Any) -> float:
     pairs = generation(model_new, ds)
     if not pairs:
         return 0.0
-    correct = sum(1 for t, p in pairs if p == t)
+    # Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
+    correct = sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
     return correct / len(pairs)
 
 
@@ -199,7 +200,8 @@ def locality(
     pairs_new = generation(model_new, ds_new)
     preds_old = [p for _, p in pairs_old]
     preds_new = [p for _, p in pairs_new]
-    correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
+    # Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
+    correct = sum(1 for a, b in zip(preds_old, preds_new) if str(a).strip().lower() == str(b).strip().lower())
     return correct / len(preds_old)
 
 # def text_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_texts: Dict[str, List[str]]) -> float:
@@ -453,7 +455,8 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 		if hasattr(new_model, "model"):
 			new_model.model.eval()
 		pairs = generation(new_model, ds_eval)
-		correct_total += sum(1 for t, p in pairs if p == t)
+		# Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
+		correct_total += sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
 		num_total += len(pairs)
 
 		# Clean up GPU memory before the next iteration
@@ -557,7 +560,8 @@ def editk_boot_generality(
 		if hasattr(new_model, "model"):
 			new_model.model.eval()
 		pairs = generation(new_model, ds_eval)
-		correct_total += sum(1 for t, p in pairs if p == t)
+		# Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
+		correct_total += sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
 		num_total += len(pairs)
 
 		# Clean up GPU memory before the next bootstrap round
