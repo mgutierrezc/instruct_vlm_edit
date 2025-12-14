@@ -17,7 +17,7 @@ os.chdir(PROJECT_ROOT)
 
 from revlm import *  # noqa: F401,F403
 from revlm.editors import get_editor
-from revlm.metrics.editeval import reliability
+from revlm.metrics.editeval import move_model_device, cuda_gc
 
 
 def print10(dataset, label):
@@ -106,20 +106,14 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         config.device = torch.device("cpu")
         if hasattr(model, "device"):
             model.device = config.device
-        if hasattr(model, "model") and hasattr(model.model, "to"):
-            model.model.to(config.device)
-        elif hasattr(model, "to"):
-            model.to(config.device)
-        torch.cuda.empty_cache()
+        move_model_device(model, config.device)
+        cuda_gc()
     model_old = copy.deepcopy(model)
     if torch.cuda.is_available() and orig_device is not None:
         config.device = orig_device
         if hasattr(model, "device"):
             model.device = config.device
-        if hasattr(model, "model") and hasattr(model.model, "to"):
-            model.model.to(config.device)
-        elif hasattr(model, "to"):
-            model.to(config.device)
+        move_model_device(model, config.device)
 
     # Keep an unmodified copy so reliability(model_old) uses original prompts
     # (IKE-style editors mutate prompts in-place).

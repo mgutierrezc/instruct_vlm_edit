@@ -7,7 +7,7 @@ import gc
 import torch
 
 
-def _move_model_device(model: Any, device: str) -> None:
+def move_model_device(model: Any, device: str) -> None:
 	"""Move a (possibly wrapped) model to the given device if supported."""
 	if hasattr(model, "model") and hasattr(model.model, "to"):
 		model.model.to(device)
@@ -15,11 +15,16 @@ def _move_model_device(model: Any, device: str) -> None:
 		model.to(device)
 
 
-def _cuda_gc() -> None:
+def cuda_gc() -> None:
 	"""Lightweight CUDA memory cleanup."""
 	gc.collect()
 	if torch.cuda.is_available():
 		torch.cuda.empty_cache()
+
+
+# Backward-compatible aliases (older code may import the underscored names)
+_move_model_device = move_model_device
+_cuda_gc = cuda_gc
 
 # ! Customize your task-specific generation function here
 # inputs: 
@@ -170,6 +175,9 @@ def locality(
       - model_old: baseline predictions on the unrelated set (no prompt augmentation)
       - model_new: predictions with retrieval-based prompt augmentation applied
         to the unrelated set via `_maybe_apply_ike`.
+    
+    To avoid CUDA OOM, models are moved to GPU only when needed and moved back
+    to CPU after use.
     """
     if unrelated_ds is None:  # generate unrelated_ds from edit_ds by sampling
         unrelated_ds = copy.deepcopy(edit_ds)
@@ -195,14 +203,36 @@ def locality(
     # Apply IKE / IKE_CLIP retrieval only to the "new" dataset
     _maybe_apply_ike(editor, ds_new, edit_ds)
 
-    # evaluate locality
+    # Get target device from config, default to cuda
+    target_device = getattr(edit_ds.config, "device", "cuda")
+    if isinstance(target_device, str):
+        target_device = torch.device(target_device)
+    
+    # Release model_new from GPU before moving model_old to GPU
+    move_model_device(model_new, "cpu")
+    cuda_gc()
+    
+    # Evaluate model_old: move to GPU, generate, then move back to CPU
+    move_model_device(model_old, target_device)
     pairs_old = generation(model_old, ds_old)
+    move_model_device(model_old, "cpu")
+    cuda_gc()
+    
+    # Evaluate model_new: move to GPU, generate, then move back to CPU
+    move_model_device(model_new, target_device)
     pairs_new = generation(model_new, ds_new)
+    move_model_device(model_new, "cpu")
+    cuda_gc()
+    
     preds_old = [p for _, p in pairs_old]
     preds_new = [p for _, p in pairs_new]
     # Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
     correct = sum(1 for a, b in zip(preds_old, preds_new) if str(a).strip().lower() == str(b).strip().lower())
-    return correct / len(preds_old)
+    loc = correct / len(preds_old)
+
+    # Restore model_new to GPU for any downstream use after locality().
+    move_model_device(model_new, target_device)
+    return loc
 
 # def text_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_texts: Dict[str, List[str]]) -> float:
 #     """Accuracy on unrelated texts using the same images.
@@ -402,8 +432,8 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 
 	# Move base model to CPU so deepcopy does not allocate GPU tensors
 	if torch.cuda.is_available():
-		_move_model_device(model_old, "cpu")
-		_cuda_gc()
+		move_model_device(model_old, "cpu")
+		cuda_gc()
 
 	# For IKE: build corpus once from full edit_ds (same for all iterations)
 	if editor_name == "ike":
@@ -414,7 +444,7 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 		new_model = copy.deepcopy(model_old)
 		# move working copy to GPU for editing/eval
 		if torch.cuda.is_available():
-			_move_model_device(new_model, "cuda")
+			move_model_device(new_model, "cuda")
 		if hasattr(editor, "model"):
 			editor.model = new_model.model if hasattr(new_model, "model") else new_model
 		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
@@ -463,7 +493,7 @@ def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
 		if hasattr(editor, "model"):
 			editor.model = None
 		del new_model
-		_cuda_gc()
+		cuda_gc()
 
 	if num_total == 0:
 		return 0.0
@@ -507,8 +537,8 @@ def editk_boot_generality(
 
 	# Move base model to CPU so deepcopy does not allocate GPU tensors
 	if torch.cuda.is_available():
-		_move_model_device(model_old, "cpu")
-		_cuda_gc()
+		move_model_device(model_old, "cpu")
+		cuda_gc()
 
 	for b in range(B_eff):
 		rng_round = random.Random(seeds[b])
@@ -518,7 +548,7 @@ def editk_boot_generality(
 		new_model = copy.deepcopy(model_old)
 		# move working copy to GPU for editing/eval
 		if torch.cuda.is_available():
-			_move_model_device(new_model, "cuda")
+			move_model_device(new_model, "cuda")
 		if hasattr(editor, "model"):
 			editor.model = new_model.model if hasattr(new_model, "model") else new_model
 		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
@@ -568,7 +598,7 @@ def editk_boot_generality(
 		if hasattr(editor, "model"):
 			editor.model = None
 		del new_model
-		_cuda_gc()
+		cuda_gc()
 
 	if num_total == 0:
 		return 0.0
