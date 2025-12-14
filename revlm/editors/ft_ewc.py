@@ -64,6 +64,11 @@ class Finetune_ewc(torch.nn.Module):
     def edit(self, config, tokens, batch_history=None):
         params = param_subset(self.model.named_parameters(), self.pnames)
         opt = torch.optim.Adam(params, lr=self.edit_lr)
+        editor_config = getattr(config, 'editor', config)
+        n_iter = getattr(editor_config, 'n_iter', config.n_iter)
+        early_stop_patience = editor_config.early_stop_patience
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, n_iter))
         self.losses = []
         
         # Compute Fisher matrix if we have history, otherwise skip EWC regularization
@@ -71,9 +76,11 @@ class Finetune_ewc(torch.nn.Module):
             fisher_dict, optpar_dict = self.compute_fisher_matrix(batch_history)
         else:
             fisher_dict, optpar_dict = {}, {}
-        n_iter = config.n_iter
         
-        for _ in range(n_iter):
+        best_loss = float('inf')
+        patience_counter = 0
+        
+        for i in range(n_iter):
             self.model.zero_grad()
             outputs = self.model(**tokens)
             loss = outputs.loss if hasattr(outputs, "loss") else None
@@ -89,7 +96,7 @@ class Finetune_ewc(torch.nn.Module):
                 else:
                     break
 
-            # Early stopping
+            # Early stopping if prediction is correct
             logits = outputs.logits if hasattr(outputs, "logits") else outputs
             argmaxs = torch.argmax(logits, dim=-1)
             response_indices = (tokens.get('labels', torch.zeros_like(argmaxs)) != -100)
@@ -103,11 +110,27 @@ class Finetune_ewc(torch.nn.Module):
                     ewc_regularizer = self.ewc_lambda * torch.sum(fisher_dict[n] * (p - optpar_dict[n]) ** 2)
                     loss += ewc_regularizer
 
+            loss_value = loss.detach().cpu().item()
+            self.losses.append(loss_value)
             self.loss = loss
-            self.losses.append(self.loss.detach().cpu().numpy())
+            
             self.loss.backward()
             opt.step()
             opt.zero_grad()
+            scheduler.step()
+            
+            # Early stopping: check if loss improved
+            if loss_value < best_loss:
+                best_loss = loss_value
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stop_patience:
+                    break
+            
+            # Print loss every 10 iterations or on first/last iteration
+            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                print(f"[ft_ewc] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
         
         return self.model
 

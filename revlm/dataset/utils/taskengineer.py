@@ -110,8 +110,10 @@ class MCTaskEngineer(TaskIOEngineer):
             ex['gold']['label_train'] = target
     
     def eng_prompt(self, ex):
-        sys_prompt = "Choose the correct answer from the options."
-        base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
+        # sys_prompt = "Choose the correct answer from the options."
+        # base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
+        sys_prompt = ""
+        base = f"{sys_prompt}{ex['question']}".strip()
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if (self.with_rationale and self.rationale_in_prompt) else base
 
     def eng_preds(self, ex, a: str, model):

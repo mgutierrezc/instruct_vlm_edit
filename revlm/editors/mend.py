@@ -133,10 +133,16 @@ class MEND(torch.nn.Module):
         del batch_history  # not used in this simple variant
 
         opt = torch.optim.Adam(self.outer_parameters(), lr=float(config.edit_lr))
-        n_iter = int(config.n_iter)
-
+        editor_config = getattr(config, 'editor', config)
+        n_iter = int(getattr(editor_config, 'n_iter', config.n_iter))
+        early_stop_patience = editor_config.early_stop_patience
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, n_iter))
         self.losses = []
         self._key_idx = self._compute_key_idx(tokens)
+        
+        best_loss = float('inf')
+        patience_counter = 0
 
         for i in range(n_iter):
             self.edit_step(tokens)
@@ -155,12 +161,27 @@ class MEND(torch.nn.Module):
                 else:
                     break
 
+            loss_value = loss.detach().cpu().item()
+            self.losses.append(loss_value)
             self.loss = loss
-            self.losses.append(self.loss.detach().cpu().numpy())
 
             self.loss.backward()
             opt.step()
             opt.zero_grad()
+            scheduler.step()
+            
+            # Early stopping: check if loss improved
+            if loss_value < best_loss:
+                best_loss = loss_value
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stop_patience:
+                    break
+            
+            # Print loss every 10 iterations or on first/last iteration
+            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                print(f"[mend] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
 
         return self.model
 

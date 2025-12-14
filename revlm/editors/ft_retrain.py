@@ -85,21 +85,27 @@ class Finetune_retrain(torch.nn.Module):
         if not batch_history:
             return self.model
         
-        # Reset to original weights
         self.reset_to_original()
-        
         self.model.train()
+        
         params = list(self.layer_module.parameters())
         opt = torch.optim.Adam(params, lr=self.edit_lr)
+        editor_config = getattr(config, 'editor', config)
+        n_iter = getattr(editor_config, 'n_iter', config.n_iter)
+        early_stop_patience = editor_config.early_stop_patience
         
-        n_iter = getattr(config, 'n_iter', 100)
-        
-        # Train on recent history (limited by retrain_memory)
         history_to_use = batch_history[-self.retrain_memory:]
         print(f"[ft_retrain] Retraining on {len(history_to_use)} batches from history")
         
-        for tokens in history_to_use:
-            for _ in range(n_iter):
+        # Create scheduler once for all batches (LR decays across all batches)
+        total_steps = len(history_to_use) * n_iter
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, total_steps))
+        
+        for batch_idx, tokens in enumerate(history_to_use):
+            best_loss = float('inf')
+            patience_counter = 0
+            
+            for i in range(n_iter):
                 opt.zero_grad(set_to_none=True)
                 with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
                     outputs = self.model(**tokens)
@@ -116,6 +122,8 @@ class Finetune_retrain(torch.nn.Module):
                     else:
                         break
                 
+                loss_value = loss.detach().cpu().item()
+                
                 # Early stopping if correct
                 argmaxs = torch.argmax(logits, dim=-1)
                 response_indices = (tokens.get('labels', torch.zeros_like(argmaxs)) != -100)
@@ -130,6 +138,21 @@ class Finetune_retrain(torch.nn.Module):
                 else:
                     loss.backward()
                     opt.step()
+                
+                scheduler.step()
+                
+                # Early stopping: check if loss improved
+                if loss_value < best_loss:
+                    best_loss = loss_value
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= early_stop_patience:
+                        break
+                
+                # Print loss every 10 iterations or on first/last iteration
+                if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                    print(f"[ft_retrain][retrain] batch {batch_idx+1}/{len(history_to_use)}, iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
         
         return self.model
         
@@ -139,11 +162,17 @@ class Finetune_retrain(torch.nn.Module):
         
         params = list(self.layer_module.parameters())
         opt = torch.optim.Adam(params, lr=self.edit_lr)
+        editor_config = getattr(config, 'editor', config)
+        n_iter = getattr(editor_config, 'n_iter', config.n_iter)
+        early_stop_patience = editor_config.early_stop_patience
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, n_iter))
         self.losses = []
         
-        n_iter = getattr(config, 'n_iter', 100)
+        best_loss = float('inf')
+        patience_counter = 0
         
-        for _ in range(n_iter):
+        for i in range(n_iter):
             opt.zero_grad(set_to_none=True)
             with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
                 outputs = self.model(**tokens)
@@ -160,6 +189,9 @@ class Finetune_retrain(torch.nn.Module):
                 else:
                     break
             
+            loss_value = loss.detach().cpu().item()
+            self.losses.append(loss_value)
+            
             # Early stopping if correct
             argmaxs = torch.argmax(logits, dim=-1)
             response_indices = (tokens.get('labels', torch.zeros_like(argmaxs)) != -100)
@@ -167,15 +199,28 @@ class Finetune_retrain(torch.nn.Module):
                 if torch.all(tokens['labels'][response_indices] == argmaxs[response_indices]).item():
                     break
             
-            self.loss = loss
-            self.losses.append(self.loss.detach().cpu().numpy())
-            
             if self.scaler is not None:
-                self.scaler.scale(self.loss).backward()
+                self.scaler.scale(loss).backward()
                 self.scaler.step(opt)
                 self.scaler.update()
             else:
-                self.loss.backward()
+                loss.backward()
                 opt.step()
+            
+            scheduler.step()
+            
+            # Early stopping: check if loss improved
+            if loss_value < best_loss:
+                best_loss = loss_value
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stop_patience:
+                    break
+            
+            # Print loss every 10 iterations or on first/last iteration
+            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                print(f"[ft_retrain] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
         
+        self.loss = loss if 'loss' in locals() else None
         return self.model

@@ -43,6 +43,11 @@ class Defer(torch.nn.Module):
         setattr(eval(f"self.model.{self.layer}"), "untrained", False)
         setattr(eval(f"self.model.{self.layer}"), "training", True)
         optimizer = torch.optim.Adam(self.model.parameters(), config.edit_lr)
+        editor_config = getattr(config, 'editor', config)
+        n_iter = getattr(editor_config, 'n_iter', config.n_iter)
+        early_stop_patience = editor_config.early_stop_patience
+        
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, n_iter))
         self.losses = []
         
         if config.task == "hallucination":
@@ -50,8 +55,9 @@ class Defer(torch.nn.Module):
         else:
             key_id = -1
         setattr(eval(f"self.model.{self.layer}"), "key_id", key_id)
-            
-        n_iter = config.n_iter
+        
+        best_loss = float('inf')
+        patience_counter = 0
         
         for i in range(n_iter):
             outputs = self.model(**tokens)
@@ -60,10 +66,26 @@ class Defer(torch.nn.Module):
             if loss is None:
                 break
             
-            self.losses.append(loss.detach().cpu().numpy())
+            loss_value = loss.detach().cpu().item()
+            self.losses.append(loss_value)
+            
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
+            scheduler.step()
+            
+            # Early stopping: check if loss improved
+            if loss_value < best_loss:
+                best_loss = loss_value
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stop_patience:
+                    break
+            
+            # Print loss every 10 iterations or on first/last iteration
+            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                print(f"[defer] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
         
         self.loss = loss if 'loss' in locals() else None
         setattr(eval(f"self.model.{self.layer}"), "training", False)

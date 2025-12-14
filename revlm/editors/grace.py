@@ -104,35 +104,55 @@ class GRACE(torch.nn.Module):
         setattr(self.target_layer, "edit_label", tokens.get("labels", None))
                 
         self.losses = []
-        # Use editor-specific inner-loop steps and learning rate when available
         n_iter = getattr(config.editor, "n_iter", config.n_iter)
         edit_lr = float(getattr(config.editor, "edit_lr", getattr(config, "edit_lr", 1e-4)))
+        early_stop_patience = config.editor.early_stop_patience
+        
+        best_loss = float('inf')
+        patience_counter = 0
         
         for i in range(n_iter):
             setattr(self.target_layer, "iter", i)
             outputs = self.model(**tokens)
             
+            # Create optimizer after first forward pass (so it includes self.values Parameter)
             if i == 0:
                 optimizer = torch.optim.Adam(self.model.parameters(), edit_lr)
+                scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, n_iter))
             
             loss = outputs.loss if hasattr(outputs, "loss") else None
             if loss is None:
                 break
             
+            loss_value = loss.detach().cpu().item()
+            self.losses.append(loss_value)
+            
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-            self.losses.append(loss.detach().cpu().numpy())
+            scheduler.step()
+            
+            # Early stopping
+            if loss_value < best_loss:
+                best_loss = loss_value
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stop_patience:
+                    break
+            
+            # Print loss every 10 iterations or on first/last iteration
+            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                print(f"[grace] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
         
         self.loss = loss if 'loss' in locals() else None
         setattr(self.target_layer, "training", False)
         
-        # Log info (only if attributes exist)
-        layer_obj = self.target_layer
-        if hasattr(layer_obj, "chosen_key"):
-            self.log_dict["chosen_key"] = getattr(layer_obj, "chosen_key")
-        if hasattr(layer_obj, "keys"):
-            self.log_dict["nkeys"] = len(getattr(layer_obj, "keys"))
+        # Log info
+        if hasattr(self.target_layer, "chosen_key"):
+            self.log_dict["chosen_key"] = getattr(self.target_layer, "chosen_key")
+        if hasattr(self.target_layer, "keys"):
+            self.log_dict["nkeys"] = len(getattr(self.target_layer, "keys"))
 
 
 class GRACEAdaptor(torch.nn.Module):
@@ -169,7 +189,6 @@ class GRACEAdaptor(torch.nn.Module):
 
     def init_key_value(self, query, value):
         key = query.detach()
-        value = value
         epsilon = torch.tensor(self.init_epsilon, device=self.device, requires_grad=False).view(1)
         key_label = [self.edit_label]
         return key, value, epsilon, key_label

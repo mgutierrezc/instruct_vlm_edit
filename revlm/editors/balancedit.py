@@ -204,46 +204,73 @@ class BalancEdit(torch.nn.Module):
 
         # --- train edited value (local correction) ---
         self.losses = []
-        n_iter = config.editor.n_iter
+        n_iter = getattr(config.editor, 'n_iter', config.n_iter)
         edit_lr = float(config.editor.edit_lr)
+        early_stop_patience = config.editor.early_stop_patience
 
-        # Ensure some parameters require gradients (Qwen/LLaVA may load with grads disabled)
-        # We primarily care about adapter params, so restrict optimizer to this layer.
         for p in layer_module.parameters():
             p.requires_grad = True
         train_params = list(layer_module.parameters())
         opt = torch.optim.Adam(train_params, edit_lr, eps=1e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, n_iter))
+        
+        best_loss = float('inf')
+        patience_counter = 0
+        
         for i in range(n_iter):
             setattr(layer_module, "iter", i)
-
             opt.zero_grad(set_to_none=True)
+            
             with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
                 outputs = self.model(**tokens)
                 loss = outputs.loss
 
-            self.loss = loss
-            self.losses.append(self.loss.detach().cpu().numpy())
+            loss_value = loss.detach().cpu().item()
+            self.losses.append(loss_value)
 
             if self.scaler is not None:
-                self.scaler.scale(self.loss).backward()
+                self.scaler.scale(loss).backward()
                 self.scaler.step(opt)
                 self.scaler.update()
             else:
-                self.loss.backward()
+                loss.backward()
                 opt.step()
+            
+            scheduler.step()
+            
+            # Early stopping
+            if loss_value < best_loss:
+                best_loss = loss_value
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= early_stop_patience:
+                    break
+            
+            # Print loss every 10 iterations or on first/last iteration
+            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                print(f"[balancedit] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
+        
+        self.loss = loss
 
         # --- train epsilon (radius) if locality + rephrase tokens provided ---
         if locality_tokens is not None and rephrase_tokens is not None:
             setattr(layer_module, "calculate_eps", True)
-            # Radius learning also only needs adapter parameters
             opt_eps = torch.optim.Adam(train_params, float(config.editor.edit_lr), eps=1e-4)
+            scheduler_eps = torch.optim.lr_scheduler.CosineAnnealingLR(opt_eps, T_max=max(1, n_iter))
+            
+            best_loss_eps = float('inf')
+            patience_counter_eps = 0
+            
             for i in range(n_iter):
                 setattr(layer_module, "iter", i)
-
                 opt_eps.zero_grad(set_to_none=True)
+                
                 with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
                     outputs = self.model(**locality_tokens)
                     loss = outputs.loss
+
+                loss_value_eps = loss.detach().cpu().item()
 
                 if self.scaler is not None:
                     self.scaler.scale(loss).backward()
@@ -252,6 +279,21 @@ class BalancEdit(torch.nn.Module):
                 else:
                     loss.backward()
                     opt_eps.step()
+                
+                scheduler_eps.step()
+                
+                # Early stopping
+                if loss_value_eps < best_loss_eps:
+                    best_loss_eps = loss_value_eps
+                    patience_counter_eps = 0
+                else:
+                    patience_counter_eps += 1
+                    if patience_counter_eps >= early_stop_patience:
+                        break
+                
+                # Print loss every 10 iterations or on first/last iteration
+                if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+                    print(f"[balancedit][eps] iter {i+1}/{n_iter} - loss: {loss_value_eps:.4f}")
 
             setattr(layer_module, "calculate_eps", False)
             negative_key = getattr(layer_module, "new_locality_key")
