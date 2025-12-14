@@ -17,10 +17,13 @@ os.chdir(PROJECT_ROOT)
 
 from revlm import *
 from revlm.config_utils import configure_args
-from .edit_utils import find_errors, edit_n_eval_all, edit_n_eval_seq
+from .edit_utils import *
 
 def run_edit(config, sequential=False):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
+    
+    # Enable wandb if sequential mode is used
+    config.wandb = sequential
 
     # early return if edit evaluation result already exists
     out_path = os.path.join(config.edit_dir, config.fname)

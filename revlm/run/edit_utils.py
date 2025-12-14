@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 import time
 import numpy as np
+import wandb
 
 # Add project root to path so we can run as a module or script
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -221,6 +222,11 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     dataset_name = config.experiment.dataset_name
     total_batches = len(edit_ds.loader) if hasattr(edit_ds.loader, "__len__") else None
 
+    # Initialize wandb if enabled
+    use_wandb = getattr(config, "wandb", False)
+    if use_wandb and wandb.run is None:
+        wandb.init(project="vlm-editing", config=config)
+
     editor = None
     if editor_name != "baseline":
         editor = get_editor(config, model)
@@ -288,6 +294,11 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             print(f"Reliability (old): {batch_out_dict['reliability_old']:.4f}, (new): {batch_out_dict['reliability']:.4f}", flush=True)
             with open(out_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(batch_out_dict, ensure_ascii=False, sort_keys=True) + "\n")
+            
+            # Log to wandb if enabled
+            if use_wandb and wandb.run is not None:
+                wandb.log(batch_out_dict, step=batch_idx + 1)
+            
             print(f"Eval time: {time.time() - t3:.2f}s | Saved to {out_path}", flush=True)
 
     return all_out_dicts
