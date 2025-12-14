@@ -97,8 +97,28 @@ def find_errors(config):
 
 def edit_n_eval_all(config, model, edit_ds, out_path):
     """Edit and evaluate - apply edits, then evaluate the edited model."""
-    # Create a snapshot of the model before editing for comparison
+    # Create a snapshot of the model before editing for comparison.
+    # NOTE: deepcopy(model) on GPU can OOM for large VLMs (it temporarily doubles VRAM),
+    # so we snapshot on CPU and keep model_old on CPU for metrics.
+    orig_device = getattr(config, "device", None)
+    if torch.cuda.is_available() and orig_device is not None:
+        config.device = torch.device("cpu")
+        if hasattr(model, "device"):
+            model.device = config.device
+        if hasattr(model, "model") and hasattr(model.model, "to"):
+            model.model.to(config.device)
+        elif hasattr(model, "to"):
+            model.to(config.device)
+        torch.cuda.empty_cache()
     model_old = copy.deepcopy(model)
+    if torch.cuda.is_available() and orig_device is not None:
+        config.device = orig_device
+        if hasattr(model, "device"):
+            model.device = config.device
+        if hasattr(model, "model") and hasattr(model.model, "to"):
+            model.model.to(config.device)
+        elif hasattr(model, "to"):
+            model.to(config.device)
 
     # Keep an unmodified copy so reliability(model_old) uses original prompts
     # (IKE-style editors mutate prompts in-place).

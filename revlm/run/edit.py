@@ -17,9 +17,9 @@ os.chdir(PROJECT_ROOT)
 
 from revlm import *
 from revlm.config_utils import configure_args
-from .edit_utils import find_errors, edit_n_eval_all
+from .edit_utils import find_errors, edit_n_eval_all, edit_n_eval_seq
 
-def run_edit(config):
+def run_edit(config, sequential=False):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
 
     # early return if edit evaluation result already exists
@@ -33,7 +33,10 @@ def run_edit(config):
     model, edit_ds = find_errors(config)
 
     # Step 2-3: Edit and Evaluate on all errors
-    out_dict = edit_n_eval_all(config, model, edit_ds, out_path)
+    if sequential:
+        out_dict = edit_n_eval_seq(config, model, edit_ds, out_path)
+    else:
+        out_dict = edit_n_eval_all(config, model, edit_ds, out_path)
 
 
 
