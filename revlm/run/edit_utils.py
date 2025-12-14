@@ -20,6 +20,14 @@ from revlm.editors import get_editor
 from revlm.metrics.editeval import move_model_device, cuda_gc
 
 
+def _fmt_dhms(total_seconds: float) -> str:
+    total_seconds = int(round(float(total_seconds)))
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{days}d {hours:02d}h {minutes:02d}m {seconds:02d}s"
+
+
 def print10(dataset, label):
     sample_size = min(10, len(dataset.data))
     sampled_dataset = copy.deepcopy(dataset)
@@ -118,6 +126,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
     # Keep an unmodified copy so reliability(model_old) uses original prompts
     # (IKE-style editors mutate prompts in-place).
     pristine_edit_ds = copy.deepcopy(edit_ds)
+    t_job = time.time()
 
     # Step 2: apply edits on edit_ds with chosen editor
     print("="*50, flush=True)
@@ -192,6 +201,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
     )
     # add a job finish time
     out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+    out_dict["job_total_time"] = _fmt_dhms(time.time() - t_job)
     
     # # reliability() is side-effect free on edit_ds (operates on a deepcopy)
     # out_dict['reliability_old'] =  reliability(model_old, pristine_edit_ds)

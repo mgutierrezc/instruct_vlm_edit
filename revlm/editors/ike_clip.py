@@ -42,12 +42,12 @@ class IKE_CLIP(nn.Module):
         self.image_only = bool(getattr(editor_cfg, "image_only", False))
         self.k = int(getattr(editor_cfg, "k", 3))
         self.clip_dim = int(getattr(editor_cfg, "clip_dim", 512))
-        self.num_epochs = int(getattr(editor_cfg, "clip_epochs", 100))
+        self.num_epochs = int(getattr(editor_cfg, "clip_epochs", 1000))
         self.batch_size = int(getattr(editor_cfg, "clip_batch_size", 10))
-        self.lr = float(getattr(editor_cfg, "clip_lr", 1e-4))
+        self.lr = float(getattr(editor_cfg, "clip_lr", 1e-3))
         self.temperature = float(getattr(editor_cfg, "clip_temperature", 0.5))
         # Optional early-stopping based on retrieval accuracy (if <= 0 → disabled).
-        self.retrieval_acc_threshold = float(getattr(editor_cfg, "retrieval_acc_threshold", 0.9))
+        self.retrieval_acc_threshold = float(getattr(editor_cfg, "retrieval_acc_threshold", 0.8))
 
         # Counterfactual configuration
         self.include_counterfactuals_in_index = bool(getattr(editor_cfg, "include_counterfactuals_in_index", True))

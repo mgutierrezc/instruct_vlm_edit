@@ -9,10 +9,28 @@ import torch
 
 def move_model_device(model: Any, device: str) -> None:
 	"""Move a (possibly wrapped) model to the given device if supported."""
+	# Normalize device input to torch.device for consistency.
+	dev = torch.device(device) if isinstance(device, str) else device
+
+	# IMPORTANT: VQAModel (our wrapper) uses `self.device` inside `.encode()` to move
+	# processor outputs (pixel_values, input_ids, etc.). If we only move the HF model
+	# weights but not `model.device`, we can end up with weights on CUDA and inputs on CPU.
+	if hasattr(model, "device"):
+		try:
+			model.device = dev
+		except Exception:
+			pass
+	# Some code paths read config.device as well.
+	if hasattr(model, "config") and hasattr(model.config, "device"):
+		try:
+			model.config.device = dev
+		except Exception:
+			pass
+
 	if hasattr(model, "model") and hasattr(model.model, "to"):
-		model.model.to(device)
+		model.model.to(dev)
 	elif hasattr(model, "to"):
-		model.to(device)
+		model.to(dev)
 
 
 def cuda_gc() -> None:
@@ -21,10 +39,6 @@ def cuda_gc() -> None:
 	if torch.cuda.is_available():
 		torch.cuda.empty_cache()
 
-
-# Backward-compatible aliases (older code may import the underscored names)
-_move_model_device = move_model_device
-_cuda_gc = cuda_gc
 
 # ! Customize your task-specific generation function here
 # inputs: 
