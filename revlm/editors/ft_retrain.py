@@ -1,30 +1,26 @@
 import torch
-import copy
 from .utils import brackets_to_periods, parent_module
 
 
 class Finetune_retrain(torch.nn.Module):
     """
-    Fine-tuning editor with periodic retraining on accumulated edit history.
+    Fine-tuning editor that retrains from scratch on ALL accumulated edits.
     
-    Unlike naive FT which just accumulates weight changes, FT_retrain periodically
-    retrains from the original model on ALL accumulated edits, preventing drift.
+    For each new edit, resets weights to original and retrains on all
+    accumulated edits (including the new one). No single-sample finetuning.
     """
     def __init__(self, config, model):
-        # Call Module init directly to avoid super() instance/subtype issues in notebooks
         torch.nn.Module.__init__(self)
         self.model = model.model if hasattr(model, 'model') else model
         self.tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
         
-        # Keep original pname for logging / compatibility
         self.pnames = [brackets_to_periods(config.inner_params[0])]
         self.device = config.device
-        self.edit_lr = float(config.edit_lr)  # Ensure float type
+        self.edit_lr = float(config.edit_lr)
         
         # Get editor-specific config
         editor_config = getattr(config, 'editor', config)
         self.retrain_memory = int(getattr(editor_config, 'retrain_memory', 100))
-        self.retrain_frequency = int(getattr(editor_config, 'retrain_frequency', 50))
         
         # AMP configuration
         first_param = next(self.model.parameters(), None)
@@ -59,7 +55,7 @@ class Finetune_retrain(torch.nn.Module):
         for p in self.model.parameters():
             p.requires_grad = p in train_params
         if train_params:
-            print(f"Finetuning module {layer} (with periodic retrain)")
+            print(f"Finetuning module {layer} (retrain on all edits)")
         
         # Store original weights for retraining
         self.original_state = {
@@ -80,11 +76,20 @@ class Finetune_retrain(torch.nn.Module):
                 if name in self.original_state:
                     param.copy_(self.original_state[name])
 
-    def retrain(self, config, batch_history):
-        """Retrain from original weights on accumulated batch history."""
-        if not batch_history:
-            return self.model
+    def edit(self, config, tokens, batch_history=None):
+        """
+        Edit by retraining from original weights on ALL accumulated edits.
         
+        tokens: current edit batch (not yet in batch_history)
+        batch_history: list of previous edit batches (may be empty or None)
+        """
+        if batch_history is None:
+            batch_history = []
+        
+        # Combine previous history with current tokens
+        all_history = batch_history + [tokens]
+        
+        # Reset to original weights
         self.reset_to_original()
         self.model.train()
         
@@ -94,133 +99,95 @@ class Finetune_retrain(torch.nn.Module):
         n_iter = getattr(editor_config, 'n_iter', config.n_iter)
         early_stop_patience = editor_config.early_stop_patience
         
-        history_to_use = batch_history[-self.retrain_memory:]
-        print(f"[ft_retrain] Retraining on {len(history_to_use)} batches from history")
+        # Use only recent history if memory limit is set
+        history_to_use = all_history[-self.retrain_memory:]
+        retrain_batch_size = int(getattr(editor_config, "retrain_batch_size", 1))
+        retrain_batch_size = max(1, retrain_batch_size)
+        n_groups = (len(history_to_use) + retrain_batch_size - 1) // retrain_batch_size
+        print(
+            f"[ft_retrain] Retraining on {len(history_to_use)} edits (including current) "
+            f"| retrain_batch_size={retrain_batch_size} | groups={n_groups}"
+        )
         
-        # Create scheduler once for all batches (LR decays across all batches)
-        total_steps = len(history_to_use) * n_iter
+        # Create scheduler for all optimizer steps (1 step per group, per epoch)
+        total_steps = n_groups * n_iter
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, total_steps))
         
-        for batch_idx, tokens in enumerate(history_to_use):
-            best_loss = float('inf')
-            patience_counter = 0
-            
-            for i in range(n_iter):
+        self.losses = []
+
+        best_loss = float("inf")
+        patience_counter = 0
+
+        # Normal training: n_iter epochs, each epoch iterates over all groups once.
+        for epoch in range(n_iter):
+            epoch_loss_sum = 0.0
+
+            for group_idx in range(n_groups):
+                start = group_idx * retrain_batch_size
+                end = min(len(history_to_use), start + retrain_batch_size)
+                group = history_to_use[start:end]
+                group_size = len(group)
+
                 opt.zero_grad(set_to_none=True)
-                with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
-                    outputs = self.model(**tokens)
-                    logits = outputs.logits if hasattr(outputs, "logits") else outputs
-                    loss = outputs.loss if hasattr(outputs, "loss") else None
-                
-                if loss is None:
-                    if "labels" in tokens:
-                        loss = torch.nn.functional.cross_entropy(
-                            logits.view(-1, logits.size(-1)),
-                            tokens["labels"].view(-1),
-                            ignore_index=-100
-                        )
+
+                group_loss_sum = 0.0
+
+                # Micro-batch grad accumulation inside the group
+                for batch_tokens in group:
+                    with torch.amp.autocast("cuda", dtype=self.autocast_dtype):
+                        outputs = self.model(**batch_tokens)
+                        logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                        loss = outputs.loss if hasattr(outputs, "loss") else None
+
+                    if loss is None:
+                        if "labels" in batch_tokens:
+                            loss = torch.nn.functional.cross_entropy(
+                                logits.view(-1, logits.size(-1)),
+                                batch_tokens["labels"].view(-1),
+                                ignore_index=-100,
+                            )
+                        else:
+                            continue
+
+                    group_loss_sum += loss.detach().cpu().item()
+
+                    # Scale loss so step magnitude is roughly invariant to group_size
+                    scaled_loss = loss / float(max(1, group_size))
+                    if self.scaler is not None:
+                        self.scaler.scale(scaled_loss).backward()
                     else:
-                        break
-                
-                loss_value = loss.detach().cpu().item()
-                
-                # Early stopping if correct
-                argmaxs = torch.argmax(logits, dim=-1)
-                response_indices = (tokens.get('labels', torch.zeros_like(argmaxs)) != -100)
-                if response_indices.any():
-                    if torch.all(tokens['labels'][response_indices] == argmaxs[response_indices]).item():
-                        break
-                
+                        scaled_loss.backward()
+
+                # Optimizer step once per group
                 if self.scaler is not None:
-                    self.scaler.scale(loss).backward()
                     self.scaler.step(opt)
                     self.scaler.update()
                 else:
-                    loss.backward()
                     opt.step()
-                
+
                 scheduler.step()
-                
-                # Early stopping: check if loss improved
-                if loss_value < best_loss:
-                    best_loss = loss_value
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                    if patience_counter >= early_stop_patience:
-                        break
-                
-                # Print loss every 10 iterations or on first/last iteration
-                if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
-                    print(f"[ft_retrain][retrain] batch {batch_idx+1}/{len(history_to_use)}, iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
-        
-        return self.model
-        
-    def edit(self, config, tokens, batch_history=None):
-        """Single edit step (also accumulates to history externally)."""
-        self.model.train()
-        
-        params = list(self.layer_module.parameters())
-        opt = torch.optim.Adam(params, lr=self.edit_lr)
-        editor_config = getattr(config, 'editor', config)
-        n_iter = getattr(editor_config, 'n_iter', config.n_iter)
-        early_stop_patience = editor_config.early_stop_patience
-        
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, n_iter))
-        self.losses = []
-        
-        best_loss = float('inf')
-        patience_counter = 0
-        
-        for i in range(n_iter):
-            opt.zero_grad(set_to_none=True)
-            with torch.amp.autocast('cuda', dtype=self.autocast_dtype):
-                outputs = self.model(**tokens)
-                logits = outputs.logits if hasattr(outputs, "logits") else outputs
-                loss = outputs.loss if hasattr(outputs, "loss") else None
-            
-            if loss is None:
-                if "labels" in tokens:
-                    loss = torch.nn.functional.cross_entropy(
-                        logits.view(-1, logits.size(-1)),
-                        tokens["labels"].view(-1),
-                        ignore_index=-100
-                    )
-                else:
-                    break
-            
-            loss_value = loss.detach().cpu().item()
-            self.losses.append(loss_value)
-            
-            # Early stopping if correct
-            argmaxs = torch.argmax(logits, dim=-1)
-            response_indices = (tokens.get('labels', torch.zeros_like(argmaxs)) != -100)
-            if response_indices.any():
-                if torch.all(tokens['labels'][response_indices] == argmaxs[response_indices]).item():
-                    break
-            
-            if self.scaler is not None:
-                self.scaler.scale(loss).backward()
-                self.scaler.step(opt)
-                self.scaler.update()
-            else:
-                loss.backward()
-                opt.step()
-            
-            scheduler.step()
-            
-            # Early stopping: check if loss improved
-            if loss_value < best_loss:
-                best_loss = loss_value
+
+                avg_group_loss = group_loss_sum / float(max(1, group_size))
+                epoch_loss_sum += avg_group_loss
+
+            avg_epoch_loss = epoch_loss_sum / float(max(1, n_groups))
+            self.losses.append(avg_epoch_loss)
+
+            # Patience early stop based on epoch-average loss
+            if avg_epoch_loss < best_loss:
+                best_loss = avg_epoch_loss
                 patience_counter = 0
             else:
                 patience_counter += 1
                 if patience_counter >= early_stop_patience:
+                    print(f"[ft_retrain] epoch {epoch+1}/{n_iter} - early stop (patience)")
                     break
-            
-            # Print loss every 10 iterations or on first/last iteration
-            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
-                print(f"[ft_retrain] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
+
+            if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == n_iter - 1:
+                print(
+                    f"[ft_retrain] epoch {epoch+1}/{n_iter} - avg_loss: {avg_epoch_loss:.4f}"
+                )
         
-        self.loss = loss if 'loss' in locals() else None
+        self.loss = avg_epoch_loss if "avg_epoch_loss" in locals() else (loss if "loss" in locals() else None)
         return self.model
+

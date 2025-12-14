@@ -50,7 +50,7 @@ def find_errors(config):
     print("="*50, flush=True)
     print("Step 1 (predictions)", flush=True)
     t1 = time.time()
-    if os.path.exists(pred_snapshot):  # and not config.overwrite:
+    if os.path.exists(pred_snapshot) and not getattr(config, "overwrite", False):
         with open(pred_snapshot, "r") as f:
             ds.data = json.load(f)
         print(f"Total samples {len(ds.data)} loaded from {pred_snapshot}", flush=True)
@@ -128,23 +128,22 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
             model.model.train()
         print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
         batch_history = []
-        retrain_freq = getattr(config.editor, "retrain_frequency", 50)
         for batch_idx, batch in enumerate(edit_ds.loader):
             tokens = model.prepare_training_batch(batch)
-            editor.edit(config, tokens, batch_history=batch_history)
+            # ft_retrain: do one single retrain on the full edit set (all-at-once).
+            if editor_name != "ft_retrain":
+                editor.edit(config, tokens, batch_history=batch_history)
 
             # Keep a lightweight history copy for methods that need replay/regularization
             tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
             batch_history.append(tokens_copy)
 
-            # Periodic retraining for ft_retrain
-            if editor_name == "ft_retrain" and retrain_freq > 0 and (batch_idx + 1) % retrain_freq == 0:
-                print(f"[ft_retrain] periodic retrain at batch {batch_idx + 1}", flush=True)
-                editor.retrain(config, batch_history)
-
             del tokens
             if (batch_idx + 1) % 10 == 0:
                 print(f"Edited {batch_idx + 1} batches", flush=True)
+
+        if editor_name == "ft_retrain" and batch_history:
+            editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
         if hasattr(model, "model"):
             model.model.eval()
     edit_ds.task_generate(model, use_cache=False)
@@ -191,5 +190,82 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
     print("="*50, flush=True)
     
     return out_dict
+
+
+
+def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None):
+    """Edit and evaluate sequentially - edit one batch, eval, repeat."""
+    model_old = copy.deepcopy(model)
+    pristine_edit_ds = copy.deepcopy(edit_ds)
+    editor_name = getattr(config.editor, "_name", "")
+    dataset_name = config.experiment.dataset_name
+
+    editor = None
+    if editor_name != "baseline":
+        editor = get_editor(config, model)
+        editor.generate = model.model.generate if hasattr(model, "model") else model.generate
+
+    batch_history = []
+    all_out_dicts = []
+    # JSONL output: truncate/create file once, then append one JSON object per batch.
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write("")
+
+    for batch_idx, batch in enumerate(edit_ds.loader):
+        if max_batches is not None and batch_idx >= max_batches:
+            print(f"Early stop at batch {batch_idx}", flush=True)
+            break
+
+        # Build subset up to current batch
+        edit_ds_sofar = copy.deepcopy(edit_ds)
+        pristine_ds_sofar = copy.deepcopy(pristine_edit_ds)
+        edit_ds_sofar.data = edit_ds_sofar.data[:batch_idx + 1]
+        pristine_ds_sofar.data = pristine_ds_sofar.data[:batch_idx + 1]
+        edit_ds_sofar.set_dataloader()
+
+        # Edit
+        print("="*50, flush=True)
+        print(f"Batch {batch_idx + 1}: editing", flush=True)
+        t2 = time.time()
+        if editor_name == "baseline":
+            pass  # no editing
+        elif editor_name in {"ike", "ike_cot", "ike_clip"}:
+            editor.edit(config, edit_ds=edit_ds_sofar)
+        else:
+            if hasattr(model, "model"):
+                model.model.train()
+            tokens = model.prepare_training_batch(batch)
+            editor.edit(config, tokens, batch_history=batch_history)
+            tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
+            batch_history.append(tokens_copy)
+            del tokens
+
+        if hasattr(model, "model"):
+            model.model.eval()
+        edit_ds_sofar.task_generate(model, use_cache=False)
+        print10(edit_ds_sofar, label="model_new")
+        print(f"Edit time: {time.time() - t2:.2f}s", flush=True)
+
+        # Evaluate
+        print("="*50, flush=True)
+        print(f"Batch {batch_idx + 1}: evaluation", flush=True)
+        t3 = time.time()
+        related_texts = get_t_gen_input(dataset_name, edit_ds_sofar)
+        related_images = get_i_gen_input(dataset_name, edit_ds_sofar, k_per_model=2)
+        related_r_gen_df = get_r_gen_input(dataset_name)
+        batch_out_dict = editeval(
+            model_old, model, edit_ds_sofar, editor,
+            related_texts, related_images, related_r_gen_df,
+        )
+        batch_out_dict['reliability_old'] = reliability(model_old, pristine_ds_sofar)
+        batch_out_dict['batch_idx'] = batch_idx + 1
+        batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        all_out_dicts.append(batch_out_dict)
+        print(f"Reliability (old): {batch_out_dict['reliability_old']:.4f}, (new): {batch_out_dict['reliability']:.4f}", flush=True)
+        with open(out_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(batch_out_dict, ensure_ascii=False, sort_keys=True) + "\n")
+        print(f"Eval time: {time.time() - t3:.2f}s | Saved to {out_path}", flush=True)
+
+    return all_out_dicts
 
 
