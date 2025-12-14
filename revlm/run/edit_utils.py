@@ -196,14 +196,13 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         related_images,
         related_r_gen_df,
     )
-
-    # reliability() is side-effect free on edit_ds (operates on a deepcopy)
-    out_dict['reliability_old'] =  reliability(model_old, pristine_edit_ds)
-    
     # add a job finish time
     out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
-    print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
-    print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
+    
+    # # reliability() is side-effect free on edit_ds (operates on a deepcopy)
+    # out_dict['reliability_old'] =  reliability(model_old, pristine_edit_ds)
+    # print(f"Reliability (model_old, on edit set): {out_dict['reliability_old']:.4f}", flush=True)
+    # print(f"Reliability (model_new, on edit set): {out_dict['reliability']:.4f}", flush=True)
     with open(out_path, "w") as f:
         json.dump(out_dict, f, indent=2)
     print(f"Total time: {time.time() - t3:.2f}s", flush=True)
@@ -287,11 +286,11 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
                 model_old, model, edit_ds_sofar, editor,
                 related_texts, related_images, related_r_gen_df,
             )
-            batch_out_dict['reliability_old'] = reliability(model_old, pristine_ds_sofar)
             batch_out_dict['batch_idx'] = batch_idx + 1
             batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            # batch_out_dict['reliability_old'] = reliability(model_old, pristine_ds_sofar)
+            # print(f"Reliability (old): {batch_out_dict['reliability_old']:.4f}, (new): {batch_out_dict['reliability']:.4f}", flush=True)
             all_out_dicts.append(batch_out_dict)
-            print(f"Reliability (old): {batch_out_dict['reliability_old']:.4f}, (new): {batch_out_dict['reliability']:.4f}", flush=True)
             with open(out_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(batch_out_dict, ensure_ascii=False, sort_keys=True) + "\n")
             
