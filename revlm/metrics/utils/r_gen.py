@@ -3,7 +3,7 @@ import os
 from huggingface_hub import snapshot_download
 import string
 
-def get_r_gen_input(dataset_name, s: int = 2):
+def get_r_gen_input(dataset_name, s: int = 0):
     """Load caption dataframe from HuggingFace dataset."""
     repo_id = "JJoy333/RationaleVQA"
     local_root = snapshot_download(
