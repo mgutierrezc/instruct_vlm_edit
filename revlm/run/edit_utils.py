@@ -213,12 +213,13 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
 
 
 
-def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None):
-    """Edit and evaluate sequentially - edit one batch, eval, repeat."""
+def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 10):
+    """Edit sequentially, evaluating every `eval_every` batches (default: 10)."""
     model_old = copy.deepcopy(model)
     pristine_edit_ds = copy.deepcopy(edit_ds)
     editor_name = getattr(config.editor, "_name", "")
     dataset_name = config.experiment.dataset_name
+    total_batches = len(edit_ds.loader) if hasattr(edit_ds.loader, "__len__") else None
 
     editor = None
     if editor_name != "baseline":
@@ -260,31 +261,34 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None):
             batch_history.append(tokens_copy)
             del tokens
 
-        if hasattr(model, "model"):
-            model.model.eval()
-        edit_ds_sofar.task_generate(model, use_cache=False)
-        print10(edit_ds_sofar, label="model_new")
-        print(f"Edit time: {time.time() - t2:.2f}s", flush=True)
+        is_last = ( (total_batches is not None and (batch_idx + 1) == total_batches) or (max_batches is not None and (batch_idx + 1) == max_batches) )
+        should_eval = ( (eval_every is None) or (eval_every <= 0) or ((batch_idx + 1) % int(eval_every) == 0) or is_last )
+        if should_eval:
+            if hasattr(model, "model"):
+                model.model.eval()
+            edit_ds_sofar.task_generate(model, use_cache=False)
+            print10(edit_ds_sofar, label="model_new")
+            print(f"Edit time: {time.time() - t2:.2f}s", flush=True)
 
-        # Evaluate
-        print("="*50, flush=True)
-        print(f"Batch {batch_idx + 1}: evaluation", flush=True)
-        t3 = time.time()
-        related_texts = get_t_gen_input(dataset_name, edit_ds_sofar)
-        related_images = get_i_gen_input(dataset_name, edit_ds_sofar, k_per_model=2)
-        related_r_gen_df = get_r_gen_input(dataset_name)
-        batch_out_dict = editeval(
-            model_old, model, edit_ds_sofar, editor,
-            related_texts, related_images, related_r_gen_df,
-        )
-        batch_out_dict['reliability_old'] = reliability(model_old, pristine_ds_sofar)
-        batch_out_dict['batch_idx'] = batch_idx + 1
-        batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        all_out_dicts.append(batch_out_dict)
-        print(f"Reliability (old): {batch_out_dict['reliability_old']:.4f}, (new): {batch_out_dict['reliability']:.4f}", flush=True)
-        with open(out_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(batch_out_dict, ensure_ascii=False, sort_keys=True) + "\n")
-        print(f"Eval time: {time.time() - t3:.2f}s | Saved to {out_path}", flush=True)
+            # Evaluate
+            print("="*50, flush=True)
+            print(f"Batch {batch_idx + 1}: evaluation", flush=True)
+            t3 = time.time()
+            related_texts = get_t_gen_input(dataset_name, edit_ds_sofar)
+            related_images = get_i_gen_input(dataset_name, edit_ds_sofar, k_per_model=2)
+            related_r_gen_df = get_r_gen_input(dataset_name)
+            batch_out_dict = editeval(
+                model_old, model, edit_ds_sofar, editor,
+                related_texts, related_images, related_r_gen_df,
+            )
+            batch_out_dict['reliability_old'] = reliability(model_old, pristine_ds_sofar)
+            batch_out_dict['batch_idx'] = batch_idx + 1
+            batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            all_out_dicts.append(batch_out_dict)
+            print(f"Reliability (old): {batch_out_dict['reliability_old']:.4f}, (new): {batch_out_dict['reliability']:.4f}", flush=True)
+            with open(out_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(batch_out_dict, ensure_ascii=False, sort_keys=True) + "\n")
+            print(f"Eval time: {time.time() - t3:.2f}s | Saved to {out_path}", flush=True)
 
     return all_out_dicts
 
