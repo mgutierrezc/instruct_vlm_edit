@@ -36,6 +36,20 @@ def print10(dataset, label):
     dataset.task_engineer.eval(sampled_dataset)
 
 
+def _wandb_job_name_from_edit_dir(edit_dir: str) -> str:
+    """Derive a stable wandb job name from edit_dir by stripping the root and replacing slashes."""
+    if not edit_dir:
+        return None
+    results_root = (PROJECT_ROOT / "results").resolve()
+    try:
+        rel = Path(edit_dir).resolve().relative_to(results_root)
+    except Exception:
+        rel = Path(edit_dir)
+    job = str(rel).strip("/\\")
+    job = job.replace("/", "_").replace("\\", "_")
+    return job or None
+
+
 def find_errors(config):
     """Step 0-1: Find errors - setup determinism, load model/dataset, find error examples."""
     # Step 0: determinism + load model and dataset
@@ -217,8 +231,8 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
 
 
 
-def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 10):
-    """Edit sequentially, evaluating every `eval_every` batches (default: 10)."""
+def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 5):
+    """Edit sequentially, evaluating every `eval_every` batchess."""
     model_old = copy.deepcopy(model)
     pristine_edit_ds = copy.deepcopy(edit_ds)
     editor_name = getattr(config.editor, "_name", "")
@@ -228,7 +242,8 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     # Initialize wandb if enabled
     use_wandb = getattr(config, "wandb", False)
     if use_wandb and wandb.run is None:
-        wandb.init(project="vlm-editing", config=config)
+        job_name = _wandb_job_name_from_edit_dir(getattr(config, "edit_dir", None))
+        wandb.init(project="vlm-editing", config=config, name=job_name)
 
     editor = None
     if editor_name != "baseline":
