@@ -252,6 +252,8 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
 
     batch_history = []
     all_out_dicts = []
+    seen_idxs = []
+    seen_idx_set = set()
     # JSONL output: truncate/create file once, then append one JSON object per batch.
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("")
@@ -261,11 +263,15 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             print(f"Early stop at batch {batch_idx}", flush=True)
             break
 
-        # Build subset up to current batch
+        for i in batch.get("idxs", []):
+            if i not in seen_idx_set:
+                seen_idx_set.add(i)
+                seen_idxs.append(int(i))
+
         edit_ds_sofar = copy.deepcopy(edit_ds)
         pristine_ds_sofar = copy.deepcopy(pristine_edit_ds)
-        edit_ds_sofar.data = edit_ds_sofar.data[:batch_idx + 1]
-        pristine_ds_sofar.data = pristine_ds_sofar.data[:batch_idx + 1]
+        edit_ds_sofar.data = [edit_ds_sofar.data[i] for i in seen_idxs]
+        pristine_ds_sofar.data = [pristine_ds_sofar.data[i] for i in seen_idxs]
         edit_ds_sofar.set_dataloader()
 
         # Edit

@@ -107,7 +107,7 @@ class VQADataset(Dataset):
             ex['idx'] = i
             self.task_engineer.eng_golds(ex)
             self.task_engineer.eng_prompt(ex)
-        self.loader = DataLoader(self, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True, collate_fn=self.image_collate)
+        self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=self.image_collate)
         
     def _resize_image(self, img, max_side=800):
         w, h = img.size
