@@ -157,7 +157,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
     if editor_name == "baseline":
         if hasattr(model, "model"):
             model.model.eval()
-    elif editor_name in {"ike", "ike_cot", "ike_clip"}:
+    elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
@@ -274,7 +274,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         t2 = time.time()
         if editor_name == "baseline":
             pass  # no editing
-        elif editor_name in {"ike", "ike_cot", "ike_clip"}:
+        elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple"}:
             editor.edit(config, edit_ds=edit_ds_sofar)
         else:
             if hasattr(model, "model"):

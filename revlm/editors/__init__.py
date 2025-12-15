@@ -11,6 +11,7 @@ from .ike import IKE
 from .ike_cot import IKE_COT
 # from .ike_clip_v1 import IKE_CLIP
 from .ike_clip import IKE_CLIP
+from .ike_tuple import IKE_TUPLE
 
 
 def get_editor(config, model):
@@ -55,6 +56,8 @@ def get_editor(config, model):
         editor = IKE_COT(config, model)
     elif editor_name == "ike_clip":
         editor = IKE_CLIP(config, model)
+    elif editor_name == "ike_tuple":
+        editor = IKE_TUPLE(config, model)
     else:
         raise ValueError(f"Unknown editor: {editor_name}")
     

@@ -122,7 +122,7 @@ def run_edit(config):
     if editor_name == "baseline":
         if hasattr(model, "model"):
             model.model.eval()
-    elif editor_name in {"ike", "ike_cot", "ike_clip"}:
+    elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
