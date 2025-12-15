@@ -340,7 +340,7 @@ def _maybe_apply_ike(
         if hasattr(editor, "model") and hasattr(editor, "wrapper"):
             if hasattr(editor.model, "eval"):
                 editor.model.eval()
-        editor.apply_to_dataset(edit_ds, inplace=True)
+        editor.apply_to_dataset(edit_ds)
     elif editor_name == "ike_cot":
         # IKE_COT: prepend each example's own COT/rationale as "New Facts" to the prompt.
         if hasattr(editor, "model") and hasattr(editor, "wrapper"):

@@ -7,7 +7,7 @@ from .utils import brackets_to_periods, parent_module
 
 
 class IKE_TUPLE(nn.Module):
-    """Minimal tuple retriever: (image, question) → sentence facts."""
+    """Tuple retriever with multi-positive InfoNCE and global negatives."""
 
     def __init__(self, config, model):
         super().__init__()
@@ -19,13 +19,13 @@ class IKE_TUPLE(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.k = int(getattr(cfg, "k", 3))
+        self.k = int(getattr(cfg, "k", 1))
         self.clip_dim = int(getattr(cfg, "clip_dim", 512))
-        self.num_epochs = int(getattr(cfg, "clip_epochs", 100))
-        self.batch_size = int(getattr(cfg, "clip_batch_size", 8))
-        self.lr = float(getattr(cfg, "clip_lr", 1e-3))
+        self.num_epochs = int(getattr(cfg, "clip_epochs", 1000))
+        self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
+        self.lr = float(getattr(cfg, "clip_lr", 1e-4))
         self.temperature = float(getattr(cfg, "clip_temperature", 1.0))
-        self.max_pairs = int(getattr(cfg, "max_pairs", 512))
+        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.9))
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
 
         # Sentence model
@@ -63,7 +63,7 @@ class IKE_TUPLE(nn.Module):
 
     @torch.no_grad()
     def _encode_texts(self, texts):
-        return self.sentence_model.encode(texts, convert_to_tensor=True, show_progress_bar=False).to(self.device, dtype=torch.float32)
+        return self.sentence_model.encode(texts, convert_to_tensor=True, show_progress_bar=False).to(self.device, dtype=torch.float32).clone()
 
     def _encode_vlm(self, images, questions):
         self.model.eval()
@@ -74,7 +74,7 @@ class IKE_TUPLE(nn.Module):
         act = self._last_act
         if act is None:
             raise RuntimeError("Hook failed")
-        return (act.unsqueeze(0) if act.dim() == 2 else act).mean(dim=1).to(self.device, dtype=torch.float32)
+        return (act.unsqueeze(0) if act.dim() == 2 else act).mean(dim=1).to(self.device, dtype=torch.float32).clone()
 
     def _ensure_heads(self, img_dim):
         if self.image_proj is None:
@@ -88,71 +88,118 @@ class IKE_TUPLE(nn.Module):
                 nn.Linear(self.clip_dim, self.clip_dim), nn.LayerNorm(self.clip_dim)
             ).to(self.device)
 
-    def _build_pairs(self, dataset):
+    def _build_samples(self, dataset):
+        """Build samples: each has image, question, and list of rationale sentences."""
         data = getattr(dataset, "data", [])
-        pairs = []
+        samples = []
         for ex in data:
             rat = ex.get("cot") or ex.get("rationale") or ""
             q, img = ex.get("question", ""), ex.get("image")
             if not rat or img is None or not q:
                 continue
-            for s in [p.strip() for p in re.split(r"(?<=[.!?])\s+", rat.strip()) if p.strip()]:
-                neg = self._gen_neg(img, s)
-                if neg:
-                    pairs.append({"image": img, "question": q, "pos": s, "neg": neg})
-                if len(pairs) >= self.max_pairs:
-                    return pairs
-        return pairs
+            sentences = [p.strip() for p in re.split(r"(?<=[.!?])\s+", rat.strip()) if p.strip()]
+            if sentences:
+                samples.append({"image": img, "question": q, "sentences": sentences})
+        return samples
 
-    def _gen_neg(self, image, sentence):
-        if not self.wrapper or not sentence:
-            return ""
-        inst = f"Rewrite to state a different plausible fact:\n\nOriginal: {sentence}\n\nRewritten:"
-        try:
-            out = self.wrapper.generate([image], [inst], max_new_tokens=64, temperature=0.0)[0]
-        except Exception:
-            return ""
-        t = str(out).strip().splitlines()[0].strip()
-        t = re.sub(r"^(rewritten sentence|rewrite|answer)\s*:\s*", "", t, flags=re.IGNORECASE).strip()
-        return t if t and t.lower() != sentence.lower() else ""
+    @torch.no_grad()
+    def _retrieval_acc(self, samples):
+        """Compute retrieval accuracy: fraction of retrieved sentences that match sample's own."""
+        if not samples or self.rationale_emb is None:
+            return 0.0
+        hits, total = 0, 0
+        for s in samples:
+            facts = self._retrieve(s["image"], s["question"], self.k)
+            gt = set(s["sentences"])
+            hits += sum(1 for f in facts if f in gt)
+            total += len(facts)
+        return hits / max(1, total)
 
-    def _train(self, pairs):
-        if not pairs:
+    def _train(self, samples):
+        """Train with multi-positive InfoNCE: each query's sentences vs global pool."""
+        if not samples:
             return
-        opt = None
-        n = len(pairs)
+        opt, sched = None, None
+        n = len(samples)
         for ep in range(self.num_epochs):
             perm = torch.randperm(n)
             loss_sum, cnt = 0.0, 0
             for start in range(0, n, self.batch_size):
-                batch = [pairs[i] for i in perm[start:start + self.batch_size].tolist()]
+                batch = [samples[i] for i in perm[start:start + self.batch_size].tolist()]
+                B = len(batch)
+                if B < 2:
+                    continue  # need at least 2 samples for contrastive
+
+                # Encode queries: one per sample
                 img_f = self._encode_vlm([b["image"] for b in batch], [b["question"] for b in batch])
-                pos_f = self._encode_texts([b["pos"] for b in batch])
-                neg_f = self._encode_texts([b["neg"] for b in batch])
                 self._ensure_heads(img_f.shape[-1])
-                img_e = F.normalize(self.image_proj(img_f), dim=-1)
-                pos_e = F.normalize(self.text_proj(pos_f), dim=-1)
-                neg_e = F.normalize(self.text_proj(neg_f), dim=-1)
-                logits = torch.stack([
-                    (img_e * pos_e).sum(-1) / self.temperature,
-                    (img_e * neg_e).sum(-1) / self.temperature
-                ], dim=1)
-                loss = F.cross_entropy(logits, torch.zeros(logits.size(0), dtype=torch.long, device=self.device))
+                q_emb = F.normalize(self.image_proj(img_f), dim=-1)  # [B, D]
+
+                # Pool all sentences with owner ids
+                all_texts, owners = [], []
+                for i, b in enumerate(batch):
+                    for s in b["sentences"]:
+                        all_texts.append(s)
+                        owners.append(i)
+
+                if len(all_texts) < 2:
+                    continue
+
+                # Encode all texts
+                t_emb = F.normalize(self.text_proj(self._encode_texts(all_texts)), dim=-1)  # [T, D]
+                owners_t = torch.tensor(owners, device=self.device)  # [T]
+
+                # Similarity matrix: [B, T]
+                logits = (q_emb @ t_emb.t()) / self.temperature
+
+                # Multi-positive InfoNCE: L_i = -log(sum_pos exp) + log(sum_all exp)
+                loss = torch.tensor(0.0, device=self.device)
+                valid = 0
+                for i in range(B):
+                    pos_mask = (owners_t == i)
+                    if not pos_mask.any():
+                        continue
+                    pos_logits = logits[i, pos_mask]
+                    all_logits = logits[i]
+                    loss_i = -torch.logsumexp(pos_logits, dim=0) + torch.logsumexp(all_logits, dim=0)
+                    loss = loss + loss_i
+                    valid += 1
+
+                if valid == 0:
+                    continue
+                loss = loss / valid
+
                 if opt is None:
-                    opt = torch.optim.Adam(list(self.image_proj.parameters()) + list(self.text_proj.parameters()), lr=self.lr)
+                    opt = torch.optim.Adam(
+                        list(self.image_proj.parameters()) + list(self.text_proj.parameters()),
+                        lr=self.lr
+                    )
+                    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, self.num_epochs))
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
                 loss_sum += loss.item()
                 cnt += 1
-            print(f"[IKE_TUPLE_SIMPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f}")
-        self._build_index(pairs)
+
+            if sched:
+                sched.step()
+            self._build_index(samples)
+            acc = self._retrieval_acc(samples)
+            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f} acc@{self.k}: {acc:.3f}")
+            if acc >= self.early_stop_acc:
+                print(f"[IKE_TUPLE] early stop at acc {acc:.3f}")
+                break
+        self._build_index(samples)
 
     @torch.no_grad()
-    def _build_index(self, pairs):
-        if not pairs or self.text_proj is None:
+    def _build_index(self, samples):
+        if not samples or self.text_proj is None:
             return
-        texts = list(dict.fromkeys(p["pos"] for p in pairs if p.get("pos")))
+        # Collect unique sentences
+        texts = []
+        for s in samples:
+            texts.extend(s["sentences"])
+        texts = list(dict.fromkeys(texts))
         if texts:
             self.rationale_texts = texts
             self.rationale_emb = F.normalize(self.text_proj(self._encode_texts(texts)), dim=-1)
@@ -173,14 +220,12 @@ class IKE_TUPLE(nn.Module):
                 continue
             facts = self._retrieve(img, q, self.k)
             if facts:
-                ex["prompt"] = f"{self.prefix}{' '.join(facts)}\n\n{prompt}"
+                ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt}"
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         if edit_ds is None:
             return self.model
-        pairs = self._build_pairs(train_ds or edit_ds)
-        if pairs:
-            self._train(pairs)
-        if self.rationale_emb is not None:
-            self.apply_to_dataset(edit_ds)
+        samples = self._build_samples(edit_ds)
+        self._train(samples)
+        self.apply_to_dataset(edit_ds)
         return self.model
