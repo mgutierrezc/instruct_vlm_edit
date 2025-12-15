@@ -61,6 +61,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=20, help="Batch size for edit dataloader")
     parser.add_argument("--split", type=str, default="all", choices=["train", "test", "all"], help="Split to search for edit examples")
     parser.add_argument("--edit_dir", type=str, default=None, help="Edit evaluation result directory (overrides config.yaml if provided)")
+    parser.add_argument("--sequential", action="store_true", help="Run sequential editing/eval (enables wandb logging)")
 
     # Args
     parser.add_argument("--rationale", action="store_true", help="Append rationale/COT to targets (not prompts) when enabled")
@@ -87,4 +88,4 @@ if __name__ == "__main__":
     config.cot = args.cot
     config.pred_path = args.pred_path
     config.overwrite = args.overwrite
-    run_edit(config)
+    run_edit(config, sequential=args.sequential)
