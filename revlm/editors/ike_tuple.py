@@ -1,4 +1,6 @@
 import re
+import numpy as np
+from scipy.stats import t as t_dist
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -19,7 +21,7 @@ class IKE_TUPLE(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.k = int(getattr(cfg, "k", 1))
+        self.k = int(getattr(cfg, "k", -3))
         self.clip_dim = int(getattr(cfg, "clip_dim", 512))
         self.num_epochs = int(getattr(cfg, "clip_epochs", 1000))
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
@@ -76,6 +78,30 @@ class IKE_TUPLE(nn.Module):
             raise RuntimeError("Hook failed")
         return (act.unsqueeze(0) if act.dim() == 2 else act).mean(dim=1).to(self.device, dtype=torch.float32).clone()
 
+    @staticmethod
+    def _auto_k(sims, top_k=20, alpha=0.05):
+        """Use Grubbs' test on similarity gaps to find natural cutoff."""
+        sims = np.asarray(sims, dtype=float)
+        if sims.size < 4:
+            return 0
+        vals = np.sort(sims)[::-1][:top_k]
+        spread = vals[0] - vals[-1]
+        if spread <= 0:
+            return 0
+        d = (vals[:-1] - vals[1:]) / spread
+        n = d.size
+        if n < 3:
+            return 0
+        mean, std = d.mean(), d.std(ddof=1)
+        if std <= 1e-12:
+            return 0
+        i = int(np.argmax(d))
+        G = abs(d[i] - mean) / std
+        p = alpha / (2 * n)
+        tcrit = t_dist.ppf(1 - p, df=n - 2)
+        Gcrit = ((n - 1) / np.sqrt(n)) * np.sqrt(tcrit**2 / (n - 2 + tcrit**2))
+        return (i + 1) if G > Gcrit else 0
+
     def _ensure_heads(self, img_dim):
         if self.image_proj is None:
             self.image_proj = nn.Sequential(
@@ -109,7 +135,7 @@ class IKE_TUPLE(nn.Module):
             return 0.0
         hits, total = 0, 0
         for s in samples:
-            facts = self._retrieve(s["image"], s["question"], self.k)
+            facts = self._retrieve(s["image"], s["question"], self.k)  # uses auto-k if k < 0
             gt = set(s["sentences"])
             hits += sum(1 for f in facts if f in gt)
             total += len(facts)
@@ -185,7 +211,8 @@ class IKE_TUPLE(nn.Module):
                 sched.step()
             self._build_index(samples)
             acc = self._retrieval_acc(samples)
-            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f} acc@{self.k}: {acc:.3f}")
+            k_str = "auto" if self.k < 0 else str(self.k)
+            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f} acc@{k_str}: {acc:.3f}")
             if acc >= self.early_stop_acc:
                 print(f"[IKE_TUPLE] early stop at acc {acc:.3f}")
                 break
@@ -210,6 +237,13 @@ class IKE_TUPLE(nn.Module):
             return []
         img_e = F.normalize(self.image_proj(self._encode_vlm([image], [question])), dim=-1)
         sims = (self.rationale_emb @ img_e.t()).squeeze(-1)
+        sims_np = sims.cpu().numpy()
+        # Auto k if k < 0, capped at 3
+        if k < 0:
+            k = self._auto_k(sims_np)
+            if k == 0:
+                return []
+            k = min(k, 3)
         topk = torch.topk(sims, k=min(k, len(sims)), largest=True)
         return [self.rationale_texts[i] for i in topk.indices.tolist()]
 
