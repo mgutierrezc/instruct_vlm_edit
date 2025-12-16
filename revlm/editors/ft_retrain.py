@@ -4,10 +4,10 @@ from .utils import brackets_to_periods, parent_module
 
 class Finetune_retrain(torch.nn.Module):
     """
-    Fine-tuning editor that retrains from scratch on ALL accumulated edits.
+    Fine-tuning editor that trains on ALL accumulated edits.
     
-    For each new edit, resets weights to original and retrains on all
-    accumulated edits (including the new one). No single-sample finetuning.
+    For each new edit, continues from current weights and trains on all
+    accumulated edits (including the new one). Incremental fine-tuning.
     """
     def __init__(self, config, model):
         torch.nn.Module.__init__(self)
@@ -20,7 +20,6 @@ class Finetune_retrain(torch.nn.Module):
         
         # Get editor-specific config
         editor_config = getattr(config, 'editor', config)
-        self.retrain_memory = int(getattr(editor_config, 'retrain_memory', 100))
         
         # AMP configuration
         first_param = next(self.model.parameters(), None)
@@ -55,13 +54,7 @@ class Finetune_retrain(torch.nn.Module):
         for p in self.model.parameters():
             p.requires_grad = p in train_params
         if train_params:
-            print(f"Finetuning module {layer} (retrain on all edits)")
-        
-        # Store original weights for retraining
-        self.original_state = {
-            name: param.clone().detach()
-            for name, param in self.layer_module.named_parameters()
-        }
+            print(f"Finetuning module {layer} (incremental retrain on all edits)")
 
     def generate(self, *args, **kwargs):
         return self.model.generate(*args, **kwargs)
@@ -69,16 +62,9 @@ class Finetune_retrain(torch.nn.Module):
     def forward(self, *inputs, **kwargs):
         return self.model(*inputs, **kwargs)
 
-    def reset_to_original(self):
-        """Reset layer weights to original values before retraining."""
-        with torch.no_grad():
-            for name, param in self.layer_module.named_parameters():
-                if name in self.original_state:
-                    param.copy_(self.original_state[name])
-
     def edit(self, config, tokens, batch_history=None):
         """
-        Edit by retraining from original weights on ALL accumulated edits.
+        Edit by training on ALL accumulated edits (continues from current weights).
         
         tokens: current edit batch (not yet in batch_history)
         batch_history: list of previous edit batches (may be empty or None)
@@ -89,8 +75,6 @@ class Finetune_retrain(torch.nn.Module):
         # Combine previous history with current tokens
         all_history = batch_history + [tokens]
         
-        # Reset to original weights
-        self.reset_to_original()
         self.model.train()
         
         params = list(self.layer_module.parameters())
@@ -99,13 +83,12 @@ class Finetune_retrain(torch.nn.Module):
         n_iter = getattr(editor_config, 'n_iter', config.n_iter)
         early_stop_patience = editor_config.early_stop_patience
         
-        # Use only recent history if memory limit is set
-        history_to_use = all_history[-self.retrain_memory:]
+        # Use all history (no cap)
         retrain_batch_size = int(getattr(editor_config, "retrain_batch_size", 1))
         retrain_batch_size = max(1, retrain_batch_size)
-        n_groups = (len(history_to_use) + retrain_batch_size - 1) // retrain_batch_size
+        n_groups = (len(all_history) + retrain_batch_size - 1) // retrain_batch_size
         print(
-            f"[ft_retrain] Retraining on {len(history_to_use)} edits (including current) "
+            f"[ft_retrain] Retraining on {len(all_history)} edits (including current) "
             f"| retrain_batch_size={retrain_batch_size} | groups={n_groups}"
         )
         
@@ -124,8 +107,8 @@ class Finetune_retrain(torch.nn.Module):
 
             for group_idx in range(n_groups):
                 start = group_idx * retrain_batch_size
-                end = min(len(history_to_use), start + retrain_batch_size)
-                group = history_to_use[start:end]
+                end = min(len(all_history), start + retrain_batch_size)
+                group = all_history[start:end]
                 group_size = len(group)
 
                 opt.zero_grad(set_to_none=True)
