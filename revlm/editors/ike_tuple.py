@@ -142,7 +142,7 @@ class IKE_TUPLE(nn.Module):
         return hits / max(1, total)
 
     def _train(self, samples):
-        """Train with multi-positive InfoNCE: each query's sentences vs global pool."""
+        """Train with multi-positive InfoNCE: 3 query types per sample vs global pool."""
         if not samples:
             return
         opt, sched = None, None
@@ -154,12 +154,24 @@ class IKE_TUPLE(nn.Module):
                 batch = [samples[i] for i in perm[start:start + self.batch_size].tolist()]
                 B = len(batch)
                 if B < 2:
-                    continue  # need at least 2 samples for contrastive
+                    continue
 
-                # Encode queries: one per sample
-                img_f = self._encode_vlm([b["image"] for b in batch], [b["question"] for b in batch])
-                self._ensure_heads(img_f.shape[-1])
-                q_emb = F.normalize(self.image_proj(img_f), dim=-1)  # [B, D]
+                # 3 query types: <img,q>, <img>, <img,rationale>
+                imgs = [b["image"] for b in batch]
+                qs = [b["question"] for b in batch]
+                rats = [" ".join(b["sentences"]) for b in batch]
+
+                f1 = self._encode_vlm(imgs, qs)           # <image, question>
+                f2 = self._encode_vlm(imgs, [""] * B)     # <image> only
+                f3 = self._encode_vlm(imgs, rats)         # <image, rationale>
+
+                self._ensure_heads(f1.shape[-1])
+                q_emb = torch.cat([
+                    F.normalize(self.image_proj(f1), dim=-1),
+                    F.normalize(self.image_proj(f2), dim=-1),
+                    F.normalize(self.image_proj(f3), dim=-1),
+                ], dim=0)  # [3*B, D]
+                q_owners = list(range(B)) * 3  # sample ownership for each query
 
                 # Pool all sentences with owner ids
                 all_texts, owners = [], []
@@ -171,23 +183,19 @@ class IKE_TUPLE(nn.Module):
                 if len(all_texts) < 2:
                     continue
 
-                # Encode all texts
-                t_emb = F.normalize(self.text_proj(self._encode_texts(all_texts)), dim=-1)  # [T, D]
-                owners_t = torch.tensor(owners, device=self.device)  # [T]
+                t_emb = F.normalize(self.text_proj(self._encode_texts(all_texts)), dim=-1)
+                owners_t = torch.tensor(owners, device=self.device)
 
-                # Similarity matrix: [B, T]
-                logits = (q_emb @ t_emb.t()) / self.temperature
+                logits = (q_emb @ t_emb.t()) / self.temperature  # [3*B, T]
 
-                # Multi-positive InfoNCE: L_i = -log(sum_pos exp) + log(sum_all exp)
+                # Multi-positive InfoNCE for all 3*B queries
                 loss = torch.tensor(0.0, device=self.device)
                 valid = 0
-                for i in range(B):
-                    pos_mask = (owners_t == i)
+                for i in range(3 * B):
+                    pos_mask = (owners_t == q_owners[i])
                     if not pos_mask.any():
                         continue
-                    pos_logits = logits[i, pos_mask]
-                    all_logits = logits[i]
-                    loss_i = -torch.logsumexp(pos_logits, dim=0) + torch.logsumexp(all_logits, dim=0)
+                    loss_i = -torch.logsumexp(logits[i, pos_mask], dim=0) + torch.logsumexp(logits[i], dim=0)
                     loss = loss + loss_i
                     valid += 1
 

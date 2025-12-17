@@ -161,6 +161,10 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
+    elif editor_name == "reasonedit":
+        if hasattr(model, "model"):
+            model.model.train()
+        editor.edit(config, edit_ds=edit_ds)
     else:
         if hasattr(model, "model"):
             model.model.train()
@@ -281,6 +285,10 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         if editor_name == "baseline":
             pass  # no editing
         elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple"}:
+            editor.edit(config, edit_ds=edit_ds_sofar)
+        elif editor_name == "reasonedit":
+            if hasattr(model, "model"):
+                model.model.train()
             editor.edit(config, edit_ds=edit_ds_sofar)
         else:
             if hasattr(model, "model"):
