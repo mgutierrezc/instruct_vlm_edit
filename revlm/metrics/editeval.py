@@ -1,10 +1,12 @@
 from typing import Any, Dict, List, Tuple, Mapping, Sequence
 import pandas as pd
+import numpy as np
 import copy
 import time
 import random
 import gc
 import torch
+from sentence_transformers import SentenceTransformer
 
 
 def move_model_device(model: Any, device: str) -> None:
@@ -80,6 +82,7 @@ def editeval(
 		related_r_gen_df: pd.DataFrame,
 		unrelated_ds=None,
 		loc_sample_size=100,
+		use_hard_locality: bool = True,
 		lambda_gen: float = 1.0,
 		lambda_loc: float = 1.0,
 		gen_agg: str = "harmonic",
@@ -87,6 +90,7 @@ def editeval(
 	"""Combined metric: rel + λ_gen * gen + λ_loc * loc.
 	
 	gen can be mean or harmonic of text/image generality.
+	use_hard_locality: if True, also compute hard_locality (top-k similar unrelated questions).
 	"""
 
 	t_rel = time.time()
@@ -133,6 +137,13 @@ def editeval(
 	print(f"[Timing] locality: {time.time() - t_loc:.2f}s", flush=True)
 	print(f"Locality: {loc:.4f}", flush=True)
 
+	hard_loc = 0.0
+	if use_hard_locality:
+		t_hloc = time.time()
+		hard_loc = hard_locality(model_old, model_new, edit_ds, editor=editor)
+		print(f"[Timing] hard_locality: {time.time() - t_hloc:.2f}s", flush=True)
+		print(f"Hard Locality: {hard_loc:.4f}", flush=True)
+
 	if gen_agg == "harmonic":
 		gen = 0.0 if (tgen == 0 or igen == 0 or rgen == 0) else 3.0 / (1.0 / tgen + 1.0 / igen + 1.0 / rgen)
 	else:
@@ -146,6 +157,7 @@ def editeval(
 		"image_generality": float(igen),
 		"rationale_generality": float(rgen),
 		"locality": float(loc),
+		"hard_locality": float(hard_loc),
 		"edit1_generality": float(edit1),
 		"editk_generality": float(editk),
 		"hm": float(score),
@@ -247,6 +259,136 @@ def locality(
     # Restore model_new to GPU for any downstream use after locality().
     move_model_device(model_new, target_device)
     return loc
+
+
+def _tokenize(text: str) -> set:
+    """Simple word tokenizer: lowercase, split on non-alphanumeric."""
+    import re
+    return set(re.findall(r'\w+', text.lower()))
+
+
+def hard_locality(
+    model_old: Any,
+    model_new: Any,
+    edit_ds: Any,
+    k_per_edit: int = 3,
+    sample_size: int = 100,
+    editor: Any = None,
+) -> float:
+    """Locality on hard negatives: top-k by word overlap (fast, no embeddings)."""
+    # Build unrelated pool
+    full_df = edit_ds.load_df()
+    used_imgs = {ex.get("image") for ex in edit_ds.data}
+    used_qs = {ex.get("question") for ex in edit_ds.data}
+    pool_df = full_df[~full_df["image_path"].isin(used_imgs) & ~full_df["question"].isin(used_qs)].reset_index(drop=True)
+    
+    # Tokenize all questions
+    edit_tokens = [_tokenize(ex.get("question", "")) for ex in edit_ds.data]
+    pool_qs = pool_df["question"].tolist()
+    pool_tokens = [_tokenize(q) for q in pool_qs]
+    
+    # For each edit, find top-k pool questions by word overlap
+    selected = set()
+    for edit_toks in edit_tokens:
+        if not edit_toks:
+            continue
+        # Compute overlap scores: |intersection| / |edit_toks|
+        scores = [(len(edit_toks & pt) / len(edit_toks), j) for j, pt in enumerate(pool_tokens)]
+        # Sort descending, take top-k (exclude exact matches with score=1.0)
+        scores = [(s, j) for s, j in scores if s < 1.0]
+        scores.sort(reverse=True)
+        for s, j in scores[:k_per_edit]:
+            selected.add(j)
+    
+    if not selected:
+        return 0.0
+    
+    # Cap at sample_size
+    selected = list(selected)
+    if len(selected) > sample_size:
+        rng = random.Random(getattr(edit_ds.config, "seed", 333))
+        selected = rng.sample(selected, sample_size)
+    
+    # Build hard negative dataset
+    hard_ds = copy.deepcopy(edit_ds)
+    hard_ds.data = hard_ds.df2data(pool_df.iloc[selected].reset_index(drop=True))
+    hard_ds.set_dataloader(shuffle_choices=False)
+    
+    ds_old, ds_new = copy.deepcopy(hard_ds), copy.deepcopy(hard_ds)
+    _maybe_apply_ike(editor, ds_new, edit_ds)
+    
+    # Evaluate both models
+    target = getattr(edit_ds.config, "device", "cuda")
+    target = torch.device(target) if isinstance(target, str) else target
+    move_model_device(model_new, "cpu"); cuda_gc()
+    move_model_device(model_old, target)
+    pairs_old = generation(model_old, ds_old)
+    move_model_device(model_old, "cpu"); cuda_gc()
+    move_model_device(model_new, target)
+    pairs_new = generation(model_new, ds_new)
+    
+    preds_old, preds_new = [p for _, p in pairs_old], [p for _, p in pairs_new]
+    return sum(str(a).strip().lower() == str(b).strip().lower() for a, b in zip(preds_old, preds_new)) / len(preds_old) if preds_old else 0.0
+
+
+def hard_locality_sentence_bert(
+    model_old: Any,
+    model_new: Any,
+    edit_ds: Any,
+    k_per_edit: int = 3,
+    sim_threshold: float = 0.99,
+    editor: Any = None,
+) -> float:
+    """Locality on hard negatives: top-k most similar unrelated questions per edit."""
+    target = getattr(edit_ds.config, "device", "cuda")
+    target = torch.device(target) if isinstance(target, str) else target
+    
+    # Move VLMs to CPU before loading sentence-BERT to avoid OOM
+    move_model_device(model_old, "cpu")
+    move_model_device(model_new, "cpu")
+    cuda_gc()
+    
+    # Build unrelated pool
+    full_df = edit_ds.load_df()
+    used_imgs = {ex.get("image") for ex in edit_ds.data}
+    used_qs = {ex.get("question") for ex in edit_ds.data}
+    pool_df = full_df[~full_df["image_path"].isin(used_imgs) & ~full_df["question"].isin(used_qs)].reset_index(drop=True)
+    
+    # Encode questions with sentence-BERT
+    sbert = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=target)
+    edit_emb = sbert.encode([ex.get("question", "") for ex in edit_ds.data], convert_to_tensor=True, normalize_embeddings=True)
+    pool_emb = sbert.encode(pool_df["question"].tolist(), convert_to_tensor=True, normalize_embeddings=True)
+    
+    # Select top-k similar (but < threshold) per edit
+    sims = (edit_emb @ pool_emb.T).cpu().numpy()
+    selected = set()
+    for i in range(len(edit_ds.data)):
+        valid = np.where(sims[i] <= sim_threshold)[0]
+        if len(valid) > 0:
+            top_k = valid[np.argsort(sims[i, valid])[::-1][:k_per_edit]]
+            selected.update(top_k.tolist())
+    
+    del sbert, edit_emb, pool_emb
+    cuda_gc()
+    
+    # Build hard negative dataset
+    hard_ds = copy.deepcopy(edit_ds)
+    hard_ds.data = hard_ds.df2data(pool_df.iloc[list(selected)].reset_index(drop=True))
+    hard_ds.set_dataloader(shuffle_choices=False)
+    
+    ds_old, ds_new = copy.deepcopy(hard_ds), copy.deepcopy(hard_ds)
+    _maybe_apply_ike(editor, ds_new, edit_ds)
+    
+    # Evaluate both models
+    move_model_device(model_old, target)
+    pairs_old = generation(model_old, ds_old)
+    move_model_device(model_old, "cpu"); cuda_gc()
+    move_model_device(model_new, target)
+    pairs_new = generation(model_new, ds_new)
+    
+    preds_old, preds_new = [p for _, p in pairs_old], [p for _, p in pairs_new]
+    return sum(str(a).strip().lower() == str(b).strip().lower() for a, b in zip(preds_old, preds_new)) / len(preds_old) if preds_old else 0.0
+
 
 # def text_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_texts: Dict[str, List[str]]) -> float:
 #     """Accuracy on unrelated texts using the same images.

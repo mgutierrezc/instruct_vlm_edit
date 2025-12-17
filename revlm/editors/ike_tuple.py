@@ -1,11 +1,60 @@
 import re
+import random
 import numpy as np
+from PIL import Image as PILImage
 from scipy.stats import t as t_dist
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms as T
 from sentence_transformers import SentenceTransformer
 from .utils import brackets_to_periods, parent_module
+
+
+class Augmenter:
+    """Online augmentation for images, questions, and rationales."""
+
+    def __init__(self, wrapper=None):
+        self.wrapper = wrapper
+        self.img_aug = T.Compose([
+            T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),  # random crop 70-100%
+            T.RandomHorizontalFlip(p=0.5),
+            T.RandomRotation(15),
+            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        ])
+        self._blank = PILImage.new("RGB", (364, 364), color="black")
+
+    def image(self, img):
+        """Apply random image augmentations. Handles path strings or PIL Images."""
+        if isinstance(img, str):
+            img = PILImage.open(img).convert("RGB")
+        elif hasattr(img, "convert"):
+            img = img.convert("RGB")
+        return self.img_aug(img)
+
+    def question(self, q):
+        """Rephrase question using VLM."""
+        if not self.wrapper or not q:
+            return q
+        prompt = f"Rephrase this question differently while keeping the same meaning:\n\n{q}\n\nRephrased:"
+        try:
+            out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=0.7)[0]
+            out = str(out).strip()
+            return out if out else q
+        except Exception:
+            return q
+
+    def rationale(self, sent):
+        """Rephrase rationale sentence using VLM."""
+        if not self.wrapper or not sent:
+            return sent
+        prompt = f"Rephrase this fact differently while keeping the same meaning:\n\n{sent}\n\nRephrased:"
+        try:
+            out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=0.7)[0]
+            out = str(out).strip()
+            return out if out else sent
+        except Exception:
+            return sent
 
 
 class IKE_TUPLE(nn.Module):
@@ -27,8 +76,12 @@ class IKE_TUPLE(nn.Module):
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
         self.lr = float(getattr(cfg, "clip_lr", 1e-4))
         self.temperature = float(getattr(cfg, "clip_temperature", 1.0))
-        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.9))
+        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.975))
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
+        self.use_augment = bool(getattr(cfg, "use_augment", True))
+
+        # Augmenter (online, per-batch)
+        self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
 
         # Sentence model
         self.sentence_model = SentenceTransformer(
@@ -160,6 +213,12 @@ class IKE_TUPLE(nn.Module):
                 imgs = [b["image"] for b in batch]
                 qs = [b["question"] for b in batch]
                 rats = [" ".join(b["sentences"]) for b in batch]
+
+                # Apply augmentations (online, per-batch)
+                if self.augmenter:
+                    imgs = [self.augmenter.image(img) for img in imgs]
+                    qs = [self.augmenter.question(q) if random.random() < 0.5 else q for q in qs]
+                    rats = [self.augmenter.rationale(r) if random.random() < 0.5 else r for r in rats]
 
                 f1 = self._encode_vlm(imgs, qs)           # <image, question>
                 f2 = self._encode_vlm(imgs, [""] * B)     # <image> only
