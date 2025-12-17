@@ -77,6 +77,7 @@ class IKE_TUPLE(nn.Module):
         self.lr = float(getattr(cfg, "clip_lr", 1e-4))
         self.temperature = float(getattr(cfg, "clip_temperature", 1.0))
         self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.975))
+        self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.99))
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.use_augment = bool(getattr(cfg, "use_augment", True))
 
@@ -182,13 +183,14 @@ class IKE_TUPLE(nn.Module):
         return samples
 
     @torch.no_grad()
-    def _retrieval_acc(self, samples):
+    def _retrieval_acc(self, samples, last_only=False):
         """Compute retrieval accuracy: fraction of retrieved sentences that match sample's own."""
         if not samples or self.rationale_emb is None:
             return 0.0
+        target = [samples[-1]] if last_only else samples
         hits, total = 0, 0
-        for s in samples:
-            facts = self._retrieve(s["image"], s["question"], self.k)  # uses auto-k if k < 0
+        for s in target:
+            facts = self._retrieve(s["image"], s["question"], self.k)
             gt = set(s["sentences"])
             hits += sum(1 for f in facts if f in gt)
             total += len(facts)
@@ -278,10 +280,11 @@ class IKE_TUPLE(nn.Module):
                 sched.step()
             self._build_index(samples)
             acc = self._retrieval_acc(samples)
+            acc_last = self._retrieval_acc(samples, last_only=True)
             k_str = "auto" if self.k < 0 else str(self.k)
-            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f} acc@{k_str}: {acc:.3f}")
-            if acc >= self.early_stop_acc:
-                print(f"[IKE_TUPLE] early stop at acc {acc:.3f}")
+            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
+            if acc >= self.early_stop_acc and acc_last >= self.early_stop_acc_last:
+                print(f"[IKE_TUPLE] early stop at acc {acc:.3f}, acc_last {acc_last:.3f}")
                 break
         self._build_index(samples)
 
