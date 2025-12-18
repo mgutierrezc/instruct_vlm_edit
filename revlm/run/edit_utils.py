@@ -235,7 +235,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
 
 
 
-def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 5):
+def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 20):
     """Edit sequentially, evaluating every `eval_every` batchess."""
     model_old = copy.deepcopy(model)
     pristine_edit_ds = copy.deepcopy(edit_ds)
