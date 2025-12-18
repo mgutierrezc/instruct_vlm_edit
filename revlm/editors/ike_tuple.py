@@ -80,6 +80,7 @@ class IKE_TUPLE(nn.Module):
         self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.99))
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.use_augment = bool(getattr(cfg, "use_augment", True))
+        self.use_counterfacts = bool(getattr(cfg, "use_counterfacts", False))
 
         # Augmenter (online, per-batch)
         self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
@@ -168,8 +169,21 @@ class IKE_TUPLE(nn.Module):
                 nn.Linear(self.clip_dim, self.clip_dim), nn.LayerNorm(self.clip_dim)
             ).to(self.device)
 
+    def _gen_counterfact(self, sent):
+        """Generate a counterfactual sentence using VLM."""
+        if not self.wrapper:
+            return None
+        blank = PILImage.new("RGB", (364, 364), color="black")
+        prompt = f"Rewrite this fact to state something different but plausible:\n\n{sent}\n\nRewritten:"
+        try:
+            out = self.wrapper.generate([blank], [prompt], max_new_tokens=64, temperature=0.7)[0]
+            out = str(out).strip()
+            return out if out and out.lower() != sent.lower() else None
+        except Exception:
+            return None
+
     def _build_samples(self, dataset):
-        """Build samples: each has image, question, and list of rationale sentences."""
+        """Build samples: each has image, question, sentences, and counterfacts."""
         data = getattr(dataset, "data", [])
         samples = []
         for ex in data:
@@ -178,8 +192,16 @@ class IKE_TUPLE(nn.Module):
             if not rat or img is None or not q:
                 continue
             sentences = [p.strip() for p in re.split(r"(?<=[.!?])\s+", rat.strip()) if p.strip()]
-            if sentences:
-                samples.append({"image": img, "question": q, "sentences": sentences})
+            if not sentences:
+                continue
+            # Generate 1 counterfact per sentence
+            counterfacts = []
+            if self.use_counterfacts:
+                for s in sentences:
+                    cf = self._gen_counterfact(s)
+                    if cf:
+                        counterfacts.append(cf)
+            samples.append({"image": img, "question": q, "sentences": sentences, "counterfacts": counterfacts})
         return samples
 
     @torch.no_grad()
@@ -234,12 +256,15 @@ class IKE_TUPLE(nn.Module):
                 ], dim=0)  # [3*B, D]
                 q_owners = list(range(B)) * 3  # sample ownership for each query
 
-                # Pool all sentences with owner ids
+                # Pool all sentences with owner ids (-1 for counterfacts = always negative)
                 all_texts, owners = [], []
                 for i, b in enumerate(batch):
                     for s in b["sentences"]:
                         all_texts.append(s)
                         owners.append(i)
+                    for cf in b.get("counterfacts", []):
+                        all_texts.append(cf)
+                        owners.append(-1)
 
                 if len(all_texts) < 2:
                     continue
@@ -329,6 +354,9 @@ class IKE_TUPLE(nn.Module):
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         if edit_ds is None:
             return self.model
+        # Force counterfacts on for few edits
+        if len(getattr(edit_ds, "data", [])) < 10:
+            self.use_counterfacts = True
         samples = self._build_samples(edit_ds)
         self._train(samples)
         self.apply_to_dataset(edit_ds)
