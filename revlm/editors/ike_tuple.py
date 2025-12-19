@@ -57,6 +57,19 @@ class Augmenter:
             return sent
 
 
+class ResidualProj(nn.Module):
+    """Residual MLP projector for better optimization."""
+    def __init__(self, in_dim, out_dim):
+        super().__init__()
+        self.proj = nn.Linear(in_dim, out_dim)
+        self.mlp = nn.Sequential(nn.Linear(out_dim, out_dim * 2), nn.GELU(), nn.Linear(out_dim * 2, out_dim))
+        self.norm = nn.LayerNorm(out_dim)
+
+    def forward(self, x):
+        x = self.proj(x)
+        return self.norm(x + self.mlp(x))
+
+
 class IKE_TUPLE(nn.Module):
     """Tuple retriever with multi-positive InfoNCE and global negatives."""
 
@@ -76,7 +89,7 @@ class IKE_TUPLE(nn.Module):
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
         self.lr = float(getattr(cfg, "clip_lr", 1e-3))
         self.temperature = float(getattr(cfg, "clip_temperature", 1.0))
-        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.975))
+        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.95))
         self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.99))
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.use_augment = bool(getattr(cfg, "use_augment", True))
@@ -87,7 +100,7 @@ class IKE_TUPLE(nn.Module):
 
         # Sentence model
         self.sentence_model = SentenceTransformer(
-            getattr(cfg, "sentence_model_name", "sentence-transformers/all-MiniLM-L6-v2")
+            getattr(cfg, "sentence_model_name", "sentence-transformers/paraphrase-mpnet-base-v2")
         ).to(self.device).eval()
         self.txt_dim = self.sentence_model.get_sentence_embedding_dimension()
 
@@ -159,15 +172,9 @@ class IKE_TUPLE(nn.Module):
 
     def _ensure_heads(self, img_dim):
         if self.image_proj is None:
-            self.image_proj = nn.Sequential(
-                nn.Linear(img_dim, self.clip_dim), nn.GELU(),
-                nn.Linear(self.clip_dim, self.clip_dim), nn.LayerNorm(self.clip_dim)
-            ).to(self.device)
+            self.image_proj = ResidualProj(img_dim, self.clip_dim).to(self.device)
         if self.text_proj is None:
-            self.text_proj = nn.Sequential(
-                nn.Linear(self.txt_dim, self.clip_dim), nn.GELU(),
-                nn.Linear(self.clip_dim, self.clip_dim), nn.LayerNorm(self.clip_dim)
-            ).to(self.device)
+            self.text_proj = ResidualProj(self.txt_dim, self.clip_dim).to(self.device)
 
     def _gen_counterfact(self, sent):
         """Generate a counterfactual sentence using VLM."""
@@ -294,20 +301,24 @@ class IKE_TUPLE(nn.Module):
                         list(self.image_proj.parameters()) + list(self.text_proj.parameters()),
                         lr=self.lr
                     )
-                    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, self.num_epochs))
+                    sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        opt, mode='min', factor=0.5, patience=5, cooldown=5
+                    )
                 opt.zero_grad()
                 loss.backward()
                 opt.step()
                 loss_sum += loss.item()
                 cnt += 1
 
-            if sched:
-                sched.step()
+            avg_loss = loss_sum / max(1, cnt)
+            if sched and cnt > 0:
+                sched.step(avg_loss)
             self._build_index(samples)
             acc = self._retrieval_acc(samples)
             acc_last = self._retrieval_acc(samples, last_only=True)
             k_str = "auto" if self.k < 0 else str(self.k)
-            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {loss_sum/max(1,cnt):.4f} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
+            lr_str = f"{opt.param_groups[0]['lr']:.2e}" if opt else f"{self.lr:.2e}"
+            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {avg_loss:.4f} lr: {lr_str} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
             if acc >= self.early_stop_acc and acc_last >= self.early_stop_acc_last:
                 print(f"[IKE_TUPLE] early stop at acc {acc:.3f}, acc_last {acc_last:.3f}")
                 break
