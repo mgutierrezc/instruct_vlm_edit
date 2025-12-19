@@ -7,6 +7,7 @@ from .rome_base import ROME
 from .defer import Defer
 from .memory import MemoryNetwork
 from .balancedit import BalancEdit
+from .balancedit_kv import BalancEditKV
 from .ike import IKE
 from .ike_cot import IKE_COT
 # from .ike_clip_v1 import IKE_CLIP
@@ -51,6 +52,8 @@ def get_editor(config, model):
         editor = Defer(config, model)
     elif editor_name == "balancedit":
         editor = BalancEdit(config, model)
+    elif editor_name == "balancedit_kv":
+        editor = BalancEditKV(config, model)
     elif editor_name == "ike":
         editor = IKE(config, model)
     elif editor_name == "ike_cot":

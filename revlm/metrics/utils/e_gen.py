@@ -6,6 +6,7 @@ import re
 import json
 import os
 from typing import List, Dict, Tuple, Any
+from itertools import combinations
 from PIL import Image
 
 
@@ -24,7 +25,7 @@ def verify_sentence(model: Any, image_path: str, sentence: str) -> Tuple[int, fl
     Returns: (error_flag, p_yes, p_no)
         error_flag: 0 if yes wins, 1 if no wins
     """
-    prompt = f'Given the image, is the following statement correct? Answer yes or no.\nStatement: "{sentence}"'
+    prompt = f'Given the image, is the following statement correct?\nStatement: "{sentence}"'
     
     img = Image.open(image_path).convert("RGB")
     scores = model.score_choices_single(img, prompt, ["yes", "no"])
@@ -42,28 +43,18 @@ def process_sample(model: Any, ex: Dict) -> Dict:
     sentences = parse_cot_sentences(cot)
     
     if not sentences:
-        ex['coe_pred'] = {
-            'sentences': [],
-            'errors': [],
-            'confidences': [],
-            'error_indices': []
-        }
+        ex['coe_pred'] = {'sentences': [], 'subsets': []}
         return ex
     
-    errors_list = []
-    confidences = []
+    # All ordered subsets (includes single sentences when r=1)
+    subsets = []
+    for r in range(1, len(sentences) + 1):
+        for indices in combinations(range(len(sentences)), r):
+            statement = " ".join(sentences[i] for i in indices)
+            flag, p_yes, p_no = verify_sentence(model, ex['image'], statement)
+            subsets.append({'indices': list(indices), 'error': flag, 'p_yes': p_yes, 'p_no': p_no})
     
-    for s in sentences:
-        flag, p_yes, p_no = verify_sentence(model, ex['image'], s)
-        errors_list.append(flag)
-        confidences.append(max(p_yes, p_no))
-    
-    ex['coe_pred'] = {
-        'sentences': sentences,
-        'errors': errors_list,
-        'confidences': confidences,
-        'error_indices': [i for i, e in enumerate(errors_list) if e == 1]
-    }
+    ex['coe_pred'] = {'sentences': sentences, 'subsets': subsets}
     return ex
 
 
@@ -89,7 +80,8 @@ def coe_prediction(model: Any, edit_ds: Any, config: Any) -> List[Dict]:
         results.append(ex_copy)
         
         if (i + 1) % 10 == 0 or (i + 1) == n:
-            print(f"[{i+1}/{n}] uid={ex_copy['uid']}, errors={ex_copy['coe_pred']['errors']}", flush=True)
+            n_err = sum(s['error'] for s in ex_copy['coe_pred']['subsets'])
+            print(f"[{i+1}/{n}] uid={ex_copy['uid']}, subsets={len(ex_copy['coe_pred']['subsets'])}, errors={n_err}", flush=True)
     
     # Save results
     out_path = os.path.join(config.pred_postedit_dir, "coe_prediction.json")
@@ -100,7 +92,7 @@ def coe_prediction(model: Any, edit_ds: Any, config: Any) -> List[Dict]:
     print(f"\nSaved {len(results)} samples to {out_path}", flush=True)
     
     # Count edits with at least one COE error
-    edits_with_coe = sum(1 for r in results if r['coe_pred']['error_indices'])
+    edits_with_coe = sum(1 for r in results if any(s['error'] for s in r['coe_pred']['subsets']))
     print(f"Edits with COE: {edits_with_coe}/{len(results)} ({100*edits_with_coe/len(results):.1f}%)", flush=True)
     
     return results
@@ -109,13 +101,12 @@ def print_coe_results(results: List[Dict], max_print: int = 10) -> None:
     """Print COE results in a readable format."""
     for r in results[:max_print]:
         print(f"\n=== uid: {r['uid']} ===")
-        print(f"Question: {r['question']}")
+        print(f"Q: {r['question']}")
         print(f"Gold: {r['gold']['label']}, Pred: {r['pred']['label_maxprob']}")
-        print(f"COT: {r.get('cot', '')}")
         coe = r['coe_pred']
-        for j, (s, e, c) in enumerate(zip(coe['sentences'], coe['errors'], coe['confidences'])):
-            mark = 'x' if e == 1 else '√'
-            print(f"  [{mark}] {s} (conf={c:.2f})")
-        print(f"Error indices: {coe['error_indices']}")
+        print(f"Sentences: {coe['sentences']}")
+        for sub in coe['subsets']:
+            mark = 'x' if sub['error'] else '√'
+            print(f"  [{mark}] {sub['indices']} p_yes={sub['p_yes']:.2f} p_no={sub['p_no']:.2f}")
 
 
