@@ -24,31 +24,43 @@ class COEScenarioGenerator:
             d.mkdir(parents=True, exist_ok=True)
         
         self.client = OpenAI(api_key=openai_key)
-        self.n_batches = 50 if dataset_name == "fvqa" else 100
+        self.n_batches = 20 if dataset_name == "fvqa" else 40
         self.k = 3  # number of scenarios to generate
         print(f"COEScenarioGenerator: {model_name}/{dataset_name}, {self.n_batches} batches")
 
     def format_prompt(self, error_chain: str) -> str:
         return (
-            f'Given these visual facts that a VLM failed to verify:\n"{error_chain}"\n\n'
-            f"Generate {self.k} different creative scenarios where ALL these facts would be visually true.\n"
+            f'Given these visual facts:\n"{error_chain}"\n\n'
+            f"Generate {self.k} different creative scenarios where ALL these facts would be visually true.\n\n"
             "Requirements:\n"
-            "- Each scenario should be a distinct visual setting (photographable)\n"
+            "- Each scenario should be a distinct visual setting, in 2-3 sentences\n"
             "- Be creative but plausible\n"
             "- Describe what would be visible in the image\n\n"
+            "Examples:\n"
+            'Visual facts: "A person is standing on a board. There are waves around."\n'
+            "1. A surfer rides a wave at a tropical beach during sunset. The ocean is blue with white foam. Palm trees line the shore in the background.\n"
+            "2. A wakeboarder is pulled behind a speedboat on a lake. The boat creates a large wake. Mountains are visible in the distance.\n"
+            "3. A paddleboarder balances on calm ocean waters near a rocky coastline. Seagulls fly overhead. The sky is overcast.\n\n"
+            'Visual facts: "The cake has multiple tiers. There are decorations on top."\n'
+            "1. A wedding cake sits on a decorated table at an outdoor garden ceremony. White roses adorn each tier. Guests mingle in the background.\n"
+            "2. A birthday cake is displayed in a bakery window. Colorful fondant figures sit on top. The shop interior has warm lighting.\n"
+            "3. An elaborate anniversary cake is being served at a rooftop restaurant. City lights sparkle behind. A couple holds champagne glasses nearby.\n\n"
+            "Now generate scenarios for the given facts:\n"
             "Respond as a numbered list:\n1. [scenario]\n2. [scenario]\n3. [scenario]"
         )
 
-    def _get_error_chain(self, coe_pred: Dict) -> str:
-        """Extract single-sentence errors and concat."""
+    def _get_error_chains(self, coe_pred: Dict) -> List[Dict]:
+        """Extract all error subsets as chains.
+        
+        Returns list of {indices: [...], chain: "sentence1 sentence2 ..."}
+        """
         sentences = coe_pred.get("sentences", [])
-        error_indices = []
+        error_chains = []
         for sub in coe_pred.get("subsets", []):
-            if len(sub["indices"]) == 1 and sub["error"] == 1:
-                error_indices.append(sub["indices"][0])
-        if not error_indices:
-            return ""
-        return " ".join(sentences[i] for i in sorted(error_indices))
+            if sub["error"] == 1:
+                chain = " ".join(sentences[i] for i in sub["indices"])
+                error_chains.append({"indices": sub["indices"], "chain": chain})
+        return error_chains
 
     def gen_request(self, coe_results: List[Dict], max_sentences: int = None):
         """Generate batch request from COE prediction results."""
@@ -59,24 +71,23 @@ class COEScenarioGenerator:
             if max_sentences and n_sent > max_sentences:
                 continue
             
-            error_chain = self._get_error_chain(r.get("coe_pred", {}))
-            if not error_chain:
-                continue
-            
-            json_data.append({
-                "custom_id": str(r["uid"]),
-                "method": "POST",
-                "url": "/v1/chat/completions",
-                "body": {
-                    "model": "gpt-4o",
-                    "messages": [
-                        {"role": "system", "content": "You generate creative visual scenarios from given facts."},
-                        {"role": "user", "content": self.format_prompt(error_chain)},
-                    ],
-                    "max_tokens": 300,
-                    "temperature": 1.0
-                }
-            })
+            error_chains = self._get_error_chains(r.get("coe_pred", {}))
+            for ec in error_chains:
+                indices_str = ",".join(map(str, ec["indices"]))
+                json_data.append({
+                    "custom_id": f"{r['uid']}_[{indices_str}]",  # uid_[0,1,2]
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": "gpt-4o-mini",
+                        "messages": [
+                            {"role": "system", "content": "You generate creative visual scenarios from given facts."},
+                            {"role": "user", "content": self.format_prompt(ec["chain"])},
+                        ],
+                        "max_tokens": 300,
+                        "temperature": 1.0
+                    }
+                })
         
         input_file = self.batch_dir / "batch.jsonl"
         with open(input_file, "w") as f:
@@ -123,6 +134,26 @@ class COEScenarioGenerator:
         for b in range(self.n_batches):
             self._run_request_batch(b)
 
+    def resubmit_request(self, b_list: List[int]):
+        """Cancel and resubmit specific batches."""
+        for b in b_list:
+            meta_path = self.meta_dir / f"meta_{b}.json"
+            if meta_path.exists():
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                job_id = meta["job_id"]
+                try:
+                    status = self.client.batches.retrieve(job_id).status
+                    if status in {"validating", "queued", "in_progress"}:
+                        self.client.batches.cancel(job_id)
+                except Exception:
+                    pass
+                meta_path.unlink()
+            output_path = self.output_dir / f"outputs_{b}.jsonl"
+            if output_path.exists():
+                os.remove(output_path)
+            self._run_request_batch(b)
+
     def _run_request_batch(self, b: int):
         batch_file = self.batch_dir / f"batch_{b}.jsonl"
         meta_file = self.meta_dir / f"meta_{b}.json"
@@ -165,12 +196,19 @@ class COEScenarioGenerator:
             if not line:
                 continue
             payload = json.loads(line)
-            uid = payload.get("custom_id", "")
+            custom_id = payload.get("custom_id", "")
+            # Parse uid_[0,1,2] format
+            if "_[" in custom_id:
+                uid, indices_str = custom_id.rsplit("_[", 1)
+                indices = [int(x) for x in indices_str.rstrip("]").split(",")]
+            else:
+                uid, indices = custom_id, []
+            
             text = payload.get("response", {}).get("body", {}).get("choices", [{}])[0].get("message", {}).get("content", "")
             # Parse numbered list
             scenarios = [s.strip() for s in text.split("\n") if s.strip() and s.strip()[0].isdigit()]
             scenarios = [s.split(". ", 1)[1] if ". " in s else s for s in scenarios]
-            records.append({"uid": uid, "scenarios": scenarios, "raw": text})
+            records.append({"uid": uid, "indices": indices, "scenarios": scenarios, "raw": text})
         
         with open(save_path, "w") as f:
             for r in records:
