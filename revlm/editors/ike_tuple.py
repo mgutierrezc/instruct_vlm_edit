@@ -74,7 +74,7 @@ class IKE_TUPLE(nn.Module):
         self.clip_dim = int(getattr(cfg, "clip_dim", 512))
         self.num_epochs = int(getattr(cfg, "clip_epochs", 1000))
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
-        self.lr = float(getattr(cfg, "clip_lr", 1e-4))
+        self.lr = float(getattr(cfg, "clip_lr", 1e-3))
         self.temperature = float(getattr(cfg, "clip_temperature", 1.0))
         self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.975))
         self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.99))

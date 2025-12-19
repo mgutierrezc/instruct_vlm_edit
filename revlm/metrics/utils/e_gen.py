@@ -110,3 +110,21 @@ def print_coe_results(results: List[Dict], max_print: int = 10) -> None:
             print(f"  [{mark}] {sub['indices']} p_yes={sub['p_yes']:.2f} p_no={sub['p_no']:.2f}")
 
 
+def load_coe(config: Any) -> List[Dict]:
+    """
+    Load COE predictions and print rate summary.
+    Will be extended for step 2 (GPT-4o augmentation).
+    """
+    path = os.path.join(config.pred_postedit_dir, "coe_prediction.json")
+    with open(path, "r") as f:
+        results = json.load(f)
+    
+    total = len(results)
+    with_coe = sum(1 for r in results if any(s['error'] for s in r['coe_pred']['subsets']))
+    print(f"Loaded {total} samples from {path}")
+    coe_rate = with_coe/total
+    print(f"COE rate: {with_coe}/{total} ({coe_rate*100:.1f}%)")
+    print_coe_results(results, max_print=3)
+    
+    return results, coe_rate
+
