@@ -635,21 +635,28 @@ def editk_generality(
 	corrects = []
 	totals = []
 
-	# Move base model to CPU before deepcopy
-	move_model_device(model_old, "cpu")
-	cuda_gc()
+	# IKE-style editors don't modify weights
+	is_ike = editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot")
+	
+	# Keep model on GPU
+	move_model_device(model_old, target)
+	
+	# For weight-updating editors: save original state to restore each round
+	if not is_ike:
+		inner_model = getattr(model_old, "model", model_old)
+		original_state = {k: v.clone() for k, v in inner_model.state_dict().items()}
+		# Link editor to model once
+		if hasattr(editor, "model"):
+			editor.model = inner_model
 
 	for b_idx in range(B):
+		print(f"  [B={b_idx+1}/{B}] start", flush=True)
 		t_round = time.time()
 		edit_indices = set(rng.sample(range(n), k))
 		
-		# Fresh model copy
-		new_model = copy.deepcopy(model_old)
-		move_model_device(new_model, target)
-		
-		# Link editor to new model
-		if hasattr(editor, "model"):
-			editor.model = getattr(new_model, "model", new_model)
+		# Restore original weights for weight-updating editors
+		if not is_ike:
+			inner_model.load_state_dict(original_state)
 
 		# Build edit dataset for this round
 		edit_subset = copy.deepcopy(edit_ds)
@@ -660,46 +667,47 @@ def editk_generality(
 		)
 
 		# Apply edits
-		if editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot"):
+		print(f"  [B={b_idx+1}/{B}] editing {k} samples...", flush=True)
+		t_edit = time.time()
+		if is_ike:
 			# IKE-style: prompt augmentation only
 			_maybe_apply_ike(editor, edit_subset, edit_ds)
 		else:
 			# Weight-updating editors
-			if hasattr(new_model, "model"):
-				new_model.model.train()
+			inner_model.train()
 			for batch in edit_subset.loader:
-				tokens = new_model.prepare_training_batch(batch)
+				tokens = model_old.prepare_training_batch(batch)
 				editor.edit(config, tokens, batch_history=None)
-			if hasattr(new_model, "model"):
-				new_model.model.eval()
+			inner_model.eval()
+		edit_time = time.time() - t_edit
+		print(f"  [B={b_idx+1}/{B}] edit done: {edit_time:.1f}s", flush=True)
 
 		# Evaluate on remaining examples
 		ds_eval = copy.deepcopy(edit_ds)
 		ds_eval.data = [edit_ds.data[j] for j in range(n) if j not in edit_indices]
 		if not ds_eval.data:
-			del new_model
-			cuda_gc()
 			continue
 		ds_eval.set_dataloader(shuffle_choices=False)
 		
 		# For IKE-style, apply augmentation to eval set too
-		if editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot"):
+		if is_ike:
 			_maybe_apply_ike(editor, ds_eval, edit_ds)
 
 		# Generate and count correct/total
-		pairs = generation(new_model, ds_eval)
+		print(f"  [B={b_idx+1}/{B}] evaluating {len(ds_eval.data)} samples...", flush=True)
+		t_eval = time.time()
+		pairs = generation(model_old, ds_eval)
+		eval_time = time.time() - t_eval
 		correct = sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
 		corrects.append(correct)
 		totals.append(len(pairs))
 		
 		# Log round timing
 		elapsed = time.time() - t_round
-		print(f"  [B={b_idx+1}/{B}] {correct}/{len(pairs)} correct, {elapsed:.1f}s", flush=True)
-
-		# Cleanup
-		if hasattr(editor, "model"):
-			editor.model = None
-		del new_model
-		cuda_gc()
+		print(f"  [B={b_idx+1}/{B}] done: {correct}/{len(pairs)} correct, time={elapsed:.1f}s", flush=True)
+	
+	# Restore original weights at end
+	if not is_ike:
+		inner_model.load_state_dict(original_state)
 
 	return {"corrects": corrects, "totals": totals}
