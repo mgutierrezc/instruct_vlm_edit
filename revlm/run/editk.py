@@ -17,24 +17,24 @@ os.chdir(PROJECT_ROOT)
 
 from revlm import *
 from revlm.config_utils import configure_args
-from revlm.editors import get_editor
-from revlm.metrics.editeval import editk_generality, move_model_device, cuda_gc
+from revlm.metrics.editeval import editk_generality, cuda_gc
 from .edit_utils import find_errors
 
 
-def run_editk(config, k_values=(1), B=10):
+def run_editk(config, k_values=(1, 5, 10), B=10):
     """Run editk_generality for multiple k values and save results."""
     
     # Output path
-    base_path = os.path.join(config.edit_dir, config.fname)
-    out_path = base_path.replace(".json", "_editk.json")
+    out_path = os.path.join(config.edit_dir, config.fname.replace(".json", "_editk.json"))
     
     if os.path.exists(out_path) and not config.overwrite:
         print(f"Editk result already exists at {out_path}. Skipping.", flush=True)
         return
     
-    # Get model and edit dataset
+    # Get edit dataset (model used only for initial predictions, then discarded)
     model, edit_ds = find_errors(config)
+    del model  # Free GPU memory - editk_generality creates fresh models per round
+    cuda_gc()
     
     # Run editk_generality for each k
     editor_name = getattr(getattr(config, "editor", None), "_name", "unknown")
@@ -46,7 +46,7 @@ def run_editk(config, k_values=(1), B=10):
         print(f"{'='*50}", flush=True)
         
         t_start = time.time()
-        result = editk_generality(model, edit_ds, B=B, k=k)
+        result = editk_generality(config, edit_ds, B=B, k=k)
         elapsed = time.time() - t_start
         
         # Compute summary stats
@@ -64,13 +64,12 @@ def run_editk(config, k_values=(1), B=10):
         }
         print(f"k={k}: mean={mean:.4f}, std={std:.4f}, "
               f"correct={sum(corrects)}/{sum(totals)}, time={elapsed:.1f}s", flush=True)
+        
+        # Save after each k (in case job fails)
+        with open(out_path, "w") as f:
+            json.dump(results, f, indent=2)
     
-    # Save results
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(results, f, indent=2)
     print(f"\nEditk results saved to {out_path}", flush=True)
-    
     return results
 
 

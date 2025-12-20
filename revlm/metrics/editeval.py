@@ -607,7 +607,7 @@ def rationale_generality(
 
 
 def editk_generality(
-	model: Any,
+	config: Any,
 	edit_ds: Any,
 	B: int = 10,
 	k: int = 10,
@@ -615,28 +615,25 @@ def editk_generality(
 	"""Bootstrap generality: edit on k samples, test on the rest. Repeat B times.
 	
 	For each round:
-		1. Sample k samples from edit_ds
-		2. Create fresh editor, train on k samples
-		3. Apply retrieval to remaining (n-k) samples
-		4. Evaluate accuracy on remaining samples
+		1. Create fresh model + editor
+		2. Sample k samples, edit model
+		3. Evaluate on remaining (n-k) samples
 	
 	Returns:
 		{"corrects": [c1, c2, ...], "totals": [t1, t2, ...]} for each of B rounds.
 	"""
 	from revlm.editors import get_editor
+	from revlm.models import VQAModel
 	
 	n = len(edit_ds.data)
 	if n == 0 or k <= 0 or B <= 0:
 		return {"corrects": [], "totals": []}
 	k = min(k, n)
 
-	config = edit_ds.config
-	target = getattr(config, "device", "cuda")
+	editor_name = getattr(getattr(config, "editor", None), "_name", None)
 	use_rationale = getattr(config, "rationale", False)
+	is_ike = editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot")
 	rng = random.Random(getattr(config, "seed", 333))
-	
-	# Ensure model on GPU
-	move_model_device(model, target)
 	
 	corrects, totals = [], []
 
@@ -644,31 +641,45 @@ def editk_generality(
 		print(f"  [B={b_idx+1}/{B}] start", flush=True)
 		t_round = time.time()
 		
-		# 1. Sample k indices
-		edit_indices = set(rng.sample(range(n), k))
-		
-		# 2. Create fresh editor
-		print(f"  [B={b_idx+1}/{B}] creating fresh editor...", flush=True)
+		# 1. Create fresh model + editor
+		print(f"  [B={b_idx+1}/{B}] loading fresh model...", flush=True)
+		model = VQAModel(config)
 		editor = get_editor(config, model)
 		editor.generate = model.model.generate if hasattr(model, "model") else model.generate
 		
-		# 3. Build edit subset and train
+		# 2. Sample k indices
+		edit_indices = set(rng.sample(range(n), k))
+		
+		# 3. Build edit subset and edit
 		edit_subset = copy.deepcopy(edit_ds)
 		edit_subset.data = [edit_ds.data[i] for i in edit_indices]
 		edit_subset.set_dataloader(with_rationale=use_rationale, shuffle_choices=True)
 
 		print(f"  [B={b_idx+1}/{B}] editing {k} samples...", flush=True)
 		t_edit = time.time()
-		editor.edit(config, edit_ds=edit_subset)
+		if is_ike:
+			editor.edit(config, edit_ds=edit_subset)
+		else:
+			inner_model = getattr(model, "model", model)
+			inner_model.train()
+			for batch in edit_subset.loader:
+				tokens = model.prepare_training_batch(batch)
+				editor.edit(config, tokens, batch_history=None)
+			inner_model.eval()
 		print(f"  [B={b_idx+1}/{B}] edit done: {time.time() - t_edit:.1f}s", flush=True)
 
-		# 4. Build eval set and apply retrieval
+		# 4. Build eval set
 		ds_eval = copy.deepcopy(edit_ds)
 		ds_eval.data = [edit_ds.data[j] for j in range(n) if j not in edit_indices]
 		if not ds_eval.data:
+			del model, editor
+			cuda_gc()
 			continue
 		ds_eval.set_dataloader(shuffle_choices=False)
-		_maybe_apply_ike(editor, ds_eval, edit_subset)
+		
+		# Apply retrieval for IKE-style
+		if is_ike:
+			_maybe_apply_ike(editor, ds_eval, edit_subset)
 
 		# 5. Evaluate
 		print(f"  [B={b_idx+1}/{B}] evaluating {len(ds_eval.data)} samples...", flush=True)
@@ -679,5 +690,9 @@ def editk_generality(
 		
 		elapsed = time.time() - t_round
 		print(f"  [B={b_idx+1}/{B}] done: {correct}/{len(pairs)} correct, time={elapsed:.1f}s", flush=True)
+		
+		# Cleanup this round
+		del model, editor
+		cuda_gc()
 
 	return {"corrects": corrects, "totals": totals}
