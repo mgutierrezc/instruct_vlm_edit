@@ -24,7 +24,7 @@ class COEScenarioGenerator:
             d.mkdir(parents=True, exist_ok=True)
         
         self.client = OpenAI(api_key=openai_key)
-        self.n_batches = 20 if dataset_name == "fvqa" else 40
+        self.n_batches = 20 # if dataset_name == "fvqa" else 40
         self.k = 3  # number of scenarios to generate
         print(f"COEScenarioGenerator: {model_name}/{dataset_name}, {self.n_batches} batches")
 
@@ -33,32 +33,38 @@ class COEScenarioGenerator:
             f'Given these visual facts:\n"{error_chain}"\n\n'
             f"Generate {self.k} different creative scenarios where ALL these facts would be visually true.\n\n"
             "Requirements:\n"
-            "- Each scenario should be a distinct visual setting, in 2-3 sentences\n"
+            "- Each scenario should be a distinct visual setting\n"
+            "- Use 1-2 short sentences\n"
             "- Be creative but plausible\n"
             "- Describe what would be visible in the image\n\n"
             "Examples:\n"
             'Visual facts: "A person is standing on a board. There are waves around."\n'
-            "1. A surfer rides a wave at a tropical beach during sunset. The ocean is blue with white foam. Palm trees line the shore in the background.\n"
-            "2. A wakeboarder is pulled behind a speedboat on a lake. The boat creates a large wake. Mountains are visible in the distance.\n"
-            "3. A paddleboarder balances on calm ocean waters near a rocky coastline. Seagulls fly overhead. The sky is overcast.\n\n"
+            "1. A surfer rides a wave at a tropical beach during sunset. Palm trees line the shore in the background.\n"
+            "2. A wakeboarder is pulled behind a speedboat on a lake. Mountains are visible in the distance.\n"
+            "3. A paddleboarder balances on calm ocean waters near a rocky coastline. Seagulls fly overhead.\n\n"
             'Visual facts: "The cake has multiple tiers. There are decorations on top."\n'
-            "1. A wedding cake sits on a decorated table at an outdoor garden ceremony. White roses adorn each tier. Guests mingle in the background.\n"
-            "2. A birthday cake is displayed in a bakery window. Colorful fondant figures sit on top. The shop interior has warm lighting.\n"
-            "3. An elaborate anniversary cake is being served at a rooftop restaurant. City lights sparkle behind. A couple holds champagne glasses nearby.\n\n"
+            "1. A wedding cake sits on a decorated table at an outdoor garden ceremony. Guests mingle in the background.\n"
+            "2. A birthday cake is displayed in a bakery window. Colorful fondant figures sit on top.\n"
+            "3. An elaborate anniversary cake is being served at a rooftop restaurant. A couple holds champagne glasses nearby.\n\n"
             "Now generate scenarios for the given facts:\n"
             "Respond as a numbered list:\n1. [scenario]\n2. [scenario]\n3. [scenario]"
         )
 
-    def _get_error_chains(self, coe_pred: Dict) -> List[Dict]:
+    def _get_error_chains(self, ex: Dict) -> List[Dict]:
         """Extract all error subsets as chains.
         
-        Returns list of {indices: [...], chain: "sentence1 sentence2 ..."}
+        Returns list of {indices: [...], chain: "sentence1 sentence2 ... question? answer."}
         """
+        coe_pred = ex.get("coe_pred", {})
         sentences = coe_pred.get("sentences", [])
+        question = ex.get("question", "")
+        answer = ex.get("answer", "")
         error_chains = []
         for sub in coe_pred.get("subsets", []):
             if sub["error"] == 1:
                 chain = " ".join(sentences[i] for i in sub["indices"])
+                # chain += f" The answer to '{question.lower().replace('?', '').strip()}' is '{answer.lower().strip()}'."
+                chain += f" {question.replace('?', '').strip()} is {answer.lower().strip()}."
                 error_chains.append({"indices": sub["indices"], "chain": chain})
         return error_chains
 
@@ -71,7 +77,7 @@ class COEScenarioGenerator:
             if max_sentences and n_sent > max_sentences:
                 continue
             
-            error_chains = self._get_error_chains(r.get("coe_pred", {}))
+            error_chains = self._get_error_chains(r)
             for ec in error_chains:
                 indices_str = ",".join(map(str, ec["indices"]))
                 json_data.append({

@@ -105,7 +105,7 @@ class IKE_TUPLE(nn.Module):
         self.lr = float(getattr(cfg, "clip_lr", 1e-3))
         self.fixed_temp = getattr(cfg, "clip_temperature", None)  # None = learned
         self.log_temp = nn.Parameter(torch.tensor(0.0)) if self.fixed_temp is None else None
-        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.95))
+        self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.9))
         self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.6)) # 2/3 correct on the last edit
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.use_augment = bool(getattr(cfg, "use_augment", True))
