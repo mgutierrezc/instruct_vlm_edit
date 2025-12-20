@@ -57,12 +57,27 @@ class Augmenter:
             return sent
 
 
+class AttentionPool(nn.Module):
+    """Attention pooling over sequence dimension."""
+    def __init__(self, dim):
+        super().__init__()
+        self.attn = nn.Linear(dim, 1)
+
+    def forward(self, x):  # x: [B, seq, D]
+        w = F.softmax(self.attn(x), dim=1)
+        return (w * x).sum(dim=1)  # [B, D]
+
+
 class ResidualProj(nn.Module):
     """Residual MLP projector for better optimization."""
     def __init__(self, in_dim, out_dim):
         super().__init__()
         self.proj = nn.Linear(in_dim, out_dim)
-        self.mlp = nn.Sequential(nn.Linear(out_dim, out_dim * 2), nn.GELU(), nn.Linear(out_dim * 2, out_dim))
+        self.mlp = nn.Sequential(
+            nn.Linear(out_dim, out_dim * 2), nn.GELU(), 
+            nn.Linear(out_dim * 2, out_dim * 2), nn.GELU(), 
+            nn.Linear(out_dim * 2, out_dim)
+        )
         self.norm = nn.LayerNorm(out_dim)
 
     def forward(self, x):
@@ -88,9 +103,10 @@ class IKE_TUPLE(nn.Module):
         self.num_epochs = int(getattr(cfg, "clip_epochs", 1000))
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
         self.lr = float(getattr(cfg, "clip_lr", 1e-3))
-        self.temperature = float(getattr(cfg, "clip_temperature", 1.0))
+        self.fixed_temp = getattr(cfg, "clip_temperature", None)  # None = learned
+        self.log_temp = nn.Parameter(torch.tensor(0.0)) if self.fixed_temp is None else None
         self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.95))
-        self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.99))
+        self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.6)) # 2/3 correct on the last edit
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.use_augment = bool(getattr(cfg, "use_augment", True))
         self.use_counterfacts = bool(getattr(cfg, "use_counterfacts", False))
@@ -118,6 +134,7 @@ class IKE_TUPLE(nn.Module):
         )
 
         # Heads and index
+        self.attn_pool = None
         self.image_proj = None
         self.text_proj = None
         self.rationale_texts = []
@@ -144,7 +161,11 @@ class IKE_TUPLE(nn.Module):
         act = self._last_act
         if act is None:
             raise RuntimeError("Hook failed")
-        return (act.unsqueeze(0) if act.dim() == 2 else act).mean(dim=1).to(self.device, dtype=torch.float32).clone()
+        act = (act.unsqueeze(0) if act.dim() == 2 else act).to(self.device, dtype=torch.float32).clone()
+        # Lazy init attention pool
+        if self.attn_pool is None:
+            self.attn_pool = AttentionPool(act.shape[-1]).to(self.device)
+        return self.attn_pool(act)  # [B, D]
 
     @staticmethod
     def _auto_k(sims, top_k=20, alpha=0.05):
@@ -231,7 +252,8 @@ class IKE_TUPLE(nn.Module):
             return
         opt, sched = None, None
         n = len(samples)
-        for ep in range(self.num_epochs):
+        best_loss, no_improve, total_ep = float('inf'), 0, 0
+        while total_ep < self.num_epochs:
             perm = torch.randperm(n)
             loss_sum, cnt = 0.0, 0
             for start in range(0, n, self.batch_size):
@@ -279,7 +301,8 @@ class IKE_TUPLE(nn.Module):
                 t_emb = F.normalize(self.text_proj(self._encode_texts(all_texts)), dim=-1)
                 owners_t = torch.tensor(owners, device=self.device)
 
-                logits = (q_emb @ t_emb.t()) / self.temperature  # [3*B, T]
+                temp = self.fixed_temp if self.fixed_temp else self.log_temp.sigmoid().clamp(min=0.07)
+                logits = (q_emb @ t_emb.t()) / temp  # [3*B, T]
 
                 # Multi-positive InfoNCE for all 3*B queries
                 loss = torch.tensor(0.0, device=self.device)
@@ -297,12 +320,12 @@ class IKE_TUPLE(nn.Module):
                 loss = loss / valid
 
                 if opt is None:
-                    opt = torch.optim.Adam(
-                        list(self.image_proj.parameters()) + list(self.text_proj.parameters()),
-                        lr=self.lr
-                    )
+                    params = list(self.attn_pool.parameters()) + list(self.image_proj.parameters()) + list(self.text_proj.parameters())
+                    if self.log_temp is not None:
+                        params.append(self.log_temp)
+                    opt = torch.optim.Adam(params, lr=self.lr)
                     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                        opt, mode='min', factor=0.5, patience=5, cooldown=5
+                        opt, mode='min', factor=0.9, patience=5, cooldown=5, min_lr=1e-5
                     )
                 opt.zero_grad()
                 loss.backward()
@@ -313,12 +336,22 @@ class IKE_TUPLE(nn.Module):
             avg_loss = loss_sum / max(1, cnt)
             if sched and cnt > 0:
                 sched.step(avg_loss)
+            # Warm restart if stuck
+            if avg_loss < best_loss - 0.001:
+                best_loss, no_improve = avg_loss, 0
+            else:
+                no_improve += 1
+            if no_improve >= 100 and opt:
+                opt, sched = None, None  # reset on next batch
+                no_improve, best_loss = 0, float('inf')
+                print(f"[IKE_TUPLE] warm restart at epoch {total_ep+1}")
             self._build_index(samples)
             acc = self._retrieval_acc(samples)
             acc_last = self._retrieval_acc(samples, last_only=True)
             k_str = "auto" if self.k < 0 else str(self.k)
             lr_str = f"{opt.param_groups[0]['lr']:.2e}" if opt else f"{self.lr:.2e}"
-            print(f"[IKE_TUPLE] epoch {ep+1}/{self.num_epochs} loss: {avg_loss:.4f} lr: {lr_str} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
+            total_ep += 1
+            print(f"[IKE_TUPLE] epoch {total_ep}/{self.num_epochs} loss: {avg_loss:.4f} lr: {lr_str} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
             if acc >= self.early_stop_acc and acc_last >= self.early_stop_acc_last:
                 print(f"[IKE_TUPLE] early stop at acc {acc:.3f}, acc_last {acc_last:.3f}")
                 break
