@@ -607,107 +607,77 @@ def rationale_generality(
 
 
 def editk_generality(
-	model_old: Any,
+	model: Any,
 	edit_ds: Any,
-	editor: Any,
 	B: int = 10,
 	k: int = 10,
 ) -> Dict[str, List[int]]:
 	"""Bootstrap generality: edit on k samples, test on the rest. Repeat B times.
 	
+	For each round:
+		1. Sample k samples from edit_ds
+		2. Create fresh editor, train on k samples
+		3. Apply retrieval to remaining (n-k) samples
+		4. Evaluate accuracy on remaining samples
+	
 	Returns:
 		{"corrects": [c1, c2, ...], "totals": [t1, t2, ...]} for each of B rounds.
 	"""
+	from revlm.editors import get_editor
+	
 	n = len(edit_ds.data)
 	if n == 0 or k <= 0 or B <= 0:
 		return {"corrects": [], "totals": []}
 	k = min(k, n)
 
 	config = edit_ds.config
-	editor_name = getattr(getattr(config, "editor", None), "_name", None)
 	target = getattr(config, "device", "cuda")
 	use_rationale = getattr(config, "rationale", False)
-	
-	# Seed for reproducibility
 	rng = random.Random(getattr(config, "seed", 333))
 	
-	# Track per-round counts
-	corrects = []
-	totals = []
-
-	# IKE-style editors don't modify weights
-	is_ike = editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot")
+	# Ensure model on GPU
+	move_model_device(model, target)
 	
-	# Keep model on GPU
-	move_model_device(model_old, target)
-	
-	# For weight-updating editors: save original state to restore each round
-	if not is_ike:
-		inner_model = getattr(model_old, "model", model_old)
-		original_state = {k: v.clone() for k, v in inner_model.state_dict().items()}
-		# Link editor to model once
-		if hasattr(editor, "model"):
-			editor.model = inner_model
+	corrects, totals = [], []
 
 	for b_idx in range(B):
 		print(f"  [B={b_idx+1}/{B}] start", flush=True)
 		t_round = time.time()
+		
+		# 1. Sample k indices
 		edit_indices = set(rng.sample(range(n), k))
 		
-		# Restore original weights for weight-updating editors
-		if not is_ike:
-			inner_model.load_state_dict(original_state)
-
-		# Build edit dataset for this round
+		# 2. Create fresh editor
+		print(f"  [B={b_idx+1}/{B}] creating fresh editor...", flush=True)
+		editor = get_editor(config, model)
+		editor.generate = model.model.generate if hasattr(model, "model") else model.generate
+		
+		# 3. Build edit subset and train
 		edit_subset = copy.deepcopy(edit_ds)
 		edit_subset.data = [edit_ds.data[i] for i in edit_indices]
-		edit_subset.set_dataloader(
-			with_rationale=use_rationale,
-			shuffle_choices=True,
-		)
+		edit_subset.set_dataloader(with_rationale=use_rationale, shuffle_choices=True)
 
-		# Apply edits
 		print(f"  [B={b_idx+1}/{B}] editing {k} samples...", flush=True)
 		t_edit = time.time()
-		if is_ike:
-			# IKE-style: prompt augmentation only
-			_maybe_apply_ike(editor, edit_subset, edit_ds)
-		else:
-			# Weight-updating editors
-			inner_model.train()
-			for batch in edit_subset.loader:
-				tokens = model_old.prepare_training_batch(batch)
-				editor.edit(config, tokens, batch_history=None)
-			inner_model.eval()
-		edit_time = time.time() - t_edit
-		print(f"  [B={b_idx+1}/{B}] edit done: {edit_time:.1f}s", flush=True)
+		editor.edit(config, edit_ds=edit_subset)
+		print(f"  [B={b_idx+1}/{B}] edit done: {time.time() - t_edit:.1f}s", flush=True)
 
-		# Evaluate on remaining examples
+		# 4. Build eval set and apply retrieval
 		ds_eval = copy.deepcopy(edit_ds)
 		ds_eval.data = [edit_ds.data[j] for j in range(n) if j not in edit_indices]
 		if not ds_eval.data:
 			continue
 		ds_eval.set_dataloader(shuffle_choices=False)
-		
-		# For IKE-style, apply augmentation to eval set too
-		if is_ike:
-			_maybe_apply_ike(editor, ds_eval, edit_ds)
+		_maybe_apply_ike(editor, ds_eval, edit_subset)
 
-		# Generate and count correct/total
+		# 5. Evaluate
 		print(f"  [B={b_idx+1}/{B}] evaluating {len(ds_eval.data)} samples...", flush=True)
-		t_eval = time.time()
-		pairs = generation(model_old, ds_eval)
-		eval_time = time.time() - t_eval
+		pairs = generation(model, ds_eval)
 		correct = sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
 		corrects.append(correct)
 		totals.append(len(pairs))
 		
-		# Log round timing
 		elapsed = time.time() - t_round
 		print(f"  [B={b_idx+1}/{B}] done: {correct}/{len(pairs)} correct, time={elapsed:.1f}s", flush=True)
-	
-	# Restore original weights at end
-	if not is_ike:
-		inner_model.load_state_dict(original_state)
 
 	return {"corrects": corrects, "totals": totals}

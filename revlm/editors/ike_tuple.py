@@ -259,7 +259,8 @@ class IKE_TUPLE(nn.Module):
             for start in range(0, n, self.batch_size):
                 batch = [samples[i] for i in perm[start:start + self.batch_size].tolist()]
                 B = len(batch)
-                if B < 2:
+                has_counterfacts = any(b.get("counterfacts") for b in batch)
+                if B < 2 and not has_counterfacts:
                     continue
 
                 # 3 query types: <img,q>, <img>, <img,rationale>

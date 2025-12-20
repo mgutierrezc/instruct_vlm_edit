@@ -25,25 +25,16 @@ from .edit_utils import find_errors
 def run_editk(config, k_values=(1), B=10):
     """Run editk_generality for multiple k values and save results."""
     
-    # Output path: replace .json with _editk.json
+    # Output path
     base_path = os.path.join(config.edit_dir, config.fname)
     out_path = base_path.replace(".json", "_editk.json")
     
-    # Early return if result already exists
     if os.path.exists(out_path) and not config.overwrite:
         print(f"Editk result already exists at {out_path}. Skipping.", flush=True)
         return
     
-    # Step 1: Find errors (get model and edit dataset)
+    # Get model and edit dataset
     model, edit_ds = find_errors(config)
-    
-    # Keep a copy of the original model for editk_generality
-    move_model_device(model, "cpu")
-    cuda_gc()
-    model_old = copy.deepcopy(model)
-    
-    # Get editor
-    editor = get_editor(config, model)
     
     # Run editk_generality for each k
     editor_name = getattr(getattr(config, "editor", None), "_name", "unknown")
@@ -55,7 +46,7 @@ def run_editk(config, k_values=(1), B=10):
         print(f"{'='*50}", flush=True)
         
         t_start = time.time()
-        result = editk_generality(model_old, edit_ds, editor, B=B, k=k)
+        result = editk_generality(model, edit_ds, B=B, k=k)
         elapsed = time.time() - t_start
         
         # Compute summary stats

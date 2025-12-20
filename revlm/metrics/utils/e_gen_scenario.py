@@ -28,24 +28,47 @@ class COEScenarioGenerator:
         self.k = 3  # number of scenarios to generate
         print(f"COEScenarioGenerator: {model_name}/{dataset_name}, {self.n_batches} batches")
 
+    # def format_prompt(self, error_chain: str) -> str:
+    #     return (
+    #         f'Given these visual facts:\n"{error_chain}"\n\n'
+    #         f"Generate {self.k} different creative scenarios where ALL these facts would be visually true.\n\n"
+    #         "Requirements:\n"
+    #         # "- Each scenario should be a distinct visual setting\n"
+    #         "- Use 1-2 short sentences, each sentence should be less than 15 words\n"
+    #         "- Be creative but plausible\n"
+    #         "- Describe what would be visible in the image\n"
+    #         "- Do not contradict the given facts\n\n"
+    #         "Examples:\n"
+    #         'Visual facts: "A person is standing on a board. There are waves around."\n'
+    #         "1. A surfer rides a wave at a tropical beach during sunset. Palm trees line the shore in the background.\n"
+    #         "2. A wakeboarder is pulled behind a speedboat on a lake. Mountains are visible in the distance.\n"
+    #         "3. A paddleboarder balances on calm ocean waters near a rocky coastline. Seagulls fly overhead.\n\n"
+    #         'Visual facts: "The cake has multiple tiers. There are decorations on top."\n'
+    #         "1. A wedding cake sits on a decorated table at an outdoor garden ceremony. Guests mingle in the background.\n"
+    #         "2. A birthday cake is displayed in a bakery window. Colorful fondant figures sit on top.\n"
+    #         "3. An elaborate anniversary cake is being served at a rooftop restaurant. A couple holds champagne glasses nearby.\n\n"
+    #         "Now generate scenarios for the given facts:\n"
+    #         "Respond as a numbered list:\n1. [scenario]\n2. [scenario]\n3. [scenario]"
+    #     )
+    
     def format_prompt(self, error_chain: str) -> str:
         return (
             f'Given these visual facts:\n"{error_chain}"\n\n'
             f"Generate {self.k} different creative scenarios where ALL these facts would be visually true.\n\n"
             "Requirements:\n"
-            "- Each scenario should be a distinct visual setting\n"
-            "- Use 1-2 short sentences\n"
+            "- Each scenario must be exactly one sentence (less than 20 words)\n"
             "- Be creative but plausible\n"
-            "- Describe what would be visible in the image\n\n"
+            "- Describe what would be visible in the image\n"
+            "- Do not contradict the given facts\n\n"
             "Examples:\n"
             'Visual facts: "A person is standing on a board. There are waves around."\n'
-            "1. A surfer rides a wave at a tropical beach during sunset. Palm trees line the shore in the background.\n"
-            "2. A wakeboarder is pulled behind a speedboat on a lake. Mountains are visible in the distance.\n"
-            "3. A paddleboarder balances on calm ocean waters near a rocky coastline. Seagulls fly overhead.\n\n"
+            "1. A surfer rides a wave at a tropical beach during sunset.\n"
+            "2. A wakeboarder is pulled behind a speedboat on a calm lake.\n"
+            "3. A paddleboarder balances on ocean waters near a rocky coastline.\n\n"
             'Visual facts: "The cake has multiple tiers. There are decorations on top."\n'
-            "1. A wedding cake sits on a decorated table at an outdoor garden ceremony. Guests mingle in the background.\n"
-            "2. A birthday cake is displayed in a bakery window. Colorful fondant figures sit on top.\n"
-            "3. An elaborate anniversary cake is being served at a rooftop restaurant. A couple holds champagne glasses nearby.\n\n"
+            "1. A wedding cake sits on a decorated table at an outdoor ceremony.\n"
+            "2. A birthday cake with fondant figures is displayed in a bakery window.\n"
+            "3. An anniversary cake is being served at a rooftop restaurant.\n\n"
             "Now generate scenarios for the given facts:\n"
             "Respond as a numbered list:\n1. [scenario]\n2. [scenario]\n3. [scenario]"
         )
@@ -90,7 +113,7 @@ class COEScenarioGenerator:
                             {"role": "system", "content": "You generate creative visual scenarios from given facts."},
                             {"role": "user", "content": self.format_prompt(ec["chain"])},
                         ],
-                        "max_tokens": 300,
+                        "max_tokens": 100,
                         "temperature": 1.0
                     }
                 })
