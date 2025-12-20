@@ -113,17 +113,17 @@ def editeval(
 	print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
 	print(f"Rationale Generality: {rgen:.4f}", flush=True)
 
-	t_edit1 = time.time()
-	edit1 = 0.0
-	# edit1 = edit1_generality(model_old, edit_ds, editor)
-	print(f"[Timing] edit1_generality: {time.time() - t_edit1:.2f}s", flush=True)
-	print(f"Edit1 Generality: {edit1:.4f}", flush=True)
+	# t_edit1 = time.time()
+	# edit1 = 0.0
+	# # edit1 = edit1_generality(model_old, edit_ds, editor)
+	# print(f"[Timing] edit1_generality: {time.time() - t_edit1:.2f}s", flush=True)
+	# print(f"Edit1 Generality: {edit1:.4f}", flush=True)
 
-	t_editk = time.time()
-	editk = 0.0
-	# editk = editk_boot_generality(model_old, edit_ds, editor)
-	print(f"[Timing] editk_generality: {time.time() - t_editk:.2f}s", flush=True)
-	print(f"Editk Generality: {editk:.4f}", flush=True)
+	# t_editk = time.time()
+	# editk = 0.0
+	# # editk = editk_generality(model_old, edit_ds, editor)
+	# print(f"[Timing] editk_generality: {time.time() - t_editk:.2f}s", flush=True)
+	# print(f"Editk Generality: {editk:.4f}", flush=True)
 
 	t_loc = time.time()
 	loc = locality(
@@ -158,8 +158,8 @@ def editeval(
 		"rationale_generality": float(rgen),
 		"locality": float(loc),
 		"hard_locality": float(hard_loc),
-		"edit1_generality": float(edit1),
-		"editk_generality": float(editk),
+		# "edit1_generality": float(edit1),
+		# "editk_generality": float(editk),
 		"hm": float(score),
 		"n_edits": float(len(edit_ds.data)),
 	}
@@ -389,69 +389,6 @@ def hard_locality_sentence_bert(
     preds_old, preds_new = [p for _, p in pairs_old], [p for _, p in pairs_new]
     return sum(str(a).strip().lower() == str(b).strip().lower() for a, b in zip(preds_old, preds_new)) / len(preds_old) if preds_old else 0.0
 
-
-# def text_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_texts: Dict[str, List[str]]) -> float:
-#     """Accuracy on unrelated texts using the same images.
-
-#     related_texts: {"image_path": [("unrelated_question1", "unrelated_question1_answer"), 
-#                                    ("unrelated_question2", "unrelated_question2_answer"), ...]} aligned to edit_ds.data indices.
-#     """
-
-#     df = edit_ds.load_df()
-#     unrelated_df = pd.DataFrame(
-#         (
-#             (image_path, unrelated_question, answer)
-#             for image_path, questions in unrelated_texts.items()
-#             for unrelated_question, answer in questions
-#         ),
-#         columns=["image_path", "question"],
-#     )
-#     # merge unrelated_df with df (without the "question" column) by image_path, keep all rows from unrelated_df
-#     unrelated_df = unrelated_df.merge(
-#         df.drop(columns=["question"]),
-#         on="image_path",
-#         how="left",
-#     )
-#     edit_ds.data = edit_ds.df2data(unrelated_df) # convert to structured dataset of my project
-#     edit_ds.set_dataloader()
-
-#     pairs_old = generation(model_old, edit_ds)
-#     pairs_new = generation(model_new, edit_ds)
-#     preds_old = [p for _, p in pairs_old]
-#     preds_new = [p for _, p in pairs_new]
-#     correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
-#     return correct / len(preds_old)
-
-# def image_locality(model_old: Any, model_new: Any, edit_ds: Any, unrelated_images: Dict[str, List[str]]) -> float:
-#     """Accuracy on unrelated images using the same texts.
-
-#     unrelated_images: {"question": ["image_path1", "image_path2", ...]} aligned to edit_ds.data indices.
-#     """
-#     df = edit_ds.load_df()
-#     unrelated_df = pd.DataFrame(
-#         (
-#             (question, image_path)
-#             for question, image_paths in unrelated_images.items()
-#             for image_path in image_paths
-#         ),
-#         columns=["question", "image_path"],
-#     )
-#     # merge unrelated_df with df (without the "text" column) by image_path, keep all rows from unrelated_df
-#     unrelated_df = unrelated_df.merge(
-#         df.drop(columns=["question"]),
-#         on="image_path",
-#         how="left",
-#     )
-#     edit_ds.data = edit_ds.df2data(unrelated_df) # convert to structured dataset of my project
-#     edit_ds.set_dataloader()
-#     pairs_old = generation(model_old, edit_ds)
-#     pairs_new = generation(model_new, edit_ds)
-#     preds_old = [p for _, p in pairs_old]
-#     preds_new = [p for _, p in pairs_new]
-#     correct = sum(1 for a, b in zip(preds_old, preds_new) if a == b)
-#     return correct / len(preds_old)
-
-
 def _maybe_apply_ike(
     editor: Any,
     edit_ds: Any,
@@ -588,187 +525,181 @@ def rationale_generality(
     return reliability(model_new, ds)
 
 
-def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
-	"""Leave-one-out generality: edit on one example, test on the rest."""
-	n = len(edit_ds.data)
-	if n == 0:
-		return 0.0
+# def edit1_generality(model_old: Any, edit_ds: Any, editor: Any) -> float:
+# 	"""Leave-one-out generality: edit on one example, test on the rest."""
+# 	n = len(edit_ds.data)
+# 	if n == 0:
+# 		return 0.0
 
-	correct_total = 0
-	num_total = 0
-	config = edit_ds.config
-	editor_name = getattr(config.editor, "_name", getattr(config, "editor", None))
+# 	correct_total = 0
+# 	num_total = 0
+# 	config = edit_ds.config
+# 	editor_name = getattr(config.editor, "_name", getattr(config, "editor", None))
 
-	# Move base model to CPU so deepcopy does not allocate GPU tensors
-	if torch.cuda.is_available():
-		move_model_device(model_old, "cpu")
-		cuda_gc()
+# 	# Move base model to CPU so deepcopy does not allocate GPU tensors
+# 	if torch.cuda.is_available():
+# 		move_model_device(model_old, "cpu")
+# 		cuda_gc()
 
-	# For IKE: build corpus once from full edit_ds (same for all iterations)
-	if editor_name == "ike":
-		editor.build_corpus_from_dataset(edit_ds.data)
+# 	# For IKE: build corpus once from full edit_ds (same for all iterations)
+# 	if editor_name == "ike":
+# 		editor.build_corpus_from_dataset(edit_ds.data)
 
-	for i in range(n):
-		# fresh model copy for this edit
-		new_model = copy.deepcopy(model_old)
-		# move working copy to GPU for editing/eval
-		if torch.cuda.is_available():
-			move_model_device(new_model, "cuda")
-		if hasattr(editor, "model"):
-			editor.model = new_model.model if hasattr(new_model, "model") else new_model
-		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
+# 	for i in range(n):
+# 		# fresh model copy for this edit
+# 		new_model = copy.deepcopy(model_old)
+# 		# move working copy to GPU for editing/eval
+# 		if torch.cuda.is_available():
+# 			move_model_device(new_model, "cuda")
+# 		if hasattr(editor, "model"):
+# 			editor.model = new_model.model if hasattr(new_model, "model") else new_model
+# 		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
 
-		# dataset with just example i
-		single_ds = copy.deepcopy(edit_ds)
-		single_ds.data = [edit_ds.data[i]]
+# 		# dataset with just example i
+# 		single_ds = copy.deepcopy(edit_ds)
+# 		single_ds.data = [edit_ds.data[i]]
 
-		if editor_name == "ike":
-			# IKE: retrieval-only, augment prompts via dataset API
-			if hasattr(new_model, "model"):
-				new_model.model.eval()
-			editor.edit(config, edit_ds=single_ds, train_ds=edit_ds)
-		else:
-			# Weight-updating editors: train on a single batch
-			if hasattr(new_model, "model"):
-				new_model.model.train()
-			single_ds.set_dataloader(
-				with_rationale=getattr(config, "rationale", False),
-				rationale_in_prompt=False,
-				shuffle_choices=True,
-			)
-			batch = next(iter(single_ds.loader))
-			tokens = new_model.prepare_training_batch(batch)
-			editor.edit(config, tokens, batch_history=None)
-			del tokens
-			if hasattr(new_model, "model"):
-				new_model.model.eval()
+# 		if editor_name == "ike":
+# 			# IKE: retrieval-only, augment prompts via dataset API
+# 			if hasattr(new_model, "model"):
+# 				new_model.model.eval()
+# 			editor.edit(config, edit_ds=single_ds, train_ds=edit_ds)
+# 		else:
+# 			# Weight-updating editors: train on a single batch
+# 			if hasattr(new_model, "model"):
+# 				new_model.model.train()
+# 			single_ds.set_dataloader(
+# 				with_rationale=getattr(config, "rationale", False),
+# 				rationale_in_prompt=False,
+# 				shuffle_choices=True,
+# 			)
+# 			batch = next(iter(single_ds.loader))
+# 			tokens = new_model.prepare_training_batch(batch)
+# 			editor.edit(config, tokens, batch_history=None)
+# 			del tokens
+# 			if hasattr(new_model, "model"):
+# 				new_model.model.eval()
 
-		# evaluate on remaining examples
-		remain_examples = [edit_ds.data[j] for j in range(n) if j != i]
-		if not remain_examples:
-			continue
-		ds_eval = copy.deepcopy(edit_ds)
-		ds_eval.data = remain_examples
-		ds_eval.set_dataloader(shuffle_choices=False)
+# 		# evaluate on remaining examples
+# 		remain_examples = [edit_ds.data[j] for j in range(n) if j != i]
+# 		if not remain_examples:
+# 			continue
+# 		ds_eval = copy.deepcopy(edit_ds)
+# 		ds_eval.data = remain_examples
+# 		ds_eval.set_dataloader(shuffle_choices=False)
 
-		if hasattr(new_model, "model"):
-			new_model.model.eval()
-		pairs = generation(new_model, ds_eval)
-		# Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
-		correct_total += sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
-		num_total += len(pairs)
+# 		if hasattr(new_model, "model"):
+# 			new_model.model.eval()
+# 		pairs = generation(new_model, ds_eval)
+# 		# Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
+# 		correct_total += sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
+# 		num_total += len(pairs)
 
-		# Clean up GPU memory before the next iteration
-		if hasattr(editor, "model"):
-			editor.model = None
-		del new_model
-		cuda_gc()
+# 		# Clean up GPU memory before the next iteration
+# 		if hasattr(editor, "model"):
+# 			editor.model = None
+# 		del new_model
+# 		cuda_gc()
 
-	if num_total == 0:
-		return 0.0
-	return correct_total / num_total
+# 	if num_total == 0:
+# 		return 0.0
+# 	return correct_total / num_total
 
 
-def editk_boot_generality(
+def editk_generality(
 	model_old: Any,
 	edit_ds: Any,
 	editor: Any,
-	B: int = 100,
+	B: int = 10,
 	k: int = 10,
-) -> float:
-	"""Bootstrap generality: repeatedly edit on k samples, test on the rest.
-
-	Args:
-		(model_old, edit_ds, editor): as in edit1_generality.
-		B: number of bootstrap rounds.
-		k: number of edit samples per round.
+) -> Dict[str, List[int]]:
+	"""Bootstrap generality: edit on k samples, test on the rest. Repeat B times.
+	
+	Returns:
+		{"corrects": [c1, c2, ...], "totals": [t1, t2, ...]} for each of B rounds.
 	"""
 	n = len(edit_ds.data)
 	if n == 0 or k <= 0 or B <= 0:
-		return 0.0
+		return {"corrects": [], "totals": []}
 	k = min(k, n)
 
 	config = edit_ds.config
-	editor_name = getattr(config.editor, "_name", getattr(config, "editor", None))
+	editor_name = getattr(getattr(config, "editor", None), "_name", None)
+	target = getattr(config, "device", "cuda")
+	use_rationale = getattr(config, "rationale", False)
+	
+	# Seed for reproducibility
+	rng = random.Random(getattr(config, "seed", 333))
+	
+	# Track per-round counts
+	corrects = []
+	totals = []
 
-	# For IKE: build corpus once from full edit_ds (same for all iterations)
-	if editor_name == "ike":
-		editor.build_corpus_from_dataset(edit_ds.data)
+	# Move base model to CPU before deepcopy
+	move_model_device(model_old, "cpu")
+	cuda_gc()
 
-	# Pre-generate seeds for reproducible bootstrapping
-	base_seed = getattr(config, "seed", 333)
-	rng = random.Random(base_seed)
-	seeds = [rng.randint(0, 2**31 - 1) for _ in range(1000)]
-	B_eff = min(B, len(seeds))
-
-	correct_total = 0
-	num_total = 0
-
-	# Move base model to CPU so deepcopy does not allocate GPU tensors
-	if torch.cuda.is_available():
-		move_model_device(model_old, "cpu")
-		cuda_gc()
-
-	for b in range(B_eff):
-		rng_round = random.Random(seeds[b])
-		edit_indices = rng_round.sample(range(n), k)
-
-		# fresh model copy for this round
+	for b_idx in range(B):
+		t_round = time.time()
+		edit_indices = set(rng.sample(range(n), k))
+		
+		# Fresh model copy
 		new_model = copy.deepcopy(model_old)
-		# move working copy to GPU for editing/eval
-		if torch.cuda.is_available():
-			move_model_device(new_model, "cuda")
+		move_model_device(new_model, target)
+		
+		# Link editor to new model
 		if hasattr(editor, "model"):
-			editor.model = new_model.model if hasattr(new_model, "model") else new_model
-		editor.generate = new_model.model.generate if hasattr(new_model, "model") else new_model.generate
+			editor.model = getattr(new_model, "model", new_model)
 
-		# apply edits on the k sampled examples
-		for i in edit_indices:
-			single_ds = copy.deepcopy(edit_ds)
-			single_ds.data = [edit_ds.data[i]]
+		# Build edit dataset for this round
+		edit_subset = copy.deepcopy(edit_ds)
+		edit_subset.data = [edit_ds.data[i] for i in edit_indices]
+		edit_subset.set_dataloader(
+			with_rationale=use_rationale,
+			shuffle_choices=True,
+		)
 
-			if editor_name == "ike":
-				# IKE: retrieval-only, augment prompts via dataset API
-				if hasattr(new_model, "model"):
-					new_model.model.eval()
-				editor.edit(config, edit_ds=single_ds, train_ds=edit_ds)
-			else:
-				# Weight-updating editors: train on a single batch
-				if hasattr(new_model, "model"):
-					new_model.model.train()
-				single_ds.set_dataloader(
-					with_rationale=getattr(config, "rationale", False),
-					rationale_in_prompt=False,
-					shuffle_choices=True,
-				)
-				batch = next(iter(single_ds.loader))
+		# Apply edits
+		if editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot"):
+			# IKE-style: prompt augmentation only
+			_maybe_apply_ike(editor, edit_subset, edit_ds)
+		else:
+			# Weight-updating editors
+			if hasattr(new_model, "model"):
+				new_model.model.train()
+			for batch in edit_subset.loader:
 				tokens = new_model.prepare_training_batch(batch)
 				editor.edit(config, tokens, batch_history=None)
-				del tokens
-				if hasattr(new_model, "model"):
-					new_model.model.eval()
+			if hasattr(new_model, "model"):
+				new_model.model.eval()
 
-		# evaluate on remaining examples (complement of edit_indices)
-		remain_examples = [edit_ds.data[j] for j in range(n) if j not in edit_indices]
-		if not remain_examples:
-			continue
+		# Evaluate on remaining examples
 		ds_eval = copy.deepcopy(edit_ds)
-		ds_eval.data = remain_examples
+		ds_eval.data = [edit_ds.data[j] for j in range(n) if j not in edit_indices]
+		if not ds_eval.data:
+			del new_model
+			cuda_gc()
+			continue
 		ds_eval.set_dataloader(shuffle_choices=False)
+		
+		# For IKE-style, apply augmentation to eval set too
+		if editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot"):
+			_maybe_apply_ike(editor, ds_eval, edit_ds)
 
-		if hasattr(new_model, "model"):
-			new_model.model.eval()
+		# Generate and count correct/total
 		pairs = generation(new_model, ds_eval)
-		# Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
-		correct_total += sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
-		num_total += len(pairs)
+		correct = sum(1 for t, p in pairs if str(p).strip().lower() == str(t).strip().lower())
+		corrects.append(correct)
+		totals.append(len(pairs))
+		
+		# Log round timing
+		elapsed = time.time() - t_round
+		print(f"  [B={b_idx+1}/{B}] {correct}/{len(pairs)} correct, {elapsed:.1f}s", flush=True)
 
-		# Clean up GPU memory before the next bootstrap round
+		# Cleanup
 		if hasattr(editor, "model"):
 			editor.model = None
 		del new_model
 		cuda_gc()
 
-	if num_total == 0:
-		return 0.0
-	return correct_total / num_total
+	return {"corrects": corrects, "totals": totals}
