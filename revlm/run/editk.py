@@ -82,7 +82,7 @@ if __name__ == "__main__":
         "--editor",
         type=str,
         required=True,
-        choices=["ft", "ft_ewc", "ft_retrain", "grace", "balancedit", "ike", "ike_cot", "ike_clip", "ike_tuple", "reasonedit", "mend", "baseline"],
+        choices=["ft", "ft_ewc", "ft_retrain", "grace", "balancedit", "ike", "ike_cot", "ike_clip", "ike_tuple", "ike_proto", "reasonedit", "mend", "baseline"],
         help="Editor method to use",
     )
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")

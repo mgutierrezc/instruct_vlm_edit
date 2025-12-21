@@ -4,6 +4,7 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 from .ike_tuple import IKE_TUPLE
+from .ike_cot import IKE_COT
 from .utils import brackets_to_periods, parent_module
 
 
@@ -18,7 +19,9 @@ class ReasonEdit(nn.Module):
         super().__init__()
         cfg = getattr(config, "editor", config)
 
-        self.ike_tuple = IKE_TUPLE(config, model)
+        # Choose retriever: IKE_COT (no training, uses own COT) or IKE_TUPLE (learned)
+        use_cot = getattr(cfg, "use_cot", True)
+        self.ike_tuple = IKE_COT(config, model) if use_cot else IKE_TUPLE(config, model)
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
 
@@ -26,6 +29,16 @@ class ReasonEdit(nn.Module):
         self.ft_lr = float(getattr(cfg, "edit_lr", 1e-3))
         self.ft_batch_size = int(getattr(cfg, "ft_batch_size", 4))
         self.early_stop_patience = int(getattr(cfg, "early_stop_patience", 20))
+
+        # Freeze entire model
+        for p in self.model.parameters():
+            p.requires_grad = False
+
+        # Disable KV cache for training
+        if hasattr(self.model, "config") and hasattr(self.model.config, "use_cache"):
+            self.model.config.use_cache = False
+        if hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
 
         # Layer setup
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])
@@ -77,6 +90,47 @@ class ReasonEdit(nn.Module):
             new_prompt, _ = self.retrieve_and_apply(img, q, prompt)
             ex["prompt"] = new_prompt
 
+    def _make_cot_answer_labels(self, tokens, batch):
+        """Train on COT + answer only. Uses tokenizer to count positions."""
+        labels = tokens["labels"].clone()
+        input_ids = tokens["input_ids"]
+        tokenizer = getattr(self.wrapper, "tokenizer", None)
+        if not tokenizer:
+            return labels
+
+        for i, ex in enumerate(batch):
+            cot = (ex.get("cot") or ex.get("rationale") or "").strip()
+            prompt = ex.get("prompt", "")
+            if not cot or not prompt or cot not in prompt:
+                continue
+            
+            # Find answer start
+            ans_mask = labels[i] != -100
+            if not ans_mask.any():
+                continue
+            ans_start = ans_mask.nonzero(as_tuple=True)[0][0].item()
+            
+            # Find COT position in prompt string
+            cot_idx = prompt.index(cot)
+            before_cot = prompt[:cot_idx]
+            up_to_cot_end = prompt[:cot_idx + len(cot)]
+            
+            # Count tokens for each portion
+            prompt_toks = len(tokenizer.encode(prompt, add_special_tokens=False))
+            before_cot_toks = len(tokenizer.encode(before_cot, add_special_tokens=False)) if before_cot else 0
+            up_to_cot_end_toks = len(tokenizer.encode(up_to_cot_end, add_special_tokens=False))
+            
+            # Calculate token positions (text_start = where prompt begins in input)
+            text_start = max(0, ans_start - prompt_toks)
+            cot_tok_start = text_start + before_cot_toks
+            cot_tok_end = min(text_start + up_to_cot_end_toks, ans_start)
+            
+            # Unmask COT tokens
+            if cot_tok_start < cot_tok_end:
+                labels[i, cot_tok_start:cot_tok_end] = input_ids[i, cot_tok_start:cot_tok_end]
+        
+        return labels
+
     def _train_adapter(self, edit_ds):
         samples = [ex for ex in getattr(edit_ds, "data", []) if ex.get("image") and ex.get("prompt")]
         if not samples:
@@ -90,9 +144,9 @@ class ReasonEdit(nn.Module):
         setattr(self.edit_mod, self.layer_name, self.switcher)
         self.switcher.use_edit = True
 
+        n = len(samples)
         opt = torch.optim.Adam(self.layer_edit.parameters(), lr=self.ft_lr)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, self.ft_epochs))
-        n = len(samples)
         best_loss, patience_cnt = float('inf'), 0
 
         for ep in range(self.ft_epochs):
@@ -108,16 +162,19 @@ class ReasonEdit(nn.Module):
                                "label_train": ex.get("gold", {}).get("label_train", "")} for ex in batch],
                     "idxs": list(range(len(batch)))
                 })
-                tokens["labels"] = tokens["input_ids"].clone()  # no masking
+                # Option 1: Train on COT + Answer only (mask image/question)
+                tokens["labels"] = self._make_cot_answer_labels(tokens, batch)
 
                 opt.zero_grad()
-                loss = self.model(**tokens).loss
+                with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+                    loss = self.model(**tokens).loss
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.layer_edit.parameters(), 1.0)  # Gradient clipping
                 opt.step()
                 loss_sum += loss.item()
                 cnt += 1
 
-            scheduler.step()
+            scheduler.step()  # Step per epoch
             avg_loss = loss_sum / max(1, cnt)
 
             if avg_loss < best_loss:

@@ -30,6 +30,10 @@ class IKE_COT(torch.nn.Module):
             "New Facts: ",
         )
 
+        # API compatibility with IKE_TUPLE (for ReasonEdit)
+        self.k = 1
+        self._cot_index = {}
+
         # For logging / inspection after editing
         self.last_retrieval_log: Optional[List[Dict[str, Any]]] = None
 
@@ -47,6 +51,20 @@ class IKE_COT(torch.nn.Module):
     def forward(self, *inputs, **kwargs):
         """Pass-through forward; IKE_COT does not alter model internals."""
         return self.model(*inputs, **kwargs)
+
+    # API compat with IKE_TUPLE for ReasonEdit
+    def _retrieve(self, image, question, k):
+        """API compat with IKE_TUPLE: return COT for question if exists."""
+        cot = self._cot_index.get(question)
+        return [cot] if cot else []
+
+    def _build_cot_index(self, dataset):
+        """Build question -> COT lookup."""
+        self._cot_index = {
+            ex.get("question"): (ex.get("cot") or ex.get("rationale", "")).strip()
+            for ex in getattr(dataset, "data", [])
+            if ex.get("question") and (ex.get("cot") or ex.get("rationale"))
+        }
 
     # ---------------------------------------------------------------------
     # Core COT-based prompt augmentation
@@ -137,6 +155,9 @@ class IKE_COT(torch.nn.Module):
         # If there is no dataset to edit, do nothing.
         if edit_ds is None:
             return self.model
+
+        # Build COT index for _retrieve() API compatibility with IKE_TUPLE
+        self._build_cot_index(edit_ds)
 
         # No retrieval or external corpus: just use each example's own COT.
         self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, inplace=True)

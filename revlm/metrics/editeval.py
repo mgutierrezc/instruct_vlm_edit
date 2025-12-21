@@ -435,6 +435,13 @@ def _maybe_apply_ike(
         # Apply COT-based prompt augmentation in-place on the provided dataset.
         if hasattr(editor, "apply_to_dataset"):
             editor.apply_to_dataset(edit_ds, inplace=True)
+    elif editor_name == "ike_proto":
+        # IKE_PROTO: prototype-based retrieval (no retraining).
+        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+            if hasattr(editor.model, "eval"):
+                editor.model.eval()
+        if hasattr(editor, "apply_to_dataset"):
+            editor.apply_to_dataset(edit_ds)
 
 
 def text_generality(
@@ -632,7 +639,7 @@ def editk_generality(
 
 	editor_name = getattr(getattr(config, "editor", None), "_name", None)
 	use_rationale = getattr(config, "rationale", False)
-	is_ike = editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot")
+	is_ike = editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot", "ike_proto")
 	rng = random.Random(getattr(config, "seed", 333))
 	
 	corrects, totals = [], []
