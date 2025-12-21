@@ -5,13 +5,14 @@ import torch
 import torch.nn as nn
 from .ike_tuple import IKE_TUPLE
 from .ike_cot import IKE_COT
+from .ike_proto import IKE_PROTO
 from .utils import brackets_to_periods, parent_module
 
 
 class ReasonEdit(nn.Module):
     """
-    Stage 1: IKE_TUPLE retrieval
-    Stage 2: Adapter finetuning (no masking)
+    Stage 1: Retrieval (self.ike = "cot" | "proto" | "tuple")
+    Stage 2: Adapter finetuning
     Inference: facts retrieved -> use layer_edit, else original
     """
 
@@ -19,9 +20,13 @@ class ReasonEdit(nn.Module):
         super().__init__()
         cfg = getattr(config, "editor", config)
 
-        # Choose retriever: IKE_COT (no training, uses own COT) or IKE_TUPLE (learned)
-        use_cot = getattr(cfg, "use_cot", True)
-        self.ike_tuple = IKE_COT(config, model) if use_cot else IKE_TUPLE(config, model)
+        self.ike = "cot"
+        if self.ike == "proto":
+            self.ike_tuple = IKE_PROTO(config, model)
+        elif self.ike == "tuple":
+            self.ike_tuple = IKE_TUPLE(config, model)
+        elif self.ike == "cot":
+            self.ike_tuple = IKE_COT(config, model)
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
 

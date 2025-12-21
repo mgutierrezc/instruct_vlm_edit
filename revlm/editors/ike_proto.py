@@ -61,7 +61,7 @@ class IKE_PROTO:
         # Hyperparams
         self.k = int(getattr(cfg, "k", -3))  # negative = auto
         self.num_augments = int(getattr(cfg, "num_augments", 3))  # augmented variants per edit
-        self.use_augment = bool(getattr(cfg, "use_augment", True))
+        self.use_augment = bool(getattr(cfg, "use_augment", False))
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
 
