@@ -27,20 +27,28 @@ def run_editk(config, k_values=(1, 5, 10), B=10):
     # Output path
     out_path = os.path.join(config.edit_dir, config.fname.replace(".json", "_editk.json"))
     
-    if os.path.exists(out_path) and not config.overwrite:
-        print(f"Editk result already exists at {out_path}. Skipping.", flush=True)
-        return
+    # Load existing results if file exists
+    if os.path.exists(out_path):
+        with open(out_path, "r") as f:
+            results = json.load(f)
+        print(f"Loaded existing results from {out_path}", flush=True)
+    else:
+        results = {}
     
     # Get edit dataset (model used only for initial predictions, then discarded)
     model, edit_ds = find_errors(config)
     del model  # Free GPU memory - editk_generality creates fresh models per round
     cuda_gc()
     
-    # Run editk_generality for each k
+    # Update metadata
     editor_name = getattr(getattr(config, "editor", None), "_name", "unknown")
-    results = {"B": B, "k_values": list(k_values), "n_edits": len(edit_ds.data), "editor": editor_name}
+    results.update({"B": B, "k_values": list(k_values), "n_edits": len(edit_ds.data), "editor": editor_name})
     
     for k in k_values:
+        # Skip if already computed
+        if f"k{k}" in results:
+            print(f"k={k} already exists, skipping.", flush=True)
+            continue
         print(f"\n{'='*50}", flush=True)
         print(f"Running editk_generality: editor={editor_name}, k={k}, B={B}", flush=True)
         print(f"{'='*50}", flush=True)

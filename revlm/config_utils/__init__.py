@@ -112,8 +112,10 @@ def configure_args(args, config_path=None):
     pred_postedit_dir = _normalize_cli_dir(getattr(args, "pred_postedit_dir", None)) or os.path.join("results", "pred_postedit", editor_tag, model_tag, dataset_tag)
     os.makedirs(pred_postedit_dir, exist_ok=True)
     print(f"Post-edit predictions will be saved to {pred_postedit_dir}")
-    # unified filename to save
-    fname = f"{task_tag}_{experiment['split']}.json" # {experiment['suffix']}
+    # unified filename to save (include subsample to avoid overwriting full results)
+    subsample = getattr(args, "subsample", 0) or 0
+    subsample_part = f"_sub{subsample}" if subsample > 0 else ""
+    fname = f"{task_tag}_{experiment['split']}{subsample_part}.json"
     print(f"Unified filename to save: {fname}")
 
 

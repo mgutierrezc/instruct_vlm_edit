@@ -61,14 +61,13 @@ class IKE_PROTO:
 
         # Hyperparams
         self.k = int(getattr(cfg, "k", -3))  # negative = auto
-        self.num_augments = int(getattr(cfg, "num_augments", 1))  # augmented variants per edit
-        self.use_augment = bool(getattr(cfg, "use_augment", True))
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
-        self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
-        self.max_subset_size = int(getattr(cfg, "max_subset_size", 3))  # max sentences per k3 subset
+        self.num_augments = int(getattr(cfg, "num_augments", 0))  # 0 = no augmentation
+        self.prefix = getattr(cfg, "cot_prefix", " ")
+        self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
 
-        # Augmenter
-        self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
+        # Augmenter (only if num_augments > 0)
+        self.augmenter = Augmenter(self.wrapper) if self.num_augments > 0 else None
 
         # Hook setup for VLM hidden states
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])
