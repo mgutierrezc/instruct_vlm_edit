@@ -61,8 +61,8 @@ class IKE_PROTO:
 
         # Hyperparams
         self.k = int(getattr(cfg, "k", -3))  # negative = auto
-        self.num_augments = int(getattr(cfg, "num_augments", 3))  # augmented variants per edit
-        self.use_augment = bool(getattr(cfg, "use_augment", False))
+        self.num_augments = int(getattr(cfg, "num_augments", 1))  # augmented variants per edit
+        self.use_augment = bool(getattr(cfg, "use_augment", True))
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 3))  # max sentences per k3 subset
@@ -152,30 +152,28 @@ class IKE_PROTO:
         if not sentences:
             return
 
-        def add_key(k):
-            k_norm = F.normalize(k, dim=-1).cpu()
-            self._proto_keys.append(k_norm)
+        def add_key(img, text):
+            k = F.normalize(self._encode_vlm([img], [text]), dim=-1).cpu()
+            self._proto_keys.append(k)
             self._proto_sentences.append(sentences)
 
-        # k1: <img, question>
-        add_key(self._encode_vlm([image], [question]))
-
-        # k2: <img> only
-        add_key(self._encode_vlm([image], [""]))
-
-        # k3: <img, rationale_subset> for all subsets up to max_subset_size
+        # Collect all text variants: k1 (question), k2 (""), k3 (subsets)
+        texts = [question, ""]
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
             for subset in combinations(range(n), size):
-                subset_text = " ".join(sentences[i] for i in subset)
-                add_key(self._encode_vlm([image], [subset_text]))
+                texts.append(" ".join(sentences[i] for i in subset))
 
-        # Additional augmented variants of <img, q>
+        # Non-augmented keys
+        for text in texts:
+            add_key(image, text)
+
+        # Augmented keys (all texts, num_augments times)
         if self.augmenter and self.num_augments > 0:
             for _ in range(self.num_augments):
                 aug_img = self.augmenter.image(image)
-                aug_q = self.augmenter.question(question) if random.random() < 0.5 else question
-                add_key(self._encode_vlm([aug_img], [aug_q]))
+                for text in texts:
+                    add_key(aug_img, text)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None
