@@ -1,5 +1,6 @@
 import re
 import random
+from itertools import combinations
 import numpy as np
 from PIL import Image as PILImage
 from scipy.stats import t as t_dist
@@ -64,6 +65,7 @@ class IKE_PROTO:
         self.use_augment = bool(getattr(cfg, "use_augment", False))
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
+        self.max_subset_size = int(getattr(cfg, "max_subset_size", 3))  # max sentences per k3 subset
 
         # Augmenter
         self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
@@ -144,32 +146,37 @@ class IKE_PROTO:
 
     @torch.no_grad()
     def _add_prototype(self, image, question, rationale, sentences=None):
-        """Add prototypes for a single edit with 3-query fusion + augmentation."""
+        """Add prototypes for a single edit with query fusion + subset expansion + augmentation."""
         if sentences is None:
             sentences = self._parse_rationale(rationale)
         if not sentences:
             return
 
-        # 3-query fusion variants
-        k1 = self._encode_vlm([image], [question])           # <img, q>
-        k2 = self._encode_vlm([image], [""])                 # <img> only
-        k3 = self._encode_vlm([image], [rationale or ""])    # <img, rat>
-
-        # Normalize and store
-        for k in [k1, k2, k3]:
-            k_norm = F.normalize(k, dim=-1).cpu()  # Store on CPU to save GPU memory
+        def add_key(k):
+            k_norm = F.normalize(k, dim=-1).cpu()
             self._proto_keys.append(k_norm)
             self._proto_sentences.append(sentences)
 
-        # Additional augmented variants
+        # k1: <img, question>
+        add_key(self._encode_vlm([image], [question]))
+
+        # k2: <img> only
+        add_key(self._encode_vlm([image], [""]))
+
+        # k3: <img, rationale_subset> for all subsets up to max_subset_size
+        n = len(sentences)
+        for size in range(1, min(n, self.max_subset_size) + 1):
+            for subset in combinations(range(n), size):
+                subset_text = " ".join(sentences[i] for i in subset)
+                add_key(self._encode_vlm([image], [subset_text]))
+
+        # Additional augmented variants of <img, q>
         if self.augmenter and self.num_augments > 0:
             for _ in range(self.num_augments):
                 aug_img = self.augmenter.image(image)
                 aug_q = self.augmenter.question(question) if random.random() < 0.5 else question
-                k_aug = F.normalize(self._encode_vlm([aug_img], [aug_q]), dim=-1).cpu()
-                self._proto_keys.append(k_aug)
-                self._proto_sentences.append(sentences)
-        
+                add_key(self._encode_vlm([aug_img], [aug_q]))
+
         # Invalidate stacked cache
         self._proto_keys_stacked = None
 
@@ -274,13 +281,15 @@ class IKE_PROTO:
     def get_stats(self):
         """Return statistics about stored prototypes."""
         n_protos = len(self._proto_keys)
+        n_edits = len(self._added_uids)
         # Estimate memory: each key is [1, D] float32
         dim = self._proto_keys[0].shape[-1] if self._proto_keys else 0
         mem_mb = (n_protos * dim * 4) / (1024 * 1024)
         return {
             "num_prototypes": n_protos,
-            "num_edits": len(self._added_uids),
-            "protos_per_edit": 3 + self.num_augments,
+            "num_edits": n_edits,
+            "protos_per_edit": n_protos / max(1, n_edits),
+            "max_subset_size": self.max_subset_size,
             "memory_mb": round(mem_mb, 2),
         }
 
