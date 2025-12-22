@@ -61,7 +61,7 @@ class IKE_PROTO:
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 20))  # augments for radius estimation
-        self.radius_percentile = float(getattr(cfg, "radius_percentile", 95))  # percentile for radius
+        self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))  # percentile for radius
 
         # Augmenter
         self.augmenter = Augmenter(self.wrapper)
@@ -126,7 +126,7 @@ class IKE_PROTO:
         if not sentences:
             return
 
-        def add_key_with_radius(img, text):
+        def add_key_with_radius(img, text, sents):
             """Store raw key and estimate radius from augmented samples."""
             key = self._encode_vlm([img], [text]).cpu()  # [1, D]
             
@@ -145,20 +145,21 @@ class IKE_PROTO:
             
             self._proto_keys.append(key)
             self._proto_radii.append(radius)
-            self._proto_sentences.append(sentences)
+            self._proto_sentences.append(sents)
 
-        # k1: <img, question>
-        add_key_with_radius(image, question)
+        # k1: <img, question> → all sentences
+        add_key_with_radius(image, question, sentences)
 
-        # k2: <img, "">
-        add_key_with_radius(image, "")
+        # k2: <img, ""> → all sentences
+        add_key_with_radius(image, "", sentences)
 
-        # k3: <img, rationale_subset> for subsets up to max_subset_size
+        # k3: <img, rationale_subset> → subset sentences
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
             for subset in combinations(range(n), size):
-                text = " ".join(sentences[i] for i in subset)
-                add_key_with_radius(image, text)
+                subset_sents = [sentences[i] for i in subset]
+                text = " ".join(subset_sents)
+                add_key_with_radius(image, text, subset_sents)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None

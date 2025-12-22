@@ -64,7 +64,7 @@ class IKE_PROTO:
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
-        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 0)]))
+        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 0), ("k2", 0), ("k3", 0)]))
         self.distance = getattr(cfg, "distance", "l2")  # "cosine" or "l2"
 
         # Augmenter
@@ -101,7 +101,7 @@ class IKE_PROTO:
         return self.forward(*a, **kw)
 
     @staticmethod
-    def _auto_k(sims, top_k=20, alpha=0.05):
+    def _auto_k(sims, top_k=100, alpha=0.05):
         """Use Grubbs' test on similarity gaps to find natural cutoff."""
         sims = np.asarray(sims, dtype=float)
         if sims.size < 4:
@@ -152,36 +152,37 @@ class IKE_PROTO:
         if not sentences:
             return
 
-        def add_key(img, text):
+        def add_key(img, text, sents):
             k = self._encode_vlm([img], [text]).cpu()  # store raw
             self._proto_keys.append(k)
-            self._proto_sentences.append(sentences)
+            self._proto_sentences.append(sents)
 
-        # k1: <img, question>
-        add_key(image, question)
+        # k1: <img, question> → all sentences
+        add_key(image, question, sentences)
 
-        # k2: <img, "">
-        add_key(image, "")
+        # k2: <img, ""> → all sentences
+        add_key(image, "", sentences)
 
-        # k3: <img, rationale_subset> for subsets up to max_subset_size
-        k3_texts = []
+        # k3: <img, rationale_subset> → subset sentences
+        k3_subsets = []  # list of (text, subset_sentences)
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
             for subset in combinations(range(n), size):
-                text = " ".join(sentences[i] for i in subset)
-                k3_texts.append(text)
-                add_key(image, text)
+                subset_sents = [sentences[i] for i in subset]
+                text = " ".join(subset_sents)
+                k3_subsets.append((text, subset_sents))
+                add_key(image, text, subset_sents)
 
         # Augmented keys: augment_keys = {"k1": n1, "k2": n2, "k3": n3}
         if self.augmenter:
             for _ in range(self.augment_keys.get("k1", 0)):
-                add_key(self.augmenter.image(image), self.augmenter.question(question))
+                add_key(self.augmenter.image(image), self.augmenter.question(question), sentences)
             for _ in range(self.augment_keys.get("k2", 0)):
-                add_key(self.augmenter.image(image), "")
+                add_key(self.augmenter.image(image), "", sentences)
             for _ in range(self.augment_keys.get("k3", 0)):
                 aug_img = self.augmenter.image(image)
-                for text in k3_texts:
-                    add_key(aug_img, text)
+                for text, subset_sents in k3_subsets:
+                    add_key(aug_img, text, subset_sents)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None
