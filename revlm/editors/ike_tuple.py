@@ -200,7 +200,7 @@ class IKE_TUPLE(nn.Module):
         return hits / max(1, total)
 
     def _train(self, samples):
-        """Train with multi-positive InfoNCE: 3 query types per sample vs global pool."""
+        """Train with f1 + fr: f1=<img,q>->all sentences, fr=<img,sent>->that sent only."""
         if not samples:
             return
         opt, sched = None, None
@@ -216,56 +216,78 @@ class IKE_TUPLE(nn.Module):
                 if B < 2 and not has_counterfacts:
                     continue
 
-                # 3 query types: <img,q>, <img>, <img,rationale>
-                imgs = [b["image"] for b in batch]
-                qs = [b["question"] for b in batch]
-                rats = [" ".join(b["sentences"]) for b in batch]
-
-                # Apply augmentations (online, per-batch)
-                if self.augmenter:
-                    imgs = [self.augmenter.image(img) for img in imgs]
-                    qs = [self.augmenter.question(q) if random.random() < 0.5 else q for q in qs]
-                    rats = [self.augmenter.rationale(r) if random.random() < 0.5 else r for r in rats]
-
-                f1 = self._encode_vlm(imgs, qs)           # <image, question>
-                f2 = self._encode_vlm(imgs, [""] * B)     # <image> only
-                f3 = self._encode_vlm(imgs, rats)         # <image, rationale>
-
-                self._ensure_heads(f1.shape[-1])
-                q_emb = torch.cat([
-                    F.normalize(self.image_proj(f1), dim=-1),
-                    F.normalize(self.image_proj(f2), dim=-1),
-                    F.normalize(self.image_proj(f3), dim=-1),
-                ], dim=0)  # [3*B, D]
-                q_owners = list(range(B)) * 3  # sample ownership for each query
-
-                # Pool all sentences with owner ids (-1 for counterfacts = always negative)
-                all_texts, owners = [], []
+                # Build sentence pool with dual ownership: edit_id and sent_id
+                all_texts, edit_ids, sent_ids = [], [], []
+                sid = 0
                 for i, b in enumerate(batch):
                     for s in b["sentences"]:
                         all_texts.append(s)
-                        owners.append(i)
+                        edit_ids.append(i)
+                        sent_ids.append(sid)
+                        sid += 1
                     for cf in b.get("counterfacts", []):
                         all_texts.append(cf)
-                        owners.append(-1)
+                        edit_ids.append(-1)  # counterfacts always negative for f1
+                        sent_ids.append(-1)  # counterfacts always negative for fr
 
                 if len(all_texts) < 2:
                     continue
 
+                # f1 queries: <img, question> → all sentences from same edit
+                f1_imgs = [b["image"] for b in batch]
+                f1_texts = [b["question"] for b in batch]
+                if self.augmenter:
+                    f1_imgs = [self.augmenter.image(img) for img in f1_imgs]
+                    f1_texts = [self.augmenter.question(q) if random.random() < 0.5 else q for q in f1_texts]
+
+                # fr queries: <img, sentence> → that sentence only
+                fr_imgs, fr_texts, fr_sent_ids = [], [], []
+                sid = 0
+                for b in batch:
+                    img = b["image"]
+                    for s in b["sentences"]:
+                        aug_img = self.augmenter.image(img) if self.augmenter else img
+                        aug_s = self.augmenter.rationale(s) if self.augmenter and random.random() < 0.5 else s
+                        fr_imgs.append(aug_img)
+                        fr_texts.append(aug_s)
+                        fr_sent_ids.append(sid)
+                        sid += 1
+
+                # Encode queries
+                f1_emb = self._encode_vlm(f1_imgs, f1_texts)
+                self._ensure_heads(f1_emb.shape[-1])
+                q_embs = [F.normalize(self.image_proj(f1_emb), dim=-1)]
+                if fr_imgs:
+                    fr_emb = self._encode_vlm(fr_imgs, fr_texts)
+                    q_embs.append(F.normalize(self.image_proj(fr_emb), dim=-1))
+                q_emb = torch.cat(q_embs, dim=0)  # [B + num_fr, D]
+
+                # Encode targets
                 t_emb = F.normalize(self.text_proj(self._encode_texts(all_texts)), dim=-1)
-                owners_t = torch.tensor(owners, device=self.device)
+                edit_ids_t = torch.tensor(edit_ids, device=self.device)
+                sent_ids_t = torch.tensor(sent_ids, device=self.device)
 
                 temp = self.fixed_temp if self.fixed_temp else self.log_temp.sigmoid().clamp(min=0.07)
-                logits = (q_emb @ t_emb.t()) / temp  # [3*B, T]
+                logits = (q_emb @ t_emb.t()) / temp
 
-                # Multi-positive InfoNCE for all 3*B queries
+                # Loss: f1 uses edit-level positives, fr uses sentence-level positives
                 loss = torch.tensor(0.0, device=self.device)
                 valid = 0
-                for i in range(3 * B):
-                    pos_mask = (owners_t == q_owners[i])
+                # f1 queries (first B)
+                for i in range(B):
+                    pos_mask = (edit_ids_t == i)
                     if not pos_mask.any():
                         continue
                     loss_i = -torch.logsumexp(logits[i, pos_mask], dim=0) + torch.logsumexp(logits[i], dim=0)
+                    loss = loss + loss_i
+                    valid += 1
+                # fr queries (after B)
+                for j, owner_sid in enumerate(fr_sent_ids):
+                    qi = B + j
+                    pos_mask = (sent_ids_t == owner_sid)
+                    if not pos_mask.any():
+                        continue
+                    loss_i = -torch.logsumexp(logits[qi, pos_mask], dim=0) + torch.logsumexp(logits[qi], dim=0)
                     loss = loss + loss_i
                     valid += 1
 

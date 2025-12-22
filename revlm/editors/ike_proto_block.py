@@ -284,38 +284,3 @@ class IKE_PROTO:
             "memory_mb": round(mem_mb, 2),
         }
 
-
-class Augmenter:
-    """Online augmentation for images and questions."""
-
-    def __init__(self, wrapper=None):
-        self.wrapper = wrapper
-        self.img_aug = T.Compose([
-            T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomRotation(15),
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-        ])
-        self._blank = PILImage.new("RGB", (364, 364), color="black")
-
-    def image(self, img):
-        """Apply random image augmentations."""
-        if isinstance(img, str):
-            img = PILImage.open(img).convert("RGB")
-        elif hasattr(img, "convert"):
-            img = img.convert("RGB")
-        return self.img_aug(img)
-
-    def question(self, q):
-        """Rephrase question using VLM."""
-        if not self.wrapper or not q:
-            return q
-        prompt = f"Rephrase this question differently while keeping the same meaning:\n\n{q}\n\nRephrased:"
-        try:
-            out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=0.7)[0]
-            out = str(out).strip()
-            return out if out else q
-        except Exception:
-            return q
-
-
