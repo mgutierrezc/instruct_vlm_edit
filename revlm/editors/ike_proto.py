@@ -63,8 +63,9 @@ class IKE_PROTO:
         self.k = int(getattr(cfg, "k", -3))  # negative = auto
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
-        self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
-        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 1)]))
+        self.max_subset_size = int(getattr(cfg, "max_subset_size", 3))  # max sentences per k3 subset
+        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 0)]))
+        self.distance = getattr(cfg, "distance", "l2")  # "cosine" or "l2"
 
         # Augmenter
         self.augmenter = Augmenter(self.wrapper)
@@ -152,7 +153,7 @@ class IKE_PROTO:
             return
 
         def add_key(img, text):
-            k = F.normalize(self._encode_vlm([img], [text]), dim=-1).cpu()
+            k = self._encode_vlm([img], [text]).cpu()  # store raw
             self._proto_keys.append(k)
             self._proto_sentences.append(sentences)
 
@@ -172,14 +173,15 @@ class IKE_PROTO:
                 add_key(image, text)
 
         # Augmented keys: augment_keys = {"k1": n1, "k2": n2, "k3": n3}
-        for _ in range(self.augment_keys.get("k1", 0)):
-            add_key(self.augmenter.image(image), self.augmenter.question(question))
-        for _ in range(self.augment_keys.get("k2", 0)):
-            add_key(self.augmenter.image(image), "")
-        for _ in range(self.augment_keys.get("k3", 0)):
-            aug_img = self.augmenter.image(image)
-            for text in k3_texts:
-                add_key(aug_img, text)
+        if self.augmenter:
+            for _ in range(self.augment_keys.get("k1", 0)):
+                add_key(self.augmenter.image(image), self.augmenter.question(question))
+            for _ in range(self.augment_keys.get("k2", 0)):
+                add_key(self.augmenter.image(image), "")
+            for _ in range(self.augment_keys.get("k3", 0)):
+                aug_img = self.augmenter.image(image)
+                for text in k3_texts:
+                    add_key(aug_img, text)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None
@@ -199,18 +201,21 @@ class IKE_PROTO:
         if k is None:
             k = self.k
 
-        # Encode query
-        query = F.normalize(self._encode_vlm([image], [question]), dim=-1).cpu()  # [1, D]
-
-        # Batched similarity computation (much faster than loop)
+        # Encode query and get keys (both raw)
+        query = self._encode_vlm([image], [question]).cpu()  # [1, D]
         keys = self._get_stacked_keys()  # [N, D]
-        sims = (query @ keys.t()).squeeze(0)  # [N]
-        sims_np = sims.numpy()
 
-        # Apply threshold filter
-        if self.sim_threshold > 0:
-            valid_mask = sims_np > self.sim_threshold
-            if not valid_mask.any():
+        # Compute similarity/distance (normalize on-the-fly for cosine)
+        if self.distance == "cosine":
+            q = F.normalize(query, dim=-1)
+            k = F.normalize(keys, dim=-1)
+            sims_np = (q @ k.t()).squeeze(0).numpy()  # higher = better
+        else:  # l2
+            sims_np = -torch.norm(keys - query, dim=-1).numpy()  # negative L2, higher = better
+
+        # Apply threshold filter (only for cosine)
+        if self.distance == "cosine" and self.sim_threshold > 0:
+            if not (sims_np > self.sim_threshold).any():
                 return []
 
         # Auto k if k < 0
@@ -220,14 +225,14 @@ class IKE_PROTO:
                 return []
             k = min(k, abs(self.k))  # cap at |self.k|
 
-        # Get top-k prototypes
+        # Get top-k prototypes (highest sims)
         top_indices = np.argsort(sims_np)[::-1][:k]
 
         # Collect unique sentences from top prototypes
         seen = set()
         results = []
         for idx in top_indices:
-            if sims_np[idx] < self.sim_threshold:
+            if self.distance == "cosine" and sims_np[idx] < self.sim_threshold:
                 continue
             for sent in self._proto_sentences[idx]:
                 if sent not in seen:
