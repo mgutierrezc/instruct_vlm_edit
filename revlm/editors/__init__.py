@@ -2,6 +2,7 @@ from .ft import Finetune
 from .ft_ewc import Finetune_ewc
 from .ft_retrain import Finetune_retrain
 from .mend import MEND
+from .mend_pretrain import MEND_Pretrain
 from .grace import GRACE
 from .rome_base import ROME
 from .defer import Defer
@@ -43,6 +44,10 @@ def get_editor(config, model):
     elif editor_name == "mend":
         tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
         editor = MEND(config, model, tokenizer, device)
+    elif editor_name == "mend_pretrain":
+        tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
+        checkpoint = getattr(config.editor, 'checkpoint_path', None)
+        editor = MEND_Pretrain(config, model, tokenizer, device, checkpoint)
     elif editor_name == "grace":
         editor = GRACE(config, model)
     elif editor_name == "rome":

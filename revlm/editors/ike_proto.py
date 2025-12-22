@@ -61,13 +61,13 @@ class IKE_PROTO:
 
         # Hyperparams
         self.k = int(getattr(cfg, "k", -3))  # negative = auto
+        self.prefix = getattr(cfg, "cot_prefix", "")
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
-        self.num_augments = int(getattr(cfg, "num_augments", 0))  # 0 = no augmentation
-        self.prefix = getattr(cfg, "cot_prefix", " ")
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
+        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 1)]))
 
-        # Augmenter (only if num_augments > 0)
-        self.augmenter = Augmenter(self.wrapper) if self.num_augments > 0 else None
+        # Augmenter
+        self.augmenter = Augmenter(self.wrapper)
 
         # Hook setup for VLM hidden states
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])
@@ -156,23 +156,30 @@ class IKE_PROTO:
             self._proto_keys.append(k)
             self._proto_sentences.append(sentences)
 
-        # Collect all text variants: k1 (question), k2 (""), k3 (subsets)
-        texts = [question, ""]
+        # k1: <img, question>
+        add_key(image, question)
+
+        # k2: <img, "">
+        add_key(image, "")
+
+        # k3: <img, rationale_subset> for subsets up to max_subset_size
+        k3_texts = []
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
             for subset in combinations(range(n), size):
-                texts.append(" ".join(sentences[i] for i in subset))
+                text = " ".join(sentences[i] for i in subset)
+                k3_texts.append(text)
+                add_key(image, text)
 
-        # Non-augmented keys
-        for text in texts:
-            add_key(image, text)
-
-        # Augmented keys (all texts, num_augments times)
-        if self.augmenter and self.num_augments > 0:
-            for _ in range(self.num_augments):
-                aug_img = self.augmenter.image(image)
-                for text in texts:
-                    add_key(aug_img, text)
+        # Augmented keys: augment_keys = {"k1": n1, "k2": n2, "k3": n3}
+        for _ in range(self.augment_keys.get("k1", 0)):
+            add_key(self.augmenter.image(image), self.augmenter.question(question))
+        for _ in range(self.augment_keys.get("k2", 0)):
+            add_key(self.augmenter.image(image), "")
+        for _ in range(self.augment_keys.get("k3", 0)):
+            aug_img = self.augmenter.image(image)
+            for text in k3_texts:
+                add_key(aug_img, text)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None

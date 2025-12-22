@@ -666,6 +666,17 @@ def editk_generality(
 		t_edit = time.time()
 		if is_ike:
 			editor.edit(config, edit_ds=edit_subset)
+		elif editor_name == "mend_pretrain":
+			# 1) Pretrain hypernetwork on edit_subset, 2) apply averaged edits via edit_batch
+			inner_model = getattr(model, "model", model)
+			inner_model.train()
+			train_data = [{'edit_input': {kk: vv.clone() if torch.is_tensor(vv) else vv for kk, vv in model.prepare_training_batch(b).items()}} for b in edit_subset.loader]
+			cfg = config.editor
+			editor.pretrain(train_data, epochs=int(cfg.pretrain_epochs), lr=float(cfg.pretrain_lr), early_stop_patience=int(cfg.early_stop_patience), save_path=None)
+			# Use edit_batch to apply all edits at once (averaged updates)
+			all_tokens = [d['edit_input'] for d in train_data]
+			editor.edit_batch(all_tokens)
+			inner_model.eval()
 		else:
 			inner_model = getattr(model, "model", model)
 			inner_model.train()

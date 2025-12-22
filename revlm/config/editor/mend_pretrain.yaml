@@ -1,0 +1,13 @@
+_name: mend_pretrain
+edit_lr: 0.1  # Initial edit_lr (was 1e-3, learned to 0.19)
+
+# Pretraining settings (used when no checkpoint_path is provided)
+pretrain_epochs: 30  # More epochs for better convergence
+pretrain_lr: 1e-3   # Faster learning
+early_stop_patience: 20  # Disable early stopping effectively
+checkpoint_path: null  # Path to load pretrained hypernetwork, or null to auto-pretrain
+
+# GradientTransform settings
+n_hidden: 1
+normalize: true
+
