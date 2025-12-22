@@ -24,8 +24,15 @@ from .edit_utils import find_errors
 def run_editk(config, k_values=(1, 5, 10), B=10):
     """Run editk_generality for multiple k values and save results."""
     
-    # Output path
-    out_path = os.path.join(config.edit_dir, config.fname.replace(".json", "_editk.json"))
+    # Output path: replace /ee/ with /editk/ to save separately from other edit results
+    editk_dir = config.edit_dir.replace("/ee/", "/editk/")
+    os.makedirs(editk_dir, exist_ok=True)
+    out_path = os.path.join(editk_dir, config.fname.replace(".json", "_editk.json"))
+    
+    # Overwrite control: delete existing file if requested
+    if getattr(config, "overwrite", False) and os.path.exists(out_path):
+        os.remove(out_path)
+        print(f"Overwrite enabled: deleted existing {out_path}", flush=True)
     
     # Load existing results if file exists
     if os.path.exists(out_path):

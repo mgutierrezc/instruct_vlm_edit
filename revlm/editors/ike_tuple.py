@@ -28,7 +28,7 @@ class ResidualProj(nn.Module):
         self.proj = nn.Linear(in_dim, out_dim)
         self.mlp = nn.Sequential(
             nn.Linear(out_dim, out_dim * 2), nn.GELU(), 
-            nn.Linear(out_dim * 2, out_dim * 2), nn.GELU(), 
+            # nn.Linear(out_dim * 2, out_dim * 2), nn.GELU(), 
             nn.Linear(out_dim * 2, out_dim)
         )
         self.norm = nn.LayerNorm(out_dim)
@@ -56,13 +56,14 @@ class IKE_TUPLE(nn.Module):
         self.num_epochs = int(getattr(cfg, "clip_epochs", 1000))
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
         self.lr = float(getattr(cfg, "clip_lr", 1e-3))
-        self.fixed_temp = getattr(cfg, "clip_temperature", 0.5)  # None = learned
+        self.fixed_temp = getattr(cfg, "clip_temperature", None)  # None = learned
         self.log_temp = nn.Parameter(torch.tensor(0.0)) if self.fixed_temp is None else None
         self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.9))
         self.early_stop_acc_last = float(getattr(cfg, "early_stop_acc_last", 0.6)) # 2/3 correct on the last edit
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.use_augment = bool(getattr(cfg, "use_augment", True))
         self.use_counterfacts = bool(getattr(cfg, "use_counterfacts", False))
+        self.num_counterfacts = int(getattr(cfg, "num_counterfacts", 3))  # per sentence
 
         # Augmenter (online, per-batch)
         self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
@@ -175,13 +176,16 @@ class IKE_TUPLE(nn.Module):
             sentences = [p.strip() for p in re.split(r"(?<=[.!?])\s+", rat.strip()) if p.strip()]
             if not sentences:
                 continue
-            # Generate 1 counterfact per sentence
+            # Generate multiple counterfacts per sentence
             counterfacts = []
             if self.use_counterfacts:
                 for s in sentences:
-                    cf = self._gen_counterfact(s)
-                    if cf:
-                        counterfacts.append(cf)
+                    seen = {s.lower()}
+                    for _ in range(self.num_counterfacts):
+                        cf = self._gen_counterfact(s)
+                        if cf and cf.lower() not in seen:
+                            counterfacts.append(cf)
+                            seen.add(cf.lower())
             samples.append({"image": img, "question": q, "sentences": sentences, "counterfacts": counterfacts})
         return samples
 
@@ -301,7 +305,7 @@ class IKE_TUPLE(nn.Module):
                         params.append(self.log_temp)
                     opt = torch.optim.Adam(params, lr=self.lr)
                     sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                        opt, mode='min', factor=0.9, patience=5, cooldown=5, min_lr=1e-5
+                        opt, mode='min', factor=0.9, patience=10, cooldown=5, min_lr=1e-6
                     )
                 opt.zero_grad()
                 loss.backward()
@@ -327,7 +331,8 @@ class IKE_TUPLE(nn.Module):
             k_str = "auto" if self.k < 0 else str(self.k)
             lr_str = f"{opt.param_groups[0]['lr']:.2e}" if opt else f"{self.lr:.2e}"
             total_ep += 1
-            print(f"[IKE_TUPLE] epoch {total_ep}/{self.num_epochs} loss: {avg_loss:.4f} lr: {lr_str} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
+            if total_ep % 10 == 0 or total_ep == 1:
+                print(f"[IKE_TUPLE] epoch {total_ep}/{self.num_epochs} loss: {avg_loss:.4f} lr: {lr_str} acc@{k_str}: {acc:.3f} acc_last: {acc_last:.3f}")
             if acc >= self.early_stop_acc and acc_last >= self.early_stop_acc_last:
                 print(f"[IKE_TUPLE] early stop at acc {acc:.3f}, acc_last {acc_last:.3f}")
                 break
