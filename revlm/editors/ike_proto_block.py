@@ -1,11 +1,9 @@
 import re
 from itertools import combinations
 import numpy as np
-from PIL import Image as PILImage
 from scipy.stats import t as t_dist
 import torch
-from torchvision import transforms as T
-from .utils import brackets_to_periods, parent_module
+from .utils import brackets_to_periods, parent_module, Augmenter
 
 class IKE_PROTO:
     """Prototype-based retriever for sequential editing without catastrophic forgetting.
