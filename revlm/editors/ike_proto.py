@@ -27,7 +27,7 @@ class IKE_PROTO:
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
         self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 0)]))
         self.bl_size = int(getattr(cfg, "bl_size", 10))  # edits per block
-        self.max_k = getattr(cfg, "max_k", 5)  # max keys to retrieve, None = no cap
+        self.max_k = getattr(cfg, "max_k", 3)  # max keys to retrieve, None = no cap (ckpt aokvqa)
 
         # Augmenter
         self.augmenter = Augmenter(self.wrapper)
@@ -126,36 +126,37 @@ class IKE_PROTO:
         if not sentences:
             return
 
-        def add_key(img, text):
+        def add_key(img, text, sents):
             k = self._encode_vlm([img], [text]).cpu()
             self._cur_keys.append(k)
-            self._cur_sentences.append(sentences)
+            self._cur_sentences.append(sents)
 
-        # k1: <img, question>
-        add_key(image, question)
+        # k1: <img, question> → all sentences
+        add_key(image, question, sentences)
 
-        # k2: <img, "">
-        add_key(image, "")
+        # k2: <img, ""> → all sentences
+        add_key(image, "", sentences)
 
-        # k3: <img, rationale_subset> for subsets up to max_subset_size
-        k3_texts = []
+        # k3: <img, rationale_subset> → only subset sentences
+        k3_subsets = []  # list of (text, subset_sentences)
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
             for subset in combinations(range(n), size):
-                text = " ".join(sentences[i] for i in subset)
-                k3_texts.append(text)
-                add_key(image, text)
+                subset_sents = [sentences[i] for i in subset]
+                text = " ".join(subset_sents)
+                k3_subsets.append((text, subset_sents))
+                add_key(image, text, subset_sents)
 
         # Augmented keys
         if self.augmenter:
             for _ in range(self.augment_keys.get("k1", 0)):
-                add_key(self.augmenter.image(image), self.augmenter.question(question))
+                add_key(self.augmenter.image(image), self.augmenter.question(question), sentences)
             for _ in range(self.augment_keys.get("k2", 0)):
-                add_key(self.augmenter.image(image), "")
+                add_key(self.augmenter.image(image), "", sentences)
             for _ in range(self.augment_keys.get("k3", 0)):
                 aug_img = self.augmenter.image(image)
-                for text in k3_texts:
-                    add_key(aug_img, text)
+                for text, subset_sents in k3_subsets:
+                    add_key(aug_img, text, subset_sents)
 
         # Check if block is full
         self._cur_edits += 1
@@ -180,7 +181,7 @@ class IKE_PROTO:
 
         # Batched distance: stack all keys, compute once
         all_keys = torch.cat([b["keys"] for b in all_blocks], dim=0)  # [Total, D]
-        all_sims = -torch.norm(all_keys - query, dim=-1).numpy()  # [Total]
+        all_sims = -torch.norm(all_keys - query, dim=-1).numpy()  # [Total], L2 distance, higher = better
 
         # Build block boundaries
         sizes = [b["keys"].shape[0] for b in all_blocks]

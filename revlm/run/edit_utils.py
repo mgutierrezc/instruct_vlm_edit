@@ -73,7 +73,7 @@ def find_errors(config):
     print("="*50, flush=True)
     print("Step 1 (predictions)", flush=True)
     t1 = time.time()
-    if os.path.exists(pred_snapshot) and not getattr(config, "overwrite", False):
+    if os.path.exists(pred_snapshot): #and not getattr(config, "overwrite", False):
         with open(pred_snapshot, "r") as f:
             ds.data = json.load(f)
         print(f"Total samples {len(ds.data)} loaded from {pred_snapshot}", flush=True)
