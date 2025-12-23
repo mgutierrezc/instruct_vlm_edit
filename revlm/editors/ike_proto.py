@@ -3,7 +3,9 @@ from itertools import combinations
 import numpy as np
 from scipy.stats import t as t_dist
 import torch
+import torch.nn.functional as F
 from .utils import brackets_to_periods, parent_module, Augmenter
+
 
 class IKE_PROTO:
     """Prototype-based retriever for sequential editing without catastrophic forgetting.
@@ -21,12 +23,13 @@ class IKE_PROTO:
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
+        self.k = int(getattr(cfg, "k", -1))  # negative = auto
         self.prefix = getattr(cfg, "cot_prefix", "")
+        self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
         self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 0)]))
-        self.bl_size = int(getattr(cfg, "bl_size", 10))  # edits per block
-        self.max_k = getattr(cfg, "max_k", 5)  # max keys to retrieve, None = no cap (ckpt aokvqa)
         self.subset_sentences = getattr(cfg, "subset_sentences", False)  # True=subset-specific, False=all sentences
+        self.distance = getattr(cfg, "distance", "l2")  # "cosine" or "l2"
 
         # Augmenter
         self.augmenter = Augmenter(self.wrapper)
@@ -44,12 +47,11 @@ class IKE_PROTO:
             lambda m, i, o: setattr(self, "_last_act", i[0].detach() if isinstance(i[0], torch.Tensor) else None)
         )
 
-        # Block-based prototype storage
-        self._blocks = []  # List of {"keys": [N, D], "sentences": [...]}
-        self._cur_keys = []  # Current block being built (list of [1, D])
-        self._cur_sentences = []  # Current block sentences
-        self._cur_edits = 0  # Edits in current block
-        self._added_uids = set()  # Track added edits to avoid duplicates
+        # Prototype storage - optimized for large edit sets
+        self._proto_keys = []      # List of [1, D] tensors (will stack for retrieval)
+        self._proto_keys_stacked = None  # [N, D] tensor for fast retrieval
+        self._proto_sentences = []  # List of sentence lists
+        self._added_uids = set()   # Track added edits to avoid duplicates
 
     def generate(self, *a, **kw):
         if hasattr(self.model, "generate"):
@@ -63,7 +65,7 @@ class IKE_PROTO:
         return self.forward(*a, **kw)
 
     @staticmethod
-    def _auto_k(sims, top_k=20, alpha=0.05):
+    def _auto_k(sims, top_k=100, alpha=0.05):
         """Use Grubbs' test on similarity gaps to find natural cutoff."""
         sims = np.asarray(sims, dtype=float)
         if sims.size < 4:
@@ -106,17 +108,6 @@ class IKE_PROTO:
             return []
         return [p.strip() for p in re.split(r"(?<=[.!?])\s+", rat.strip()) if p.strip()]
 
-    def _finalize_block(self):
-        """Finalize current block and start a new one."""
-        if self._cur_keys:
-            self._blocks.append({
-                "keys": torch.cat(self._cur_keys, dim=0),  # [N, D]
-                "sentences": self._cur_sentences.copy(),
-            })
-            self._cur_keys = []
-            self._cur_sentences = []
-            self._cur_edits = 0
-
     @torch.no_grad()
     def _add_prototype(self, image, question, rationale, sentences=None):
         """Add prototypes for a single edit with query fusion + subset expansion + augmentation."""
@@ -126,9 +117,9 @@ class IKE_PROTO:
             return
 
         def add_key(img, text, sents):
-            k = self._encode_vlm([img], [text]).cpu()
-            self._cur_keys.append(k)
-            self._cur_sentences.append(sents)
+            k = self._encode_vlm([img], [text]).cpu()  # store raw
+            self._proto_keys.append(k)
+            self._proto_sentences.append(sents)
 
         # k1: <img, question> → all sentences
         add_key(image, question, sentences)
@@ -147,7 +138,7 @@ class IKE_PROTO:
                 # subset_sentences=True: store only subset; False: store all sentences (old behavior)
                 add_key(image, text, subset_sents if self.subset_sentences else sentences)
 
-        # Augmented keys
+        # Augmented keys: augment_keys = {"k1": n1, "k2": n2, "k3": n3}
         if self.augmenter:
             for _ in range(self.augment_keys.get("k1", 0)):
                 add_key(self.augmenter.image(image), self.augmenter.question(question), sentences)
@@ -158,63 +149,58 @@ class IKE_PROTO:
                 for text, subset_sents in k3_subsets:
                     add_key(aug_img, text, subset_sents if self.subset_sentences else sentences)
 
-        # Check if block is full
-        self._cur_edits += 1
-        if self._cur_edits >= self.bl_size:
-            self._finalize_block()
+        # Invalidate stacked cache
+        self._proto_keys_stacked = None
+
+    def _get_stacked_keys(self):
+        """Lazily build stacked key tensor for efficient retrieval."""
+        if self._proto_keys_stacked is None and self._proto_keys:
+            self._proto_keys_stacked = torch.cat(self._proto_keys, dim=0)  # [N, D]
+        return self._proto_keys_stacked
 
     @torch.no_grad()
-    def _retrieve(self, image, question):
-        """Block-by-block retrieval with batched distance computation."""
-        # Include current (incomplete) block
-        all_blocks = self._blocks.copy()
-        if self._cur_keys:
-            all_blocks.append({
-                "keys": torch.cat(self._cur_keys, dim=0),
-                "sentences": self._cur_sentences.copy(),
-            })
-        if not all_blocks:
+    def _retrieve(self, image, question, k=None):
+        """Retrieve facts using nearest prototype search (batched for efficiency)."""
+        if not self._proto_keys:
             return []
 
-        # Encode query once
+        if k is None:
+            k = self.k
+
+        # Encode query and get keys (both raw)
         query = self._encode_vlm([image], [question]).cpu()  # [1, D]
+        keys = self._get_stacked_keys()  # [N, D]
 
-        # Batched distance: stack all keys, compute once
-        all_keys = torch.cat([b["keys"] for b in all_blocks], dim=0)  # [Total, D]
-        all_sims = -torch.norm(all_keys - query, dim=-1).numpy()  # [Total], L2 distance, higher = better
+        # Compute similarity/distance (normalize on-the-fly for cosine)
+        if self.distance == "cosine":
+            q = F.normalize(query, dim=-1)
+            k = F.normalize(keys, dim=-1)
+            sims_np = (q @ k.t()).squeeze(0).numpy()  # higher = better
+        else:  # l2
+            sims_np = -torch.norm(keys - query, dim=-1).numpy()  # negative L2, higher = better
 
-        # Build block boundaries
-        sizes = [b["keys"].shape[0] for b in all_blocks]
-        offsets = np.cumsum([0] + sizes)
+        # Apply threshold filter (only for cosine)
+        if self.distance == "cosine" and self.sim_threshold > 0:
+            if not (sims_np > self.sim_threshold).any():
+                return []
 
-        # Process each block using pre-computed distances
-        all_matches = []
-        for i, block in enumerate(all_blocks):
-            start, end = offsets[i], offsets[i + 1]
-            block_sims = all_sims[start:end]
+        # Auto k if k < 0
+        if k < 0:
+            k = self._auto_k(sims_np)
+            if k == 0:
+                return []
+            k = min(k, abs(self.k))  # cap at |self.k|
 
-            # Run auto_k on this block
-            block_k = self._auto_k(block_sims, top_k=len(block_sims))
-            if block_k == 0:
-                continue
+        # Get top-k prototypes (highest sims)
+        top_indices = np.argsort(sims_np)[::-1][:k]
 
-            # Get top matches from this block
-            top_indices = np.argsort(block_sims)[::-1][:block_k]
-            for idx in top_indices:
-                all_matches.append((block_sims[idx], block["sentences"][idx]))
-
-        if not all_matches:
-            return []
-
-        # Sort by similarity and take top max_k (None = keep all)
-        all_matches.sort(key=lambda x: x[0], reverse=True)
-        top_matches = all_matches if self.max_k is None else all_matches[:self.max_k]
-
-        # Collect unique sentences
+        # Collect unique sentences from top prototypes
         seen = set()
         results = []
-        for _, sentences in top_matches:
-            for sent in sentences:
+        for idx in top_indices:
+            if self.distance == "cosine" and sims_np[idx] < self.sim_threshold:
+                continue
+            for sent in self._proto_sentences[idx]:
                 if sent not in seen:
                     seen.add(sent)
                     results.append(sent)
@@ -233,7 +219,7 @@ class IKE_PROTO:
             img = ex.get("image")
             if not prompt or not q or img is None:
                 continue
-            facts = self._retrieve(img, q)
+            facts = self._retrieve(img, q, self.k)
             if facts:
                 ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt}"
             else:
@@ -261,9 +247,7 @@ class IKE_PROTO:
             self._added_uids.add(uid)
             added += 1
 
-        n_blocks = len(self._blocks) + (1 if self._cur_keys else 0)
-        n_protos = sum(b["keys"].shape[0] for b in self._blocks) + len(self._cur_keys)
-        print(f"[IKE_PROTO] Added {added} edits, blocks: {n_blocks}, protos: {n_protos}")
+        print(f"[IKE_PROTO] Added {added} new edits, total prototypes: {len(self._proto_keys)}")
 
         # Apply to dataset
         self.apply_to_dataset(edit_ds)
@@ -271,18 +255,16 @@ class IKE_PROTO:
 
     def get_stats(self):
         """Return statistics about stored prototypes."""
-        n_blocks = len(self._blocks) + (1 if self._cur_keys else 0)
-        n_protos = sum(b["keys"].shape[0] for b in self._blocks) + len(self._cur_keys)
+        n_protos = len(self._proto_keys)
         n_edits = len(self._added_uids)
-        dim = self._blocks[0]["keys"].shape[-1] if self._blocks else (
-            self._cur_keys[0].shape[-1] if self._cur_keys else 0)
+        # Estimate memory: each key is [1, D] float32
+        dim = self._proto_keys[0].shape[-1] if self._proto_keys else 0
         mem_mb = (n_protos * dim * 4) / (1024 * 1024)
         return {
-            "num_blocks": n_blocks,
             "num_prototypes": n_protos,
             "num_edits": n_edits,
             "protos_per_edit": n_protos / max(1, n_edits),
-            "bl_size": self.bl_size,
+            "max_subset_size": self.max_subset_size,
             "memory_mb": round(mem_mb, 2),
         }
 

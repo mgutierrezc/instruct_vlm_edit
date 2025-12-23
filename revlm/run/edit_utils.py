@@ -168,7 +168,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
     if editor_name == "baseline":
         if hasattr(model, "model"):
             model.model.eval()
-    elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple", "ike_proto"}:
+    elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple", "ike_causal", "ike_proto"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
@@ -312,7 +312,15 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         t2 = time.time()
         if editor_name == "baseline":
             pass  # no editing
-        elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple", "ike_proto"}:
+        elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple", "ike_causal", "ike_proto"}:
+            # ike_causal: train last-only by default, full train every N batches
+            # Set retrain_every=-1 to always train on all (no last-only)
+            if editor_name == "ike_causal" and hasattr(editor, "train_last_only"):
+                if editor.retrain_every < 0:
+                    editor.train_last_only = False  # Always train on all
+                else:
+                    is_retrain = ((batch_idx + 1) % editor.retrain_every == 0)
+                    editor.train_last_only = not is_retrain
             editor.edit(config, edit_ds=edit_ds_sofar)
         elif editor_name == "reasonedit":
             if hasattr(model, "model"):

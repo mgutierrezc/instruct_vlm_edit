@@ -27,7 +27,7 @@ class IKE_PROTO:
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
-        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 0), ("k2", 0), ("k3", 0)]))
+        self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 3), ("k2", 0), ("k3", 0)]))
         self.subset_sentences = getattr(cfg, "subset_sentences", False)  # True=subset-specific, False=all sentences
         self.distance = getattr(cfg, "distance", "l2")  # "cosine" or "l2"
 
