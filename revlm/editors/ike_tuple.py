@@ -244,6 +244,9 @@ class IKE_TUPLE(nn.Module):
                     f1_imgs = [self.augmenter.image(img) for img in f1_imgs]
                     f1_texts = [self.augmenter.question(q) if random.random() < 0.5 else q for q in f1_texts]
 
+                # f2 queries: <img, ""> → all sentences from same edit
+                f2_imgs = [self.augmenter.image(b["image"]) if self.augmenter else b["image"] for b in batch]
+
                 # fr queries: <img, sentence> → that sentence only
                 fr_imgs, fr_texts, fr_sent_ids = [], [], []
                 sid = 0
@@ -259,12 +262,16 @@ class IKE_TUPLE(nn.Module):
 
                 # Encode queries
                 f1_emb = self._encode_vlm(f1_imgs, f1_texts)
+                f2_emb = self._encode_vlm(f2_imgs, [""] * B)
                 self._ensure_heads(f1_emb.shape[-1])
-                q_embs = [F.normalize(self.image_proj(f1_emb), dim=-1)]
+                q_embs = [
+                    F.normalize(self.image_proj(f1_emb), dim=-1),
+                    F.normalize(self.image_proj(f2_emb), dim=-1),
+                ]
                 if fr_imgs:
                     fr_emb = self._encode_vlm(fr_imgs, fr_texts)
                     q_embs.append(F.normalize(self.image_proj(fr_emb), dim=-1))
-                q_emb = torch.cat(q_embs, dim=0)  # [B + num_fr, D]
+                q_emb = torch.cat(q_embs, dim=0)  # [2*B + num_fr, D]
 
                 # Encode targets
                 t_emb = F.normalize(self.text_proj(self._encode_texts(all_texts)), dim=-1)
@@ -274,20 +281,21 @@ class IKE_TUPLE(nn.Module):
                 temp = self.fixed_temp if self.fixed_temp else self.log_temp.sigmoid().clamp(min=0.07)
                 logits = (q_emb @ t_emb.t()) / temp
 
-                # Loss: f1 uses edit-level positives, fr uses sentence-level positives
+                # Loss: f1/f2 use edit-level positives, fr uses sentence-level positives
                 loss = torch.tensor(0.0, device=self.device)
                 valid = 0
-                # f1 queries (first B)
-                for i in range(B):
-                    pos_mask = (edit_ids_t == i)
+                # f1 queries (0 to B) and f2 queries (B to 2B) - both use edit-level positives
+                for i in range(2 * B):
+                    edit_idx = i % B
+                    pos_mask = (edit_ids_t == edit_idx)
                     if not pos_mask.any():
                         continue
                     loss_i = -torch.logsumexp(logits[i, pos_mask], dim=0) + torch.logsumexp(logits[i], dim=0)
                     loss = loss + loss_i
                     valid += 1
-                # fr queries (after B)
+                # fr queries (after 2*B)
                 for j, owner_sid in enumerate(fr_sent_ids):
-                    qi = B + j
+                    qi = 2 * B + j
                     pos_mask = (sent_ids_t == owner_sid)
                     if not pos_mask.any():
                         continue

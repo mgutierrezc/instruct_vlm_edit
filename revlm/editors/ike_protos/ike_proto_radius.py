@@ -2,7 +2,6 @@ import re
 from itertools import combinations
 import numpy as np
 import torch
-import torch.nn.functional as F
 from .utils import brackets_to_periods, parent_module, Augmenter
 
 
@@ -24,8 +23,15 @@ class IKE_PROTO:
         # Hyperparams
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 50))  # augments for radius estimation
-        self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))  # percentile for radius
+        
+        # Radius estimation method: "augment" (percentile of augmented images) or "balancedit" (pos/neg samples)
+        self.radius_method = getattr(cfg, "radius_method", "balancedit") # "augment"
+        # For "augment" method
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 50))
+        self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
+        # For "balancedit" method
+        self.balancedit_alpha = float(getattr(cfg, "balancedit_alpha", 0.5))
+        self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 10))
 
         # Augmenter
         self.augmenter = Augmenter(self.wrapper)
@@ -82,31 +88,51 @@ class IKE_PROTO:
             return []
         return [p.strip() for p in re.split(r"(?<=[.!?])\s+", rat.strip()) if p.strip()]
 
+    def _estimate_radius_augment(self, key, img, text):
+        """Estimate radius via percentile of augmented image distances."""
+        if self.n_radius_samples <= 0:
+            return 0.0
+        aug_keys = []
+        for _ in range(self.n_radius_samples):
+            aug_img = self.augmenter.image(img)
+            aug_key = self._encode_vlm([aug_img], [text]).cpu()
+            aug_keys.append(aug_key)
+        aug_keys = torch.cat(aug_keys, dim=0)  # [N, D]
+        dists = torch.norm(aug_keys - key, dim=-1).numpy()  # [N]
+        return float(np.percentile(dists, self.radius_percentile))
+
+    def _estimate_radius_balancedit(self, key, img, text):
+        """Estimate radius via positive (rephrased text) and negative (black image) samples."""
+        # Positive: same image, rephrased text(s)
+        pos_dists = []
+        for _ in range(self.n_positive_samples):
+            reph_text = self.augmenter.question(text) if text else ""
+            pos_key = self._encode_vlm([img], [reph_text]).cpu()
+            pos_dists.append(float(torch.norm(pos_key - key)))
+        d_pos = float(np.median(pos_dists)) if pos_dists else 0.0
+
+        # Negative: black image, same text
+        neg_key = self._encode_vlm([self.augmenter._blank], [text]).cpu()
+        d_neg = float(torch.norm(neg_key - key))
+
+        # Combined: ε = (1 - α) * d(Pos, k) + α * d(Neg, k)
+        return (1 - self.balancedit_alpha) * d_pos + self.balancedit_alpha * d_neg
+
     @torch.no_grad()
     def _add_prototype(self, image, question, rationale, sentences=None):
-        """Add prototypes for a single edit with radius estimation from augmentations."""
+        """Add prototypes for a single edit with radius estimation."""
         if sentences is None:
             sentences = self._parse_rationale(rationale)
         if not sentences:
             return
 
         def add_key_with_radius(img, text, sents):
-            """Store raw key and estimate radius from augmented samples."""
+            """Store key and estimate radius using configured method."""
             key = self._encode_vlm([img], [text]).cpu()  # [1, D]
-            
-            # Estimate radius from augmented samples
-            if self.n_radius_samples > 0:
-                aug_keys = []
-                for _ in range(self.n_radius_samples):
-                    aug_img = self.augmenter.image(img)
-                    aug_key = self._encode_vlm([aug_img], [text]).cpu()
-                    aug_keys.append(aug_key)
-                aug_keys = torch.cat(aug_keys, dim=0)  # [N, D]
-                dists = torch.norm(aug_keys - key, dim=-1).numpy()  # [N]
-                radius = float(np.percentile(dists, self.radius_percentile))
+            if self.radius_method == "balancedit":
+                radius = self._estimate_radius_balancedit(key, img, text)
             else:
-                radius = 0.0
-            
+                radius = self._estimate_radius_augment(key, img, text)
             self._proto_keys.append(key)
             self._proto_radii.append(radius)
             self._proto_sentences.append(sents)
@@ -223,6 +249,7 @@ class IKE_PROTO:
             "num_prototypes": n_protos,
             "num_edits": n_edits,
             "protos_per_edit": n_protos / max(1, n_edits),
+            "radius_method": self.radius_method,
             "avg_radius": round(avg_radius, 4),
             "memory_mb": round(mem_mb, 2),
         }
