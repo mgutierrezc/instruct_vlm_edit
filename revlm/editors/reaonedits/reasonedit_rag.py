@@ -30,11 +30,11 @@ class ReasonEdit(nn.Module):
         self.device = getattr(config, "device", torch.device("cuda"))
 
         # Hyperparams
-        self.ft_epochs = int(getattr(cfg, "ft_epochs", 100))
+        self.ft_epochs = int(getattr(cfg, "ft_epochs", 1000))
         self.ft_lr = float(getattr(cfg, "edit_lr", 1e-4))
         self.proj_lr = float(getattr(cfg, "proj_lr", 1e-3))  # Separate LR for projection
         self.ft_batch_size = int(getattr(cfg, "ft_batch_size", 4))
-        self.early_stop_patience = int(getattr(cfg, "early_stop_patience", 10))
+        self.early_stop_patience = int(getattr(cfg, "early_stop_patience", 20))
         self.temperature = float(getattr(cfg, "temperature", 0.1))  # Softmax temperature
         self.top_k_soft = int(getattr(cfg, "top_k_soft", 5))  # Top-k for sparse attention
         self.prefix = getattr(cfg, "cot_prefix", "")

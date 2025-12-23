@@ -28,6 +28,7 @@ class IKE_PROTO:
         self.sim_threshold = float(getattr(cfg, "sim_threshold", 0.0))  # min sim to retrieve
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
         self.augment_keys = dict(getattr(cfg, "augment_keys", [("k1", 0), ("k2", 0), ("k3", 0)]))
+        self.subset_sentences = getattr(cfg, "subset_sentences", False)  # True=subset-specific, False=all sentences
         self.distance = getattr(cfg, "distance", "l2")  # "cosine" or "l2"
 
         # Augmenter
@@ -126,7 +127,7 @@ class IKE_PROTO:
         # k2: <img, ""> → all sentences
         add_key(image, "", sentences)
 
-        # k3: <img, rationale_subset> → subset sentences
+        # k3: <img, rationale_subset> → subset or all sentences based on config
         k3_subsets = []  # list of (text, subset_sentences)
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
@@ -134,7 +135,8 @@ class IKE_PROTO:
                 subset_sents = [sentences[i] for i in subset]
                 text = " ".join(subset_sents)
                 k3_subsets.append((text, subset_sents))
-                add_key(image, text, subset_sents)
+                # subset_sentences=True: store only subset; False: store all sentences (old behavior)
+                add_key(image, text, subset_sents if self.subset_sentences else sentences)
 
         # Augmented keys: augment_keys = {"k1": n1, "k2": n2, "k3": n3}
         if self.augmenter:
@@ -145,7 +147,7 @@ class IKE_PROTO:
             for _ in range(self.augment_keys.get("k3", 0)):
                 aug_img = self.augmenter.image(image)
                 for text, subset_sents in k3_subsets:
-                    add_key(aug_img, text, subset_sents)
+                    add_key(aug_img, text, subset_sents if self.subset_sentences else sentences)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None

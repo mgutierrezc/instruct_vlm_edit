@@ -23,6 +23,7 @@ class IKE_PROTO:
         # Hyperparams
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.max_subset_size = int(getattr(cfg, "max_subset_size", 1))  # max sentences per k3 subset
+        self.subset_sentences = getattr(cfg, "subset_sentences", False)  # True=subset-specific, False=all sentences
         
         # Radius estimation method: "augment" (percentile of augmented images) or "balancedit" (pos/neg samples)
         self.radius_method = getattr(cfg, "radius_method", "balancedit") # "augment"
@@ -143,13 +144,14 @@ class IKE_PROTO:
         # k2: <img, ""> → all sentences
         add_key_with_radius(image, "", sentences)
 
-        # k3: <img, rationale_subset> → subset sentences
+        # k3: <img, rationale_subset> → subset or all sentences based on config
         n = len(sentences)
         for size in range(1, min(n, self.max_subset_size) + 1):
             for subset in combinations(range(n), size):
                 subset_sents = [sentences[i] for i in subset]
                 text = " ".join(subset_sents)
-                add_key_with_radius(image, text, subset_sents)
+                # subset_sentences=True: store only subset; False: store all sentences (old behavior)
+                add_key_with_radius(image, text, subset_sents if self.subset_sentences else sentences)
 
         # Invalidate stacked cache
         self._proto_keys_stacked = None
