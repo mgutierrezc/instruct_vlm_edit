@@ -420,7 +420,13 @@ def _maybe_apply_ike(
             if hasattr(editor.model, "eval"):
                 editor.model.eval()
         if hasattr(editor, "apply_to_dataset"):
+            # Honor plot_k_dist_on_eval config if set
+            cfg = getattr(train_ds, "config", None)
+            if cfg and hasattr(editor, "plot_k_dist"):
+                editor.plot_k_dist = getattr(cfg, "plot_k_dist", False)
             editor.apply_to_dataset(edit_ds)
+            if cfg and hasattr(editor, "plot_k_dist"):
+                editor.plot_k_dist = False # reset to False after evaluation
 
 
 def text_generality(

@@ -4,6 +4,7 @@ from scipy.stats import t as t_dist
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import matplotlib.pyplot as plt
 from .utils import brackets_to_periods, parent_module, Augmenter
 
 
@@ -28,17 +29,20 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_n = int(getattr(cfg, "top_n", 50))
+        self.top_n = int(getattr(cfg, "top_n", 30))
         self.cap_k = int(getattr(cfg, "cap_k", 1))  # Cap entry points: 1=top-1, >1=multiple entries
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
         self.neighbor_window = int(getattr(cfg, "neighbor_window", 0))  # 0=exact, 1=[prev,curr,next], etc.
-        self.auto_k_method = getattr(cfg, "auto_k_method", "ensemble")  # "grubbs", "otsu", or "ensemble"
+        self.auto_k_method = getattr(cfg, "auto_k_method", "grubbs")  # "grubbs", "otsu", or "ensemble"
         
         # Augmentation config (0 = disabled)
         self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit
         self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit
         self.augmenter = Augmenter(self.wrapper) if (self.n_aug_entry > 0 or self.n_aug_sent > 0) else None
+        
+        # Switch: set to True to plot score distributions in apply_to_dataset
+        self.plot_k_dist = False
 
         # Hook for VLM activations
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])
@@ -219,11 +223,13 @@ class IKE_CHAIN(nn.Module):
         return (i + 1) if G > Gcrit else 0  # Return 0 if no significant gap
 
     @staticmethod
-    def _otsu_k(sims, n_bins=50):
+    def _otsu_k(sims, top_n=50, n_bins=50):
         """Find threshold that minimizes intra-class variance (good vs bad matches)."""
         sims = np.asarray(sims, dtype=float)
         if sims.size < 2:
             return 0
+        # Only analyze top-N scores (same as Grubbs)
+        sims = np.sort(sims)[::-1][:top_n]
         hist, bin_edges = np.histogram(sims, bins=n_bins)
         bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
         total = hist.sum()
@@ -254,10 +260,10 @@ class IKE_CHAIN(nn.Module):
         if self.auto_k_method == "grubbs":
             return self._grubbs_k(scores, top_n=self.top_n)
         elif self.auto_k_method == "otsu":
-            return self._otsu_k(scores)
+            return self._otsu_k(scores, top_n=self.top_n)
         elif self.auto_k_method == "ensemble":
             k_grubbs = self._grubbs_k(scores, top_n=self.top_n)
-            k_otsu = self._otsu_k(scores)
+            k_otsu = self._otsu_k(scores, top_n=self.top_n)
             # Both must agree there are outliers; take the more conservative (smaller k)
             if k_grubbs == 0 or k_otsu == 0:
                 return 0
@@ -339,11 +345,47 @@ class IKE_CHAIN(nn.Module):
         seen = set(facts1)
         return facts1 + [f for f in facts2 if f not in seen]
 
+    @torch.no_grad()
+    def plot_score_distribution(self, image, question="", ax=None):
+        """Plot histogram of scores with Grubbs/Otsu k thresholds as vertical lines."""
+        if self.key_embs is None:
+            return
+        
+        # Compute scores
+        q_emb = self._encode_vlm([image], [question])
+        if self.distance == "cosine":
+            q_emb = F.normalize(q_emb, dim=-1)
+            scores = (q_emb @ self.key_embs.t()).squeeze(0).float().cpu().numpy()
+        else:
+            scores = -torch.norm(self.key_embs.float() - q_emb.float(), dim=-1).cpu().numpy()
+        
+        k_grubbs = self._grubbs_k(scores, top_n=self.top_n)
+        k_otsu = self._otsu_k(scores, top_n=self.top_n)
+        sorted_scores = np.sort(scores)[::-1]
+        
+        show = ax is None
+        if show:
+            _, ax = plt.subplots(figsize=(6, 4))
+        
+        ax.hist(scores, bins=50, alpha=0.7, edgecolor='black')
+        if k_grubbs > 0:
+            ax.axvline(sorted_scores[k_grubbs-1], color='red', linestyle='--', lw=2, label=f'Grubbs k={k_grubbs}')
+        if k_otsu > 0:
+            ax.axvline(sorted_scores[k_otsu-1], color='blue', linestyle=':', lw=2, label=f'Otsu k={k_otsu}')
+        ax.set_title(f'n_keys={len(self.codebook)}')
+        ax.legend(fontsize=8)
+        
+        if show:
+            plt.tight_layout()
+            plt.show()
+
     def apply_to_dataset(self, dataset):
         """Apply retrieved facts to dataset prompts (two routes)."""
         applied = 0
         log = []
-        for ex in getattr(dataset, "data", []):
+        data = getattr(dataset, "data", [])
+        
+        for ex in data:
             prompt, q, img = ex.get("prompt", ""), ex.get("question", ""), ex.get("image")
             if not prompt or img is None:
                 continue
@@ -366,6 +408,33 @@ class IKE_CHAIN(nn.Module):
         
         self.last_retrieval_log = log
         print(f"[IKE_CHAIN] applied facts to {applied} examples", flush=True)
+        
+        # Plot random 10 samples in 2x5 grids (both routes) if switch is on
+        if self.plot_k_dist and data:
+            import random
+            samples = random.sample(data, min(10, len(data)))
+            
+            # Route 1: <img, "">
+            fig1, axes1 = plt.subplots(2, 5, figsize=(20, 5))
+            fig1.suptitle('Route: <img, "">', fontsize=14)
+            for i, ax in enumerate(axes1.flatten()):
+                if i < len(samples) and samples[i].get("image"):
+                    self.plot_score_distribution(samples[i]["image"], "", ax=ax)
+                else:
+                    ax.axis('off')
+            plt.tight_layout()
+            plt.show()
+            
+            # Route 2: <img, question>
+            fig2, axes2 = plt.subplots(2, 5, figsize=(20, 5))
+            fig2.suptitle('Route: <img, question>', fontsize=14)
+            for i, ax in enumerate(axes2.flatten()):
+                if i < len(samples) and samples[i].get("image"):
+                    self.plot_score_distribution(samples[i]["image"], samples[i].get("question", ""), ax=ax)
+                else:
+                    ax.axis('off')
+            plt.tight_layout()
+            plt.show()
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook (no training, incremental indexing)."""
