@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from PIL import Image
 from .utils import brackets_to_periods, parent_module, Augmenter
 
 
@@ -37,25 +38,39 @@ class IKE_CHAIN(nn.Module):
         self.auto_k_method = getattr(cfg, "auto_k_method", "grubbs")  # "grubbs", "otsu", or "ensemble"
         
         # Augmentation config (0 = disabled)
-        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 1))  # Augmented entry points per edit
-        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 1))    # Augmented sentence keys per edit
+        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit
+        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit
         self.augmenter = Augmenter(self.wrapper) if (self.n_aug_entry > 0 or self.n_aug_sent > 0) else None
         
         # Switch: set to True to plot score distributions in apply_to_dataset
         self.plot_k_dist = False
 
-        # Hook for VLM activations
-        inner_params = getattr(getattr(config, "model", config), "inner_params", [])
+        # Hook for VLM activations (supports dual-layer: vision + language)
+        model_cfg = getattr(config, "model", config)
+        inner_params = getattr(model_cfg, "inner_params", [])
+        inner_params_vision = getattr(model_cfg, "inner_params_vision", [])
         if not inner_params:
             raise ValueError("Requires config.model.inner_params")
-        raw = inner_params[0]
-        self.inner_param_name = raw.rsplit(".", 1)[0] if raw.endswith((".weight", ".bias")) else raw
-        edit_mod = parent_module(self.model, brackets_to_periods(self.inner_param_name))
-        self.target_layer = getattr(edit_mod, self.inner_param_name.rsplit(".", 1)[-1])
-        self._last_act = None
-        self._hook = self.target_layer.register_forward_hook(
-            lambda m, i, o: setattr(self, "_last_act", i[0].detach() if isinstance(i[0], torch.Tensor) else None)
-        )
+        
+        # Dual-layer mode: inner_params (language) + inner_params_vision (vision)
+        self._dual_layer = len(inner_params_vision) > 0
+        self._vision_act = None
+        self._lang_act = None
+        
+        def _setup_hook(param_name, attr_name):
+            name = param_name.rsplit(".", 1)[0] if param_name.endswith((".weight", ".bias")) else param_name
+            mod = parent_module(self.model, brackets_to_periods(name))
+            layer = getattr(mod, name.rsplit(".", 1)[-1])
+            return layer.register_forward_hook(
+                lambda m, i, o, an=attr_name: setattr(self, an, i[0].detach() if isinstance(i[0], torch.Tensor) else None)
+            )
+        
+        # Language layer from inner_params, vision layer from inner_params_vision
+        self._lang_hook = _setup_hook(inner_params[0], "_lang_act")
+        self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act") if self._dual_layer else None
+        
+        # Blank image for language-only embedding (gray 224x224)
+        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128)) if self._dual_layer else None
 
         # Codebook: stores only downstream indices and retrieve values (no images!)
         # Each entry: {"downstream_idx": list[int], "retrieve": str}
@@ -77,37 +92,56 @@ class IKE_CHAIN(nn.Module):
     def generate(self, *a, **kw):
         return (self.model if hasattr(self.model, "generate") else self.wrapper).generate(*a, **kw)
 
-    @torch.no_grad()
-    def _encode_vlm(self, images, texts):
-        """Get VLM layer activation for <image, text> pairs."""
-        self.model.eval()
-        self._last_act = None
-        inputs = self.wrapper.encode(images, texts, tokenize=False)
-        self.model(**inputs)
-        act = self._last_act
+    def _pool_act(self, act, batch_size):
+        """Pool activation to [B, hidden] shape."""
         if act is None:
             raise RuntimeError("Hook failed")
         act = act.to(self.device, torch.float32)
-        
-        batch_size = len(images) if isinstance(images, list) else 1
-        
         if act.dim() == 3:
-            # (B, seq/patches, hidden) -> mean pool over dim 1
-            return act.mean(dim=1)  # [B, hidden]
+            return act.mean(dim=1)
         elif act.dim() == 2:
             if act.shape[0] == batch_size:
-                # Already (B, hidden)
                 return act
             elif act.shape[0] % batch_size == 0:
-                # Vision layer: (B * num_patches, hidden) -> reshape and pool
-                patches_per_img = act.shape[0] // batch_size
-                act = act.view(batch_size, patches_per_img, -1)
-                return act.mean(dim=1)  # [B, hidden]
+                patches = act.shape[0] // batch_size
+                return act.view(batch_size, patches, -1).mean(dim=1)
             else:
-                # Fallback: global mean, expand to batch
                 return act.mean(dim=0, keepdim=True).expand(batch_size, -1)
         else:
             raise RuntimeError(f"Expected 2D or 3D activation, got {act.shape}")
+
+    @torch.no_grad()
+    def _encode_vlm(self, images, texts):
+        """Get VLM embedding for <image, text> pairs.
+        
+        Dual-layer mode: concat(vision(<image,text>), language(<blank,text>))
+        Single-layer mode: language(<image,text>) only
+        """
+        self.model.eval()
+        batch_size = len(images) if isinstance(images, list) else 1
+        
+        if not self._dual_layer:
+            # Single-layer: language only
+            self._lang_act = None
+            inputs = self.wrapper.encode(images, texts, tokenize=False)
+            self.model(**inputs)
+            return self._pool_act(self._lang_act, batch_size)
+        
+        # Dual-layer mode
+        # Pass 1: <image, text> -> vision embedding
+        self._vision_act = None
+        inputs = self.wrapper.encode(images, texts, tokenize=False)
+        self.model(**inputs)
+        vision_emb = self._pool_act(self._vision_act, batch_size)
+        
+        # Pass 2: <blank_image, text> -> language embedding
+        self._lang_act = None
+        blank_imgs = [self._blank_image] * batch_size
+        inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
+        self.model(**inputs)
+        lang_emb = self._pool_act(self._lang_act, batch_size)
+        
+        return torch.cat([vision_emb, lang_emb], dim=-1)
 
     @torch.no_grad()
     def _add_edit(self, img, question, cot_sents, answer):

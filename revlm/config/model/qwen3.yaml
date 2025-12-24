@@ -1,14 +1,6 @@
 name: "Qwen/Qwen3-VL-8B-Instruct"
 class_name: VQAModel
 pt: null
-# Common layers for Qwen3-VL (auto-selected if empty):
-# - model.language_model.model.layers.0.self_attn.q_proj.weight
-# - model.language_model.model.layers.0.self_attn.v_proj.weight
-# - model.language_model.model.layers.0.mlp.gate_proj.weight
-# - lm_head.weight
-# - model.visual.deepstack_merger_list.2.linear_fc2.weight
-# inner_params: ["model.visual.deepstack_merger_list.2.linear_fc2.weight"] # vision layer
-# inner_params: ["model.language_model.layers.16.mlp.gate_proj.weight"] # langauge layer
 inner_params: ["model.language_model.layers.35.mlp.gate_proj.weight"] # langauge layer
 inner_params_vision: ["model.visual.deepstack_merger_list.2.linear_fc2.weight"] # vision layer
 processor_class: null

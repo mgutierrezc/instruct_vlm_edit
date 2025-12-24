@@ -1,14 +1,6 @@
 name: "Salesforce/instructblip-vicuna-7b"
 class_name: VQAModel
 pt: null
-# Common layers for BLIP (auto-selected if empty):
-# - qformer.encoder.layer.0.attention.output.dense.weight
-# - qformer.encoder.layer.0.crossattention.output.dense.weight
-#
-# - language_model.model.layers.0.self_attn.q_proj.weight
-# - language_model.lm_head.weight (default)
-# - language_projection.weight # Projects Q-Former output to language model embedding space
-# inner_params: ["language_projection.weight"]  # vision layer
 inner_params: ["language_model.model.layers.31.mlp.gate_proj.weight"] # langauge layer
 inner_params_vision: ["language_projection.weight"] # vision layer
 processor_class: null
