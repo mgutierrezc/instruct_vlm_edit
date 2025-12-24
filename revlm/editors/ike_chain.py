@@ -332,6 +332,13 @@ class IKE_CHAIN(nn.Module):
         
         return collected
 
+    def _retrieve(self, image, question=""):
+        """Single-call retrieval for API compatibility (two routes merged)."""
+        facts1 = self._retrieve_chain(image, "")
+        facts2 = self._retrieve_chain(image, question) if question else []
+        seen = set(facts1)
+        return facts1 + [f for f in facts2 if f not in seen]
+
     def apply_to_dataset(self, dataset):
         """Apply retrieved facts to dataset prompts (two routes)."""
         applied = 0
@@ -411,3 +418,11 @@ class IKE_CHAIN(nn.Module):
         self.codebook = data["codebook"]
         self.key_embs = data["key_embs"].to(self.device)
         print(f"[IKE_CHAIN] loaded {len(self.codebook)} keys from {path}", flush=True)
+
+    def get_stats(self):
+        """Return statistics about stored keys."""
+        return {
+            "num_keys": len(self.codebook),
+            "num_edits": len(self._added_uids),
+            "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
+        }
