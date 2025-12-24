@@ -23,6 +23,7 @@ class Augmenter:
         elif hasattr(img, "convert"):
             img = img.convert("RGB")
         return self.img_aug(img)
+        # return img
 
     def question(self, q):
         """Rephrase question using VLM."""

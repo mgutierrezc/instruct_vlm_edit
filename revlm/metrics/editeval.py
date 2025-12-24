@@ -93,6 +93,9 @@ def editeval(
 	use_hard_locality: if True, also compute hard_locality (top-k similar unrelated questions).
 	"""
 
+	if hasattr(editor, "plot_codebook"):
+		editor.plot_codebook()
+
 	t_rel = time.time()
 	rel = reliability(model_new, edit_ds)
 	print(f"[Timing] reliability: {time.time() - t_rel:.2f}s", flush=True)
@@ -420,7 +423,6 @@ def _maybe_apply_ike(
             if hasattr(editor.model, "eval"):
                 editor.model.eval()
         if hasattr(editor, "apply_to_dataset"):
-            # Honor plot_k_dist_on_eval config if set
             cfg = getattr(train_ds, "config", None)
             if cfg and hasattr(editor, "plot_k_dist"):
                 editor.plot_k_dist = getattr(cfg, "plot_k_dist", False)

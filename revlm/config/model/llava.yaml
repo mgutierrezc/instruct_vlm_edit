@@ -8,6 +8,7 @@ pt: null
 # - lm_head.weight 
 # inner_params: ["model.language_model.layers.0.self_attn.q_proj.weight"]  # vision layer
 inner_params: ["model.language_model.layers.31.mlp.gate_proj.weight"] # langauge layer
+inner_params_vision: ["model.image_processor.model.layers.0.self_attn.q_proj.weight"] # vision layer
 processor_class: null
 tokenizer_class: null
 temperature: 0.0

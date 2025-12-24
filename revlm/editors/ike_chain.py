@@ -30,15 +30,15 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_n = int(getattr(cfg, "top_n", 30))
-        self.cap_k = int(getattr(cfg, "cap_k", 1))  # Cap entry points: 1=top-1, >1=multiple entries
+        self.cap_k = int(getattr(cfg, "cap_k", 3))  # Cap entry points: 1=top-1, >1=multiple entries
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
         self.neighbor_window = int(getattr(cfg, "neighbor_window", 0))  # 0=exact, 1=[prev,curr,next], etc.
         self.auto_k_method = getattr(cfg, "auto_k_method", "grubbs")  # "grubbs", "otsu", or "ensemble"
         
         # Augmentation config (0 = disabled)
-        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit
-        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit
+        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 1))  # Augmented entry points per edit
+        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 1))    # Augmented sentence keys per edit
         self.augmenter = Augmenter(self.wrapper) if (self.n_aug_entry > 0 or self.n_aug_sent > 0) else None
         
         # Switch: set to True to plot score distributions in apply_to_dataset
@@ -66,6 +66,7 @@ class IKE_CHAIN(nn.Module):
         
         # Track added edits to avoid duplicates in sequential mode
         self._added_uids = set()
+        self._edit_count = 0  # Counter for edit index
         
         # Logging (API compat with other editors)
         self.last_retrieval_log = None
@@ -88,11 +89,25 @@ class IKE_CHAIN(nn.Module):
             raise RuntimeError("Hook failed")
         act = act.to(self.device, torch.float32)
         
-        if act.dim() != 3:
-            raise RuntimeError(f"Expected 3D activation (B, seq, hidden), got {act.shape}")
+        batch_size = len(images) if isinstance(images, list) else 1
         
-        # Mean pool over sequence
-        return act.mean(dim=1)  # [B, hidden]
+        if act.dim() == 3:
+            # (B, seq/patches, hidden) -> mean pool over dim 1
+            return act.mean(dim=1)  # [B, hidden]
+        elif act.dim() == 2:
+            if act.shape[0] == batch_size:
+                # Already (B, hidden)
+                return act
+            elif act.shape[0] % batch_size == 0:
+                # Vision layer: (B * num_patches, hidden) -> reshape and pool
+                patches_per_img = act.shape[0] // batch_size
+                act = act.view(batch_size, patches_per_img, -1)
+                return act.mean(dim=1)  # [B, hidden]
+            else:
+                # Fallback: global mean, expand to batch
+                return act.mean(dim=0, keepdim=True).expand(batch_size, -1)
+        else:
+            raise RuntimeError(f"Expected 2D or 3D activation, got {act.shape}")
 
     @torch.no_grad()
     def _add_edit(self, img, question, cot_sents, answer):
@@ -124,7 +139,9 @@ class IKE_CHAIN(nn.Module):
             
             self.codebook.append({
                 "downstream_idx": sent_indices[i+1:],
-                "retrieve": neighbors  # List of sentences (window around s_i)
+                "retrieve": neighbors,
+                "is_aug": False,
+                "edit_idx": self._edit_count
             })
             imgs.append(img)
             texts.append(s)
@@ -132,7 +149,9 @@ class IKE_CHAIN(nn.Module):
         # Entry point 1: <img, ""> -> all sentences
         self.codebook.append({
             "downstream_idx": sent_indices,
-            "retrieve": []  # Entry point retrieves nothing directly # list(cot_sents) 
+            "retrieve": [],
+            "is_aug": False,
+            "edit_idx": self._edit_count
         })
         imgs.append(img)
         texts.append("")
@@ -141,7 +160,9 @@ class IKE_CHAIN(nn.Module):
         answer_text = f"The answer to '{question}' is {answer}." if answer else ""
         self.codebook.append({
             "downstream_idx": sent_indices,
-            "retrieve": [answer_text] if answer_text else []  # List format # [answer_text] + list(cot_sents) if answer_text else list(cot_sents)
+            "retrieve": [answer_text] if answer_text else [],
+            "is_aug": False,
+            "edit_idx": self._edit_count
         })
         imgs.append(img)
         texts.append(question)
@@ -153,7 +174,9 @@ class IKE_CHAIN(nn.Module):
                 # Augmented <img, ""> entry
                 self.codebook.append({
                     "downstream_idx": sent_indices,
-                    "retrieve": []
+                    "retrieve": [],
+                    "is_aug": True,
+                    "edit_idx": self._edit_count
                 })
                 imgs.append(aug_img)
                 texts.append("")
@@ -161,7 +184,9 @@ class IKE_CHAIN(nn.Module):
                 aug_q = self.augmenter.question(question) if question else ""
                 self.codebook.append({
                     "downstream_idx": sent_indices,
-                    "retrieve": [answer_text] if answer_text else []
+                    "retrieve": [answer_text] if answer_text else [],
+                    "is_aug": True,
+                    "edit_idx": self._edit_count
                 })
                 imgs.append(aug_img)
                 texts.append(aug_q)
@@ -179,10 +204,15 @@ class IKE_CHAIN(nn.Module):
                     
                     self.codebook.append({
                         "downstream_idx": sent_indices[i+1:],
-                        "retrieve": neighbors
+                        "retrieve": neighbors,
+                        "is_aug": True,
+                        "edit_idx": self._edit_count
                     })
                     imgs.append(aug_img)
                     texts.append(s)
+        
+        # Increment edit counter
+        self._edit_count += 1
         
         # Compute embeddings for this edit ONLY (incremental)
         new_embs = self._encode_vlm(imgs, texts)
@@ -347,7 +377,10 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def plot_score_distribution(self, image, question="", ax=None):
-        """Plot histogram of scores with Grubbs/Otsu k thresholds as vertical lines."""
+        """Plot histogram of scores with Grubbs/Otsu k thresholds as vertical lines.
+        
+        Raw keys in blue, augmented keys in orange.
+        """
         if self.key_embs is None:
             return
         
@@ -363,17 +396,31 @@ class IKE_CHAIN(nn.Module):
         k_otsu = self._otsu_k(scores, top_n=self.top_n)
         sorted_scores = np.sort(scores)[::-1]
         
+        # Split by augmentation
+        is_aug = np.array([e.get("is_aug", False) for e in self.codebook])
+        raw_scores = scores[~is_aug]
+        aug_scores = scores[is_aug]
+        
         show = ax is None
         if show:
             _, ax = plt.subplots(figsize=(6, 4))
         
-        ax.hist(scores, bins=50, alpha=0.7, edgecolor='black')
+        # Side-by-side histograms using seaborn
+        import seaborn as sns
+        import pandas as pd
+        df = pd.DataFrame({
+            'score': np.concatenate([raw_scores, aug_scores]),
+            'type': ['raw'] * len(raw_scores) + ['aug'] * len(aug_scores)
+        })
+        sns.histplot(data=df, x='score', hue='type', multiple='dodge', bins=50, shrink=0.9,
+                     palette={'raw': 'lightblue', 'aug': 'orange'}, ax=ax, edgecolor='black')
+        
         if k_grubbs > 0:
             ax.axvline(sorted_scores[k_grubbs-1], color='red', linestyle='--', lw=2, label=f'Grubbs k={k_grubbs}')
         if k_otsu > 0:
-            ax.axvline(sorted_scores[k_otsu-1], color='blue', linestyle=':', lw=2, label=f'Otsu k={k_otsu}')
+            ax.axvline(sorted_scores[k_otsu-1], color='green', linestyle=':', lw=2, label=f'Otsu k={k_otsu}')
         ax.set_title(f'n_keys={len(self.codebook)}')
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=7)
         
         if show:
             plt.tight_layout()
@@ -495,3 +542,78 @@ class IKE_CHAIN(nn.Module):
             "num_edits": len(self._added_uids),
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
+
+    def plot_codebook(self, max_edits=20, figsize=(6, 4)):
+        """Plot force-directed network of keys based on pairwise L2 distance.
+        
+        Args:
+            max_edits: Maximum number of edits to include (samples random edits if more)
+        
+        Colors by edit index, shapes: circle=raw, triangle=augmented.
+        """
+        import networkx as nx
+        
+        if self.key_embs is None or len(self.codebook) == 0:
+            print("[IKE_CHAIN] No keys to plot")
+            return
+        
+        # Get unique edit indices and sample if needed
+        all_edit_indices = set(e.get("edit_idx", 0) for e in self.codebook)
+        if len(all_edit_indices) > max_edits:
+            import random
+            selected_edits = set(random.sample(list(all_edit_indices), max_edits))
+        else:
+            selected_edits = all_edit_indices
+        
+        # Get all keys belonging to selected edits
+        indices = np.array([i for i, e in enumerate(self.codebook) if e.get("edit_idx", 0) in selected_edits])
+        embs = self.key_embs[indices].float().cpu().numpy()
+        
+        # Pairwise L2 distances -> similarity weights
+        dists = np.linalg.norm(embs[:, None] - embs[None, :], axis=-1)
+        sims = 1 / (1 + dists)
+        
+        # Build graph
+        G = nx.Graph()
+        for i, idx in enumerate(indices):
+            G.add_node(i, 
+                       is_aug=self.codebook[idx].get("is_aug", False),
+                       edit_idx=self.codebook[idx].get("edit_idx", 0))
+        
+        # Add edges (only keep stronger connections for cleaner layout)
+        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], 75)
+        for i in range(len(indices)):
+            for j in range(i + 1, len(indices)):
+                if sims[i, j] > thresh:
+                    G.add_edge(i, j, weight=sims[i, j])
+        
+        # Spring layout
+        pos = nx.spring_layout(G, weight='weight', seed=42, k=2/np.sqrt(len(indices)))
+        
+        # Split nodes by aug status
+        raw_nodes = [i for i in G.nodes if not G.nodes[i]['is_aug']]
+        aug_nodes = [i for i in G.nodes if G.nodes[i]['is_aug']]
+        
+        # Colors by edit index
+        edit_indices = {i: G.nodes[i]['edit_idx'] for i in G.nodes}
+        n_edits = len(selected_edits)
+        cmap = plt.cm.get_cmap('tab20', n_edits)
+        raw_colors = [cmap(edit_indices[i] % 20) for i in raw_nodes]
+        aug_colors = [cmap(edit_indices[i] % 20) for i in aug_nodes]
+        
+        # Plot
+        fig, ax = plt.subplots(figsize=figsize)
+        nx.draw_networkx_edges(G, pos, alpha=0.15, width=0.1, ax=ax)
+        # Raw nodes: circles
+        nx.draw_networkx_nodes(G, pos, nodelist=raw_nodes, node_color=raw_colors, node_size=30, alpha=0.8, node_shape='o', ax=ax)
+        # Aug nodes: triangles
+        nx.draw_networkx_nodes(G, pos, nodelist=aug_nodes, node_color=aug_colors, node_size=30, alpha=0.8, node_shape='^', ax=ax)
+        
+        # Legend
+        ax.scatter([], [], c='gray', s=15, marker='o', label=f'raw ({len(raw_nodes)})')
+        ax.scatter([], [], c='gray', s=15, marker='^', label=f'aug ({len(aug_nodes)})')
+        ax.legend(loc='upper right', fontsize=7, markerscale=0.8)
+        ax.set_title(f'Codebook Network (n={len(indices)}, {n_edits} edits)')
+        ax.axis('off')
+        plt.tight_layout()
+        plt.show()
