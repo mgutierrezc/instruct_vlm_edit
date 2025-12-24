@@ -33,6 +33,7 @@ class IKE_CHAIN(nn.Module):
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
         self.neighbor_window = int(getattr(cfg, "neighbor_window", 0))  # 0=exact, 1=[prev,curr,next], etc.
+        self.auto_k_method = getattr(cfg, "auto_k_method", "ensemble")  # "grubbs", "otsu", or "ensemble"
         
         # Augmentation config (0 = disabled)
         self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit
@@ -217,6 +218,53 @@ class IKE_CHAIN(nn.Module):
         Gcrit = ((n - 1) / np.sqrt(n)) * np.sqrt(tcrit**2 / (n - 2 + tcrit**2))
         return (i + 1) if G > Gcrit else 0  # Return 0 if no significant gap
 
+    @staticmethod
+    def _otsu_k(sims, n_bins=50):
+        """Find threshold that minimizes intra-class variance (good vs bad matches)."""
+        sims = np.asarray(sims, dtype=float)
+        if sims.size < 2:
+            return 0
+        hist, bin_edges = np.histogram(sims, bins=n_bins)
+        bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+        total = hist.sum()
+        if total == 0:
+            return 0
+        
+        best_thresh, best_var = 0, -1
+        for i in range(1, len(hist)):
+            w0, w1 = hist[:i].sum(), hist[i:].sum()
+            if w0 == 0 or w1 == 0:
+                continue
+            m0 = (hist[:i] * bin_centers[:i]).sum() / w0
+            m1 = (hist[i:] * bin_centers[i:]).sum() / w1
+            var = w0 * w1 * (m0 - m1) ** 2
+            if var > best_var:
+                best_var, best_thresh = var, bin_centers[i]
+        
+        return int((sims > best_thresh).sum()) if best_var > 0 else 0
+
+    def _auto_k(self, scores):
+        """Dispatch to the configured auto-k method.
+        
+        Methods:
+        - "grubbs": Grubbs' test on similarity gaps (conservative, statistical)
+        - "otsu": Otsu's method for bimodal split (good for clear separation)
+        - "ensemble": Both must agree (most conservative, highest precision)
+        """
+        if self.auto_k_method == "grubbs":
+            return self._grubbs_k(scores, top_n=self.top_n)
+        elif self.auto_k_method == "otsu":
+            return self._otsu_k(scores)
+        elif self.auto_k_method == "ensemble":
+            k_grubbs = self._grubbs_k(scores, top_n=self.top_n)
+            k_otsu = self._otsu_k(scores)
+            # Both must agree there are outliers; take the more conservative (smaller k)
+            if k_grubbs == 0 or k_otsu == 0:
+                return 0
+            return min(k_grubbs, k_otsu)
+        else:
+            raise ValueError(f"Unknown auto_k_method: {self.auto_k_method}")
+
     @torch.no_grad()
     def _retrieve_chain(self, image, start_text=""):
         """Retrieve chain starting from <image, start_text>.
@@ -247,8 +295,8 @@ class IKE_CHAIN(nn.Module):
             # Convert to "similarity" (negative distance) so higher = closer
             scores = -dists
         
-        # Always run Grubbs test (on scores where higher = better match)
-        k = self._grubbs_k(scores, top_n=self.top_n)
+        # Run auto-k detection (grubbs, otsu, or ensemble)
+        k = self._auto_k(scores)
         if k == 0:
             return []  # No significant outlier, don't enter any chain
         

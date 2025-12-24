@@ -5,6 +5,8 @@ from itertools import combinations
 import torch
 import torch.nn as nn
 from .ike_proto import IKE_PROTO
+from .ike_cot import IKE_COT
+from .ike_chain import IKE_CHAIN
 from .utils import brackets_to_periods, parent_module
 
 
@@ -26,7 +28,15 @@ class ReasonEdit(nn.Module):
         cfg = getattr(config, "editor", config)
 
         # IKE_PROTO for retrieval
-        self.retriever = IKE_PROTO(config, model)
+        self.retrievername = "chain"
+        if self.retrievername == "chain":
+            self.retriever = IKE_CHAIN(config, model)
+        elif self.retrievername == "proto":
+            self.retriever = IKE_PROTO(config, model)
+        elif self.retrievername == "cot":
+            self.retriever = IKE_COT(config, model)
+        else:
+            raise ValueError(f"Invalid retriever name: {self.retrievername}")
         self.prefix = getattr(cfg, "cot_prefix", "")
 
         self.wrapper = model if hasattr(model, "model") else None
