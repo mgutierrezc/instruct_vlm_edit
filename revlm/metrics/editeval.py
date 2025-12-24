@@ -442,6 +442,20 @@ def _maybe_apply_ike(
                 editor.model.eval()
         if hasattr(editor, "apply_to_dataset"):
             editor.apply_to_dataset(edit_ds)
+    elif editor_name == "ike_chain":
+        # IKE_CHAIN: chain-of-keys retrieval (no retraining).
+        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+            if hasattr(editor.model, "eval"):
+                editor.model.eval()
+        if hasattr(editor, "apply_to_dataset"):
+            editor.apply_to_dataset(edit_ds)
+    elif editor_name == "ike_causal":
+        # IKE_CAUSAL: causal chain retrieval.
+        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
+            if hasattr(editor.model, "eval"):
+                editor.model.eval()
+        if hasattr(editor, "apply_to_dataset"):
+            editor.apply_to_dataset(edit_ds)
 
 
 def text_generality(

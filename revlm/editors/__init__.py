@@ -11,6 +11,7 @@ from .ike_cot import IKE_COT
 from .ike_clip import IKE_CLIP
 from .ike_tuple import IKE_TUPLE
 from .ike_causal import IKE_CAUSAL
+from .ike_chain import IKE_CHAIN
 from .ike_proto import IKE_PROTO
 from .reasonedit import ReasonEdit
 
@@ -67,6 +68,8 @@ def get_editor(config, model):
         editor = IKE_TUPLE(config, model)
     elif editor_name == "ike_causal":
         editor = IKE_CAUSAL(config, model)
+    elif editor_name == "ike_chain":
+        editor = IKE_CHAIN(config, model)
     elif editor_name == "ike_proto":
         editor = IKE_PROTO(config, model)
     elif editor_name == "reasonedit":

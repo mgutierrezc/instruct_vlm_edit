@@ -19,24 +19,19 @@ class AttentionPool(nn.Module):
 
 
 class Proj(nn.Module):
-    """Deep residual MLP projector with dropout."""
-    def __init__(self, in_dim, out_dim, n_blocks=2, dropout=0.1):
+    """Residual MLP projector."""
+    def __init__(self, in_dim, out_dim):
         super().__init__()
         self.proj = nn.Linear(in_dim, out_dim)
-        self.blocks = nn.ModuleList([
-            nn.Sequential(
-                nn.LayerNorm(out_dim),
-                nn.Linear(out_dim, out_dim * 2), nn.GELU(),
-                nn.Linear(out_dim * 2, out_dim)
-            ) for _ in range(n_blocks)
-        ])
+        self.mlp = nn.Sequential(
+            nn.Linear(out_dim, out_dim * 2), nn.GELU(),
+            nn.Linear(out_dim * 2, out_dim)
+        )
         self.norm = nn.LayerNorm(out_dim)
 
     def forward(self, x):
         x = self.proj(x)
-        for block in self.blocks:
-            x = x + block(x)
-        return self.norm(x)
+        return self.norm(x + self.mlp(x))
 
 
 class IKE_CAUSAL(nn.Module):
@@ -59,16 +54,17 @@ class IKE_CAUSAL(nn.Module):
         self.clip_dim = int(getattr(cfg, "clip_dim", 512))  # Larger for more capacity
         self.num_epochs = int(getattr(cfg, "clip_epochs", 1000))
         self.batch_size = int(getattr(cfg, "clip_batch_size", 10))
-        self.lr = float(getattr(cfg, "clip_lr", 5e-4))  # Lower to prevent fast LR decay
-        self.temperature = float(getattr(cfg, "clip_temperature", 0.1))  # Sharper distribution
-        self.max_retrieve_steps = int(getattr(cfg, "max_retrieve_steps", 3)) # BFS depth
+        self.lr = float(getattr(cfg, "clip_lr", 1e-3))  # Lower to prevent fast LR decay
+        self.temperature = float(getattr(cfg, "clip_temperature", 1.0))  # Sharper distribution
+        self.max_retrieve_steps = int(getattr(cfg, "max_retrieve_steps", 5)) # BFS depth
         self.kk = int(getattr(cfg, "kk", 3))  # Max outliers per step in BFS retrieval
-        self.top_n = int(getattr(cfg, "top_n", 50))  # Consider top N for auto_k
+        self.top_n = int(getattr(cfg, "top_n", 50))  # Choose from top n keys for auto_k
         self.early_stop_acc = float(getattr(cfg, "early_stop_acc", 0.8))
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.train_last_only = bool(getattr(cfg, "train_last_only", False))  # Fast but may forget
         self.retrain_every = int(getattr(cfg, "retrain_every", -1))  # Full retrain every N batches (-1 = always all)
         self.early_stop_patience = int(getattr(cfg, "early_stop_patience", 100))  # Early stop if no loss decay for N epochs
+        self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
 
         self.use_augment = bool(getattr(cfg, "use_augment", True))
         self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
@@ -193,13 +189,22 @@ class IKE_CAUSAL(nn.Module):
                     for si in range(n_sent):
                         img = self.augmenter.image(chain["image"]) if self.augmenter else chain["image"]
                         if si == 0:
-                            q_text = ""
+                            # Route 1: "" → s1
+                            q_imgs.append(img)
+                            q_texts.append("")
+                            targets.append(key_offset)
+                            # Route 2: question → s1 (extra entry)
+                            q = chain["question"]
+                            q_text = self.augmenter.question(q) if self.augmenter and random.random() < 0.5 else q
+                            q_imgs.append(self.augmenter.image(chain["image"]) if self.augmenter else chain["image"])
+                            q_texts.append(q_text)
+                            targets.append(key_offset)
                         else:
                             prev = chain["sentences"][si - 1]
                             q_text = self.augmenter.rationale(prev) if self.augmenter and random.random() < 0.5 else prev
-                        q_imgs.append(img)
-                        q_texts.append(q_text)
-                        targets.append(key_offset + si)
+                            q_imgs.append(img)
+                            q_texts.append(q_text)
+                            targets.append(key_offset + si)
                     key_offset += n_sent
 
                 # Encode and project
@@ -256,7 +261,9 @@ class IKE_CAUSAL(nn.Module):
         for i in range(0, len(all_imgs), batch_sz):
             emb = self._encode_vlm(all_imgs[i:i+batch_sz], all_texts[i:i+batch_sz])
             all_emb.append(self.key_proj(emb))
-        self.key_emb = F.normalize(torch.cat(all_emb, dim=0), dim=-1)
+        key_emb = torch.cat(all_emb, dim=0)
+        # Only normalize for cosine similarity
+        self.key_emb = F.normalize(key_emb, dim=-1) if self.distance == "cosine" else key_emb
         self.key_values = all_texts
 
     @torch.no_grad()
@@ -270,9 +277,15 @@ class IKE_CAUSAL(nn.Module):
             n_sent = len(chain["sentences"])
             for si in range(n_sent):
                 q_text = "" if si == 0 else chain["sentences"][si - 1]
-                q_emb = F.normalize(self.query_proj(self._encode_vlm([chain["image"]], [q_text])), dim=-1)
-                sims = (q_emb @ self.key_emb.t()).squeeze(0)
-                if sims.argmax().item() == key_offset + si:
+                q_emb = self.query_proj(self._encode_vlm([chain["image"]], [q_text]))
+                if self.distance == "cosine":
+                    q_emb = F.normalize(q_emb, dim=-1)
+                    scores = (q_emb @ self.key_emb.t()).squeeze(0)
+                else:
+                    # L2: lower distance = better, so use negative for argmax
+                    dists = torch.norm(self.key_emb - q_emb, dim=-1)
+                    scores = -dists
+                if scores.argmax().item() == key_offset + si:
                     hits += 1
                 total += 1
             key_offset += n_sent
@@ -308,6 +321,16 @@ class IKE_CAUSAL(nn.Module):
         Gcrit = ((n - 1) / np.sqrt(n)) * np.sqrt(tcrit**2 / (n - 2 + tcrit**2))
         return (i + 1) if G > Gcrit else 0
 
+    def _compute_scores(self, q_emb):
+        """Compute similarity scores (higher = better match)."""
+        if self.distance == "cosine":
+            q_emb = F.normalize(q_emb, dim=-1)
+            return (q_emb @ self.key_emb.t()).squeeze(0).cpu().numpy()
+        else:
+            # L2: lower distance = better, convert to scores (negative distance)
+            dists = torch.norm(self.key_emb - q_emb, dim=-1)
+            return -dists.cpu().numpy()
+
     @torch.no_grad()
     def _retrieve_chain(self, image, start_text=""):
         """BFS-style retrieval: at each step, expand all frontier keys by their outliers.
@@ -318,6 +341,8 @@ class IKE_CAUSAL(nn.Module):
         
         Returns:
             List of retrieved sentences (unique, in BFS order)
+        
+        Supports L2 distance (default) or cosine similarity.
         """
         if self.key_emb is None or len(self.key_values) == 0:
             return []
@@ -326,16 +351,16 @@ class IKE_CAUSAL(nn.Module):
         seen_idx = set()
         
         # Step 0: Initial query
-        q_emb = F.normalize(self.query_proj(self._encode_vlm([image], [start_text])), dim=-1)
-        sims = (q_emb @ self.key_emb.t()).squeeze(0).cpu().numpy()
+        q_emb = self.query_proj(self._encode_vlm([image], [start_text]))
+        scores = self._compute_scores(q_emb)
         
-        k = self._auto_k(sims, top_n=self.top_n)
+        k = self._auto_k(scores, top_n=self.top_n)
         if k == 0:
             return []
         k = min(k, self.kk)  # Cap at kk
         
-        # Get top-k indices
-        top_indices = np.argsort(sims)[::-1][:k]
+        # Get top-k indices (highest scores)
+        top_indices = np.argsort(scores)[::-1][:k]
         frontier = []
         for idx in top_indices:
             if idx not in seen_idx:
@@ -352,15 +377,15 @@ class IKE_CAUSAL(nn.Module):
             for f_idx in frontier:
                 # Query from this frontier key
                 q_text = self.key_values[f_idx]
-                q_emb = F.normalize(self.query_proj(self._encode_vlm([image], [q_text])), dim=-1)
-                sims = (q_emb @ self.key_emb.t()).squeeze(0).cpu().numpy()
+                q_emb = self.query_proj(self._encode_vlm([image], [q_text]))
+                scores = self._compute_scores(q_emb)
                 
-                k = self._auto_k(sims, top_n=self.top_n)
+                k = self._auto_k(scores, top_n=self.top_n)
                 if k == 0:
                     continue
                 k = min(k, self.kk)
                 
-                top_indices = np.argsort(sims)[::-1][:k]
+                top_indices = np.argsort(scores)[::-1][:k]
                 for idx in top_indices:
                     if idx not in seen_idx:
                         seen_idx.add(idx)
@@ -378,9 +403,9 @@ class IKE_CAUSAL(nn.Module):
             prompt, q, img = ex.get("prompt", ""), ex.get("question", ""), ex.get("image")
             if not prompt or img is None:
                 continue
-            # Route 1: key<image, ""> chain
+            # Route 1: <image, ""> chain
             facts1 = self._retrieve_chain(img, "")
-            # Route 2: key<image, question> chain
+            # Route 2: <image, question> chain
             facts2 = self._retrieve_chain(img, q) if q else []
             # Merge unique, preserving order from route 1 first
             seen = set(facts1)
