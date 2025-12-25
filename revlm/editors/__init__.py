@@ -12,6 +12,7 @@ from .ike_cot import IKE_COT
 from .ike_chain import IKE_CHAIN
 from .ike_proto import IKE_PROTO
 from .reasonedit import ReasonEdit
+from .auto_layer import AutoLayer  # Layer selection tool
 
 
 def get_editor(config, model):
