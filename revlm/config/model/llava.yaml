@@ -1,12 +1,10 @@
 name: "llava-hf/llava-1.5-7b-hf"
 class_name: VQAModel
 pt: null
-inner_params: ["model.language_model.layers.31.mlp.gate_proj.weight"] # langauge layer
-# inner_params_vision: ["model.multi_modal_projector.linear_2.weight"] # vision layer
-# inner_params_vision: ["model.vision_tower.vision_model.encoder.layers.0.mlp.fc2.weight"] # vision layer
-# inner_params_vision: ["model.vision_tower.vision_model.encoder.layers.23.self_attn.out_proj.weight"] # vision layer
-inner_params_vision: ["model.language_model.layers.31.mlp.gate_proj.weight"] # good vision layer too
-
+# inner_params: ["model.language_model.layers.31.mlp.gate_proj.weight"] # langauge layer
+# inner_params_vision: ["model.language_model.layers.31.mlp.gate_proj.weight"] # good vision layer too
+inner_params: ["model.language_model.layers.24.mlp.down_proj.weight"] # langauge layer
+inner_params_vision: ["model.language_model.layers.24.mlp.down_proj.weight"] # good vision layer too
 processor_class: null
 tokenizer_class: null
 temperature: 0.0

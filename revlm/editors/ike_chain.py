@@ -44,7 +44,7 @@ class IKE_CHAIN(nn.Module):
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         # "balance": radius based on positive (augmented image+text) and negative (blank image) samples
         self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
-        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.3))
+        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         # "balancekey": radius based on positive (augmented image+text) and other keys in codebook
         
         # Augmentation config (0 = disabled)

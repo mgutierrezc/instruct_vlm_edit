@@ -3,9 +3,12 @@ AutoLayer: Automatic layer selection for VLM embeddings.
 
 Usage:
     auto = AutoLayer(config, model)
-    best_vis, best_lang, scores = auto.find_best(dataset, layers)
+    best, scores = auto.find_best(dataset, layers)
+    auto.save_results(best, scores)
     auto.plot_scores(scores)
-    auto.plot_embeddings(best_vis, "vision")  # uses cached embs
+    auto.plot_embeddings(best["vision_robustness"]["vision_layer"])
+
+Layer naming: vision layers contain "vision", language layers contain "language".
 """
 
 import random
@@ -26,31 +29,57 @@ class AutoLayer:
         self.model = model.model if hasattr(model, "model") else model
         self.device = getattr(config, "device", torch.device("cpu"))
         self.augmenter = Augmenter(self.wrapper)
-        self._hook = None
-        self._act = None
+        self._hooks = []
+        self._all_acts = {}  # {layer_name: activation}
         self._cache = {}
         self._samples = None
         # Settings
         self.n_samples = 20
         self.n_aug = 10
 
-    def _hook_layer(self, layer_name):
-        if self._hook:
-            self._hook.remove()
-        name = layer_name.rsplit(".", 1)[0] if layer_name.endswith((".weight", ".bias")) else layer_name
-        mod = parent_module(self.model, brackets_to_periods(name))
-        layer = getattr(mod, name.rsplit(".", 1)[-1])
-        self._hook = layer.register_forward_hook(
-            lambda m, inp, out: setattr(self, "_act", inp[0].detach() if isinstance(inp[0], torch.Tensor) else out.detach())
-        )
+    def _hook_all_layers(self, layer_names):
+        """Register hooks on ALL layers at once."""
+        self._remove_hooks()
+        self._all_acts = {}
+        
+        for layer_name in layer_names:
+            name = layer_name.rsplit(".", 1)[0] if layer_name.endswith((".weight", ".bias")) else layer_name
+            try:
+                mod = parent_module(self.model, brackets_to_periods(name))
+                layer = getattr(mod, name.rsplit(".", 1)[-1])
+                # Capture layer_name in closure
+                def make_hook(lname):
+                    def hook_fn(m, inp, out):
+                        act = inp[0].detach() if isinstance(inp[0], torch.Tensor) else out.detach()
+                        self._all_acts[lname] = act
+                    return hook_fn
+                handle = layer.register_forward_hook(make_hook(layer_name))
+                self._hooks.append(handle)
+            except Exception:
+                pass  # Skip layers that can't be hooked
+
+    def _remove_hooks(self):
+        for h in self._hooks:
+            h.remove()
+        self._hooks = []
+        self._all_acts = {}
+
+    def _pool_act(self, act):
+        """Pool activation to [1, hidden_dim]."""
+        act = act.to(self.device, torch.float32)
+        if act.dim() == 3:
+            return act.mean(dim=1)
+        elif act.dim() == 2 and act.shape[0] != 1:
+            return act.mean(dim=0, keepdim=True)
+        return act
 
     @torch.no_grad()
-    def _encode(self, image, text):
+    def _encode_all(self, image, text):
+        """Single forward pass, return pooled activations for ALL hooked layers."""
         self.model.eval()
-        self._act = None
+        self._all_acts = {}
         self.model(**self.wrapper.encode([image], [text], tokenize=False))
-        act = self._act.to(self.device, torch.float32)
-        return act.mean(dim=1) if act.dim() == 3 else (act.mean(dim=0, keepdim=True) if act.dim() == 2 and act.shape[0] != 1 else act)
+        return {k: self._pool_act(v) for k, v in self._all_acts.items()}
 
     # ==================== Metrics (all lower = better) ====================
 
@@ -95,102 +124,151 @@ class AutoLayer:
     # ==================== Public API ====================
 
     @torch.no_grad()
-    def score_layer(self, dataset, layer_name, n_samples=None, n_aug=None):
-        """Score a layer for BOTH vision and language (single pass, shared anchors)."""
+    def score_layers(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
+        """Score ALL layers in one pass (50× faster than per-layer).
+        
+        Hook all layers → forward passes → compute metrics for each layer.
+        """
         n_samples = n_samples or self.n_samples
         n_aug = n_aug or self.n_aug
+        
+        # Sample data once
         if self._samples is None:
             data = getattr(dataset, "data", dataset)
             self._samples = random.sample(list(data), min(n_samples, len(data)))
         
-        self._hook_layer(layer_name)
-        vis_embs, lang_embs = [], []
+        # Hook ALL layers at once
+        self._hook_all_layers(layers)
+        active_layers = [l for l in layers if any(l in h.__dict__.get('layer_name', l) or True for h in self._hooks)]
+        
+        # Collect embeddings for all layers: {layer: {"vis": [...], "lang": [...]}}
+        all_embs = {l: {"vis": [], "lang": []} for l in layers}
+        
+        n_forwards = n_samples * (1 + 2 * n_aug)
+        pbar = tqdm(total=n_forwards, desc="encoding", disable=not verbose)
         
         for s in self._samples[:n_samples]:
             img = s["image"]
             img = Image.open(img).convert("RGB") if isinstance(img, str) else img
             text = s.get("question", "")
             
-            # Anchor (shared)
-            anchor = self._encode(img, text)
-            vis_embs.append(anchor)
-            lang_embs.append(anchor)
+            # Anchor (shared for both vision & language)
+            embs = self._encode_all(img, text)
+            for layer in layers:
+                if layer in embs:
+                    all_embs[layer]["vis"].append(embs[layer])
+                    all_embs[layer]["lang"].append(embs[layer])
+            pbar.update(1)
             
             # Vision augmentations
             for _ in range(n_aug):
-                vis_embs.append(self._encode(self.augmenter.image(img), text))
+                embs = self._encode_all(self.augmenter.image(img), text)
+                for layer in layers:
+                    if layer in embs:
+                        all_embs[layer]["vis"].append(embs[layer])
+                pbar.update(1)
             
             # Language augmentations
             for _ in range(n_aug):
-                lang_embs.append(self._encode(img, self.augmenter.question(text) if text else ""))
+                embs = self._encode_all(img, self.augmenter.question(text) if text else "")
+                for layer in layers:
+                    if layer in embs:
+                        all_embs[layer]["lang"].append(embs[layer])
+                pbar.update(1)
         
-        vis_embs = torch.cat(vis_embs, dim=0)
-        lang_embs = torch.cat(lang_embs, dim=0)
+        pbar.close()
+        self._remove_hooks()
         
-        # Cache both
-        if layer_name not in self._cache:
-            self._cache[layer_name] = {}
-        self._cache[layer_name]["vision"] = (vis_embs.cpu(), n_samples, n_aug)
-        self._cache[layer_name]["language"] = (lang_embs.cpu(), n_samples, n_aug)
-        
-        return {
-            "vision": self._compute_metrics(vis_embs, n_samples, n_aug),
-            "language": self._compute_metrics(lang_embs, n_samples, n_aug),
-        }
-
-    def score_layers(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
-        """Score multiple layers (both vision and language in one pass)."""
-        n_samples = n_samples or self.n_samples
-        n_aug = n_aug or self.n_aug
+        # Compute metrics for each layer
         vis_scores, lang_scores = {}, {}
-        for layer in (tqdm(layers, desc="scoring") if verbose else layers):
-            try:
-                both = self.score_layer(dataset, layer, n_samples, n_aug)
-                vis_scores[layer] = both["vision"]
-                lang_scores[layer] = both["language"]
-                if verbose:
-                    tqdm.write(f"  {layer.split('.')[-3]}: vis={both['vision']['info_nce']:.3f}, lang={both['language']['info_nce']:.3f}")
-            except Exception as e:
-                if verbose:
-                    tqdm.write(f"  Skip {layer}: {e}")
+        for layer in (tqdm(layers, desc="metrics") if verbose else layers):
+            vis_list, lang_list = all_embs[layer]["vis"], all_embs[layer]["lang"]
+            if not vis_list or not lang_list:
+                continue
+            
+            vis_embs = torch.cat(vis_list, dim=0)
+            lang_embs = torch.cat(lang_list, dim=0)
+            
+            # Cache for plotting
+            self._cache[layer] = {
+                "vision": (vis_embs.cpu(), n_samples, n_aug),
+                "language": (lang_embs.cpu(), n_samples, n_aug),
+            }
+            
+            vis_scores[layer] = self._compute_metrics(vis_embs, n_samples, n_aug)
+            lang_scores[layer] = self._compute_metrics(lang_embs, n_samples, n_aug)
+            
+            if verbose:
+                tqdm.write(f"  {layer.split('.')[-3]}: vis={vis_scores[layer]['info_nce']:.3f}, lang={lang_scores[layer]['info_nce']:.3f}")
+        
         return {"vision": vis_scores, "language": lang_scores}
 
+    def _find_best_in(self, scores_dict, layer_subset, metric):
+        """Find best layer within a subset."""
+        subset = {k: v for k, v in scores_dict.items() if k in layer_subset}
+        return min(subset, key=lambda k: subset[k][metric]) if subset else None
+
     def find_best(self, dataset, layers, n_samples=None, n_aug=None, metric="info_nce", verbose=True):
-        """Find best layers for vision and language (single pass)."""
+        """Find best layers for vision and language robustness.
+        
+        Returns:
+            best: dict with structure {robustness_type: {layer_group: best_layer}}
+            scores: raw scores dict
+        """
         n_samples = n_samples or self.n_samples
         n_aug = n_aug or self.n_aug
         self._samples = None
         self._cache = {}
         
+        # Group layers by type
+        vis_layers = [l for l in layers if "vision" in l.lower()]
+        lang_layers = [l for l in layers if "language" in l.lower()]
+        
+        n_forwards = n_samples * (1 + 2 * n_aug)
         if verbose:
-            print(f"[AutoLayer] {len(layers)} layers × {n_samples} samples × {n_aug} augs (single pass)")
+            print(f"[AutoLayer] {len(layers)} layers ({len(vis_layers)} vision, {len(lang_layers)} language)")
+            print(f"            {n_samples} samples × {n_aug} augs → {n_forwards} forwards")
         
         scores = self.score_layers(dataset, layers, n_samples, n_aug, verbose)
-        vis, lang = scores["vision"], scores["language"]
         
-        best_vis = min(vis, key=lambda k: vis[k][metric]) if vis else None
-        best_lang = min(lang, key=lambda k: lang[k][metric]) if lang else None
+        # Find best for each combination
+        best = {
+            "vision_robustness": {
+                "overall": self._find_best_in(scores["vision"], layers, metric),
+                "vision_layer": self._find_best_in(scores["vision"], vis_layers, metric),
+                "language_layer": self._find_best_in(scores["vision"], lang_layers, metric),
+            },
+            "language_robustness": {
+                "overall": self._find_best_in(scores["language"], layers, metric),
+                "vision_layer": self._find_best_in(scores["language"], vis_layers, metric),
+                "language_layer": self._find_best_in(scores["language"], lang_layers, metric),
+            },
+        }
         
         if verbose:
-            print(f"\n{'='*50}")
-            print(f"Best vision:   {best_vis} ({metric}={vis[best_vis][metric]:.3f})")
-            print(f"Best language: {best_lang} ({metric}={lang[best_lang][metric]:.3f})")
-            print(f"{'='*50}")
-            print(f'inner_params_vision: ["{best_vis}"]')
-            print(f'inner_params: ["{best_lang}"]')
+            print(f"\n{'='*60}")
+            for rob_type, bests in best.items():
+                print(f"{rob_type}:")
+                for group, layer in bests.items():
+                    if layer:
+                        score = scores["vision" if "vision" in rob_type else "language"][layer][metric]
+                        print(f"  {group:15} → {layer.split('.')[-3]} ({metric}={score:.3f})")
+            print(f"{'='*60}")
         
-        return best_vis, best_lang, scores
+        return best, scores
 
     def _get_model_tag(self):
         """Get model tag from config (same pattern as config_utils)."""
         model_name = getattr(getattr(self.config, "model", None), "name", "unknown")
         return (model_name.split("/")[-1] or "model").replace(" ", "_")
 
-    def save_results(self, scores, out_dir=None):
-        """Save scores to JSON file.
+    def save_results(self, best, scores, run_id=None, out_dir=None):
+        """Save best layers and scores to JSON.
         
         Args:
-            scores: Output from find_best()
+            best: Output from find_best() - dict of best layers
+            scores: Output from find_best() - raw scores
+            run_id: Optional run index for multiple runs (e.g., 0, 1, 2...)
             out_dir: Output directory (default: results/auto_layer)
         """
         import json
@@ -200,19 +278,16 @@ class AutoLayer:
         model_tag = self._get_model_tag()
         
         os.makedirs(out_dir, exist_ok=True)
-        out_path = os.path.join(out_dir, f"{model_tag}.json")
-        
-        # Find best layers
-        best_vis = min(scores["vision"], key=lambda k: scores["vision"][k]["info_nce"]) if scores["vision"] else None
-        best_lang = min(scores["language"], key=lambda k: scores["language"][k]["info_nce"]) if scores["language"] else None
+        suffix = f"_run{run_id}" if run_id is not None else ""
+        out_path = os.path.join(out_dir, f"{model_tag}{suffix}.json")
         
         out_dict = {
             "model_tag": model_tag,
             "model_name": getattr(getattr(self.config, "model", None), "name", "unknown"),
             "n_samples": self.n_samples,
             "n_aug": self.n_aug,
-            "best_vision_layer": best_vis,
-            "best_language_layer": best_lang,
+            "run_id": run_id,
+            "best": best,
             "scores": scores,
         }
         
@@ -222,28 +297,105 @@ class AutoLayer:
         print(f"[AutoLayer] Saved to {out_path}")
         return out_path
 
-    def load_results(self, out_dir=None):
-        """Load scores from JSON file.
+    def load_results(self, run_id=None, out_dir=None):
+        """Load best layers and scores from JSON.
         
         Returns:
-            tuple: (best_vis, best_lang, scores) or (None, None, None) if not found
+            tuple: (best, scores) or (None, None) if not found
         """
         import json
         import os
         
         out_dir = out_dir or "results/auto_layer"
         model_tag = self._get_model_tag()
+        suffix = f"_run{run_id}" if run_id is not None else ""
         
-        in_path = os.path.join(out_dir, f"{model_tag}.json")
+        in_path = os.path.join(out_dir, f"{model_tag}{suffix}.json")
         if not os.path.exists(in_path):
             print(f"[AutoLayer] No saved results at {in_path}")
-            return None, None, None
+            return None, None
         
         with open(in_path, "r") as f:
             data = json.load(f)
         
         print(f"[AutoLayer] Loaded from {in_path}")
-        return data["best_vision_layer"], data["best_language_layer"], data["scores"]
+        return data["best"], data["scores"]
+
+    def load_results_k(self, out_dir=None):
+        """Load all runs and aggregate into mean/std per layer per metric.
+        
+        Returns:
+            agg_scores: {"vision": {layer: {"info_nce": {"mean": x, "std": y}, ...}}, "language": ...}
+        """
+        import json
+        import os
+        import glob
+        
+        out_dir = out_dir or "results/auto_layer"
+        model_tag = self._get_model_tag()
+        
+        pattern = os.path.join(out_dir, f"{model_tag}_run*.json")
+        files = sorted(glob.glob(pattern))
+        
+        if not files:
+            print(f"[AutoLayer] No run files found: {pattern}")
+            return None
+        
+        print(f"[AutoLayer] Loading {len(files)} runs...")
+        
+        # Collect all scores
+        all_scores = []
+        for f in files:
+            with open(f, "r") as fp:
+                data = json.load(fp)
+                all_scores.append(data["scores"])
+        
+        # Aggregate: compute mean/std per layer per metric
+        metrics = ["info_nce", "mean_l2", "mean_cosine", "ratio"]
+        agg = {}
+        for mode in ["vision", "language"]:
+            agg[mode] = {}
+            layers = list(all_scores[0][mode].keys())
+            for layer in layers:
+                agg[mode][layer] = {}
+                for m in metrics:
+                    vals = [s[mode][layer][m] for s in all_scores if layer in s[mode]]
+                    agg[mode][layer][m] = {"mean": np.mean(vals), "std": np.std(vals)}
+        
+        print(f"[AutoLayer] Aggregated {len(files)} runs")
+        return agg
+
+    def get_best_from_agg(self, agg_scores, metric="info_nce"):
+        """Get best layers from aggregated scores (mean of k runs)."""
+        layers = list(agg_scores["vision"].keys())
+        vis_layers = [l for l in layers if "vision" in l.lower()]
+        lang_layers = [l for l in layers if "language" in l.lower()]
+        
+        def find_best(scores_dict, subset):
+            subset = {k: v for k, v in scores_dict.items() if k in subset}
+            return min(subset, key=lambda k: subset[k][metric]["mean"]) if subset else None
+        
+        best = {
+            "vision_robustness": {
+                "overall": find_best(agg_scores["vision"], layers),
+                "vision_layer": find_best(agg_scores["vision"], vis_layers),
+                "language_layer": find_best(agg_scores["vision"], lang_layers),
+            },
+            "language_robustness": {
+                "overall": find_best(agg_scores["language"], layers),
+                "vision_layer": find_best(agg_scores["language"], vis_layers),
+                "language_layer": find_best(agg_scores["language"], lang_layers),
+            },
+        }
+        
+        print(f"Best layers (from {metric} mean):")
+        for rob, bests in best.items():
+            print(f"  {rob}:")
+            for group, layer in bests.items():
+                if layer:
+                    score = agg_scores["vision" if "vision" in rob else "language"][layer][metric]["mean"]
+                    print(f"    {group}: {layer.split('.')[-3]} ({score:.3f})")
+        return best
 
     # ==================== Plotting ====================
 
@@ -255,38 +407,66 @@ class AutoLayer:
             return np.ones_like(vals)
         return (vmax - vals) / (vmax - vmin)  # flip: lower raw → higher normalized
 
-    def plot_scores(self, scores, metric="info_nce", normalize=True, figsize=(10, 4)):
-        """Line plot of scores over layer index.
-        
-        Args:
-            normalize: If True, transform to 0-1 where higher = better (default True)
-        """
+    def plot_scores(self, scores, metric="info_nce", normalize=True, figsize=None):
+        """Line plot of scores. Supports error bars if scores from load_results_k()."""
         import matplotlib.pyplot as plt
         
-        fig, axes = plt.subplots(1, 2, figsize=figsize)
-        for ax, (mode, mode_scores) in zip(axes, scores.items()):
-            layers = list(mode_scores.keys())
-            vals = [mode_scores[l][metric] for l in layers]
-            indices = [int([p for p in l.split(".") if p.isdigit()][-1]) if any(p.isdigit() for p in l.split(".")) else i for i, l in enumerate(layers)]
-            
-            order = np.argsort(indices)
-            indices, vals = np.array(indices)[order], np.array(vals)[order]
-            
-            if normalize:
-                vals = self._normalize(vals)
-                best = np.argmax(vals)
-                ylabel = f"{metric} (0-1, ↑better)"
-            else:
-                best = np.argmin(vals)
-                ylabel = f"{metric} (↓better)"
-            
-            ax.plot(indices, vals, 'o-', ms=4, lw=1.5)
-            ax.scatter([indices[best]], [vals[best]], c='red', s=100, zorder=5, label=f'best: layer {indices[best]}')
-            ax.set_xlabel("Layer Index")
-            ax.set_ylabel(ylabel)
-            ax.set_title(f"{mode.capitalize()} Robustness")
-            ax.legend()
-            ax.grid(alpha=0.3)
+        metrics = [metric] if isinstance(metric, str) else metric
+        fig, axes = plt.subplots(len(metrics), 2, figsize=figsize or (10, 3 * len(metrics)), squeeze=False)
+        
+        for row, m in enumerate(metrics):
+            for col, (mode, mode_scores) in enumerate(scores.items()):
+                ax = axes[row, col]
+                layers = list(mode_scores.keys())
+                
+                # Detect aggregated format: {"mean": x, "std": y} vs raw value
+                sample_val = mode_scores[layers[0]][m]
+                is_agg = isinstance(sample_val, dict) and "mean" in sample_val
+                
+                if is_agg:
+                    vals = np.array([mode_scores[l][m]["mean"] for l in layers])
+                    stds = np.array([mode_scores[l][m]["std"] for l in layers])
+                else:
+                    vals = np.array([mode_scores[l][m] for l in layers])
+                    stds = None
+                
+                indices = np.array([int([p for p in l.split(".") if p.isdigit()][-1]) if any(p.isdigit() for p in l.split(".")) else i for i, l in enumerate(layers)])
+                is_vis = np.array(["vision" in l.lower() for l in layers])
+                is_lang = np.array(["language" in l.lower() for l in layers])
+                
+                order = np.argsort(indices)
+                indices, vals, is_vis, is_lang = indices[order], vals[order], is_vis[order], is_lang[order]
+                if stds is not None:
+                    stds = stds[order]
+                if normalize:
+                    vmin, vmax = vals.min(), vals.max()
+                    if vmax - vmin > 1e-8:
+                        vals = (vmax - vals) / (vmax - vmin)
+                        if stds is not None:
+                            stds = stds / (vmax - vmin)  # scale std too
+                
+                best_fn = np.argmax if normalize else np.argmin
+                best = best_fn(vals)
+                best_vis = best_fn(np.where(is_vis, vals, -np.inf if normalize else np.inf)) if is_vis.any() else None
+                best_lang = best_fn(np.where(is_lang, vals, -np.inf if normalize else np.inf)) if is_lang.any() else None
+                
+                # Plot with or without error bars
+                if stds is not None:
+                    ax.errorbar(indices, vals, yerr=stds, fmt='o-', ms=4, lw=1.5, capsize=2, alpha=0.8)
+                else:
+                    ax.plot(indices, vals, 'o-', ms=4, lw=1.5)
+                
+                ax.scatter([indices[best]], [vals[best]], c='red', s=100, zorder=5, label=f'best: L{indices[best]}')
+                if best_vis is not None and is_vis[best_vis]:
+                    ax.scatter([indices[best_vis]], [vals[best_vis]], c='green', s=80, marker='^', zorder=4, label=f'vis: L{indices[best_vis]}')
+                if best_lang is not None and is_lang[best_lang]:
+                    ax.scatter([indices[best_lang]], [vals[best_lang]], c='blue', s=80, marker='s', zorder=4, label=f'lang: L{indices[best_lang]}')
+                
+                ax.set_xlabel("Layer" if row == len(metrics) - 1 else "")
+                ax.set_ylabel(f"{m} ({'↑' if normalize else '↓'})" if col == 0 else "")
+                ax.set_title(f"{mode.capitalize()} - {m}" if row == 0 else "")
+                ax.legend(fontsize=7)
+                ax.grid(alpha=0.3)
         
         plt.tight_layout()
         plt.show()
@@ -330,47 +510,82 @@ class AutoLayer:
         plt.tight_layout()
         plt.show()
 
-    def plot_embeddings(self, layer_name, max_samples=10, figsize=(7, 6)):
-        """Network plot showing anchors + vision augs + language augs together.
+    @torch.no_grad()
+    def plot_embeddings(self, layer_name, dataset=None, n_samples=10, n_aug=5, figsize=(5, 3)):
+        """Network plot showing anchors + vision augs + language augs.
         
-        - Anchor: large circle
-        - Vision aug: triangle
-        - Language aug: small circle
+        Args:
+            layer_name: Layer to visualize
+            dataset: Dataset to sample from (required if no cache)
+            n_samples: Number of samples to plot
+            n_aug: Number of augmentations per sample
         """
         import matplotlib.pyplot as plt
         import networkx as nx
         
-        if layer_name not in self._cache:
-            print(f"No cached embeddings for {layer_name}. Run score_layer first.")
-            return
+        # Encode on the fly if needed
+        if layer_name not in self._cache or dataset is not None:
+            if dataset is None:
+                print(f"No cache for {layer_name}. Provide dataset to encode.")
+                return
+            
+            print(f"[AutoLayer] Encoding {n_samples} samples for {layer_name.split('.')[-3]}...")
+            data = getattr(dataset, "data", dataset)
+            samples = random.sample(list(data), min(n_samples, len(data)))
+            
+            self._hook_all_layers([layer_name])
+            vis_embs, lang_embs = [], []
+            
+            for s in samples:
+                img = s["image"]
+                img = Image.open(img).convert("RGB") if isinstance(img, str) else img
+                text = s.get("question", "")
+                
+                # Anchor
+                embs = self._encode_all(img, text)
+                if layer_name in embs:
+                    vis_embs.append(embs[layer_name])
+                    lang_embs.append(embs[layer_name])
+                
+                # Vision augs
+                for _ in range(n_aug):
+                    embs = self._encode_all(self.augmenter.image(img), text)
+                    if layer_name in embs:
+                        vis_embs.append(embs[layer_name])
+                
+                # Language augs
+                for _ in range(n_aug):
+                    embs = self._encode_all(img, self.augmenter.question(text) if text else "")
+                    if layer_name in embs:
+                        lang_embs.append(embs[layer_name])
+            
+            self._remove_hooks()
+            vis_embs = torch.cat(vis_embs, dim=0).cpu().numpy()
+            lang_embs = torch.cat(lang_embs, dim=0).cpu().numpy()
+        else:
+            # Use cache
+            vis_data = self._cache[layer_name].get("vision")
+            lang_data = self._cache[layer_name].get("language")
+            if not vis_data or not lang_data:
+                print(f"Need both vision and language embeddings cached.")
+                return
+            vis_embs, n_samples, n_aug = vis_data
+            lang_embs, _, _ = lang_data
+            vis_embs, lang_embs = vis_embs.numpy(), lang_embs.numpy()
         
-        vis_data = self._cache[layer_name].get("vision")
-        lang_data = self._cache[layer_name].get("language")
-        if not vis_data or not lang_data:
-            print(f"Need both vision and language embeddings cached.")
-            return
-        
-        vis_embs, n_samples, n_aug = vis_data
-        lang_embs, _, _ = lang_data
-        vis_embs, lang_embs = vis_embs.numpy(), lang_embs.numpy()
         group_size = 1 + n_aug
+        n_show = min(n_samples, len(vis_embs) // group_size)
         
-        # Limit samples
-        n_show = min(max_samples, n_samples)
-        
-        # Build combined embeddings: anchors + vis_augs + lang_augs
+        # Build combined embeddings
         all_embs, node_types, sample_ids = [], [], []
         for i in range(n_show):
-            # Anchor (from vision, same as language anchor)
             all_embs.append(vis_embs[i * group_size])
             node_types.append("anchor")
             sample_ids.append(i)
-            # Vision augs
             for j in range(n_aug):
                 all_embs.append(vis_embs[i * group_size + 1 + j])
                 node_types.append("vision")
                 sample_ids.append(i)
-            # Language augs
             for j in range(n_aug):
                 all_embs.append(lang_embs[i * group_size + 1 + j])
                 node_types.append("language")
@@ -424,8 +639,6 @@ class AutoLayer:
         plt.show()
 
     def cleanup(self):
-        if self._hook:
-            self._hook.remove()
-            self._hook = None
+        self._remove_hooks()
         self._cache = {}
         self._samples = None
