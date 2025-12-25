@@ -31,16 +31,24 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_n = int(getattr(cfg, "top_n", 30))
-        self.cap_k = int(getattr(cfg, "cap_k", 1))  # Cap entry points: 1=top-1, >1=multiple entries
+        self.cap_k = int(getattr(cfg, "cap_k", 3))  # Cap entry points: 1=top-1, >1=multiple entries
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
         self.neighbor_window = int(getattr(cfg, "neighbor_window", 0))  # 0=exact, 1=[prev,curr,next], etc.
-        self.auto_k_method = getattr(cfg, "auto_k_method", "grubbs")  # "grubbs", "otsu", or "ensemble"
+        self.auto_k_method = getattr(cfg, "auto_k_method", "radius")  # "grubbs", "otsu", "ensemble", or "radius"
+        
+        # Radius estimation config (for auto_k_method="radius")
+        self.radius_method = getattr(cfg, "radius_method", "balance")  # "balance" or "augment"
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 20))
+        self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
+        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
+        self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
         
         # Augmentation config (0 = disabled)
-        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit
-        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit
-        self.augmenter = Augmenter(self.wrapper) if (self.n_aug_entry > 0 or self.n_aug_sent > 0) else None
+        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 1))  # Augmented entry points per edit
+        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 1))    # Augmented sentence keys per edit
+        needs_aug = self.n_aug_entry > 0 or self.n_aug_sent > 0 or self.auto_k_method == "radius"
+        self.augmenter = Augmenter(self.wrapper) if needs_aug else None
         
         # Switch: set to True to plot score distributions in apply_to_dataset
         self.plot_k_dist = False
@@ -76,8 +84,9 @@ class IKE_CHAIN(nn.Module):
         # Each entry: {"downstream_idx": list[int], "retrieve": str}
         self.codebook = []
         
-        # Embeddings stored separately, built incrementally
+        # Embeddings and radii stored separately, built incrementally
         self.key_embs = None  # [N, hidden]
+        self.key_radii = None  # [N] - radius per key (for radius-based retrieval)
         
         # Track added edits to avoid duplicates in sequential mode
         self._added_uids = set()
@@ -142,6 +151,42 @@ class IKE_CHAIN(nn.Module):
         lang_emb = self._pool_act(self._lang_act, batch_size)
         
         return torch.cat([vision_emb, lang_emb], dim=-1)
+
+    @torch.no_grad()
+    def _estimate_radius_augment(self, key, img, text):
+        """Estimate radius via percentile of augmented image distances."""
+        if self.n_radius_samples <= 0:
+            return 0.0
+        aug_keys = []
+        for _ in range(self.n_radius_samples):
+            aug_img = self.augmenter.image(img)
+            aug_key = self._encode_vlm([aug_img], [text])
+            aug_keys.append(aug_key)
+        aug_keys = torch.cat(aug_keys, dim=0)  # [N, D]
+        dists = torch.norm(aug_keys - key, dim=-1).cpu().numpy()
+        return float(np.percentile(dists, self.radius_percentile))
+
+    @torch.no_grad()
+    def _estimate_radius_balance(self, key, img, text):
+        """Estimate radius via positive (rephrased text) and negative (blank image) samples."""
+        # Positive: same image, rephrased text(s)
+        pos_dists = []
+        for _ in range(self.n_positive_samples):
+            reph_text = self.augmenter.question(text) if text else ""
+            pos_key = self._encode_vlm([img], [reph_text])
+            pos_dists.append(float(torch.norm(pos_key - key)))
+        d_pos = float(np.median(pos_dists)) if pos_dists else 0.0
+        # Negative: blank image, same text
+        neg_key = self._encode_vlm([self._blank_image or self.augmenter._blank], [text])
+        d_neg = float(torch.norm(neg_key - key))
+        # Combined: ε = (1 - α) * d(Pos, k) + α * d(Neg, k)
+        return (1 - self.balance_alpha) * d_pos + self.balance_alpha * d_neg
+
+    def _estimate_radius(self, key, img, text):
+        """Estimate radius for a key using configured method."""
+        if self.radius_method == "balance":
+            return self._estimate_radius_balance(key, img, text)
+        return self._estimate_radius_augment(key, img, text)
 
     @torch.no_grad()
     def _add_edit(self, img, question, cot_sents, answer):
@@ -253,6 +298,18 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             new_embs = F.normalize(new_embs, dim=-1)
         
+        # Compute radii if using radius-based retrieval
+        if self.auto_k_method == "radius":
+            new_radii = []
+            for i, (im, tx) in enumerate(zip(imgs, texts)):
+                r = self._estimate_radius(new_embs[i:i+1], im, tx)
+                new_radii.append(r)
+            new_radii = torch.tensor(new_radii, dtype=torch.float32)
+            if self.key_radii is None:
+                self.key_radii = new_radii
+            else:
+                self.key_radii = torch.cat([self.key_radii, new_radii])
+        
         # Append to existing index
         if self.key_embs is None:
             self.key_embs = new_embs
@@ -320,8 +377,11 @@ class IKE_CHAIN(nn.Module):
         - "grubbs": Grubbs' test on similarity gaps (conservative, statistical)
         - "otsu": Otsu's method for bimodal split (good for clear separation)
         - "ensemble": Both must agree (most conservative, highest precision)
+        - "radius": Handled separately in _retrieve_chain (returns None here)
         """
-        if self.auto_k_method == "grubbs":
+        if self.auto_k_method == "radius":
+            return None  # Handled separately
+        elif self.auto_k_method == "grubbs":
             return self._grubbs_k(scores, top_n=self.top_n)
         elif self.auto_k_method == "otsu":
             return self._otsu_k(scores, top_n=self.top_n)
@@ -339,10 +399,9 @@ class IKE_CHAIN(nn.Module):
     def _retrieve_chain(self, image, start_text=""):
         """Retrieve chain starting from <image, start_text>.
         
-        1. Encode query
-        2. Grubbs test to find k significant outliers
-        3. If k=0, return [] (no match)
-        4. Else enter min(k, cap_k) chains, follow downstream picking closest to query
+        Entry selection methods:
+        - grubbs/otsu/ensemble: statistical detection of significant outliers
+        - radius: enter chains where query distance ≤ key's radius
         
         Supports L2 distance (default) or cosine similarity.
         """
@@ -352,40 +411,44 @@ class IKE_CHAIN(nn.Module):
         # Encode query
         q_emb = self._encode_vlm([image], [start_text])
         
+        # Compute distances/scores
         if self.distance == "cosine":
-            # Cosine similarity: normalize and dot product
             q_emb = F.normalize(q_emb, dim=-1)
             sims = (q_emb @ self.key_embs.t()).squeeze(0).float().cpu().numpy()
-            # Higher is better for cosine
-            scores = sims
+            scores = sims  # Higher is better
+            dists = 1 - sims  # For radius comparison
         else:
-            # L2 distance: lower is better, convert to similarity for Grubbs
-            q_emb = q_emb
             dists = torch.norm(self.key_embs.float() - q_emb.float(), dim=-1).cpu().numpy()
-            # Convert to "similarity" (negative distance) so higher = closer
-            scores = -dists
+            scores = -dists  # Higher is better (negative distance)
         
-        # Run auto-k detection (grubbs, otsu, or ensemble)
-        k = self._auto_k(scores)
-        if k == 0:
-            return []  # No significant outlier, don't enter any chain
-        
-        # Cap k at configured value
-        k = min(k, self.cap_k)
-        
-        # Get top-k entry points (highest scores = best matches)
-        entry_indices = np.argsort(scores)[::-1][:k].tolist()
+        # Select entry points based on method
+        if self.auto_k_method == "radius":
+            # Radius-based: enter chains where dist <= radius
+            if self.key_radii is None:
+                return []
+            radii = self.key_radii.cpu().numpy()
+            in_radius = dists <= radii
+            if not in_radius.any():
+                return []
+            # Get indices within radius, sorted by distance (closest first)
+            entry_indices = np.where(in_radius)[0]
+            entry_indices = entry_indices[np.argsort(dists[entry_indices])][:self.cap_k].tolist()
+        else:
+            # Auto-k detection (grubbs, otsu, ensemble)
+            k = self._auto_k(scores)
+            if k == 0:
+                return []
+            k = min(k, self.cap_k)
+            entry_indices = np.argsort(scores)[::-1][:k].tolist()
         
         # Collect from all entry points
         collected = []
         seen = set()
         
         for entry_idx in entry_indices:
-            # Follow this chain
             idx = entry_idx
             while True:
                 entry = self.codebook[idx]
-                # retrieve is now a list of sentences
                 for sent in entry["retrieve"]:
                     if sent and sent not in seen:
                         seen.add(sent)
@@ -395,7 +458,7 @@ class IKE_CHAIN(nn.Module):
                 if not downstream:
                     break
                 
-                # Pick downstream key closest to original query (highest score)
+                # Pick downstream key closest to query
                 sub_scores = scores[downstream]
                 best_sub = int(np.argmax(sub_scores))
                 idx = downstream[best_sub]
@@ -555,29 +618,38 @@ class IKE_CHAIN(nn.Module):
         return self.model
     
     def save_index(self, path):
-        """Save codebook and embeddings to disk."""
+        """Save codebook, embeddings, and radii to disk."""
         torch.save({
             "codebook": self.codebook,
-            "key_embs": self.key_embs
+            "key_embs": self.key_embs,
+            "key_radii": self.key_radii
         }, path)
         print(f"[IKE_CHAIN] saved {len(self.codebook)} keys to {path}", flush=True)
     
     def load_index(self, path):
-        """Load codebook and embeddings from disk."""
+        """Load codebook, embeddings, and radii from disk."""
         data = torch.load(path, map_location=self.device)
         self.codebook = data["codebook"]
         self.key_embs = data["key_embs"].to(self.device)
+        self.key_radii = data.get("key_radii")
+        if self.key_radii is not None:
+            self.key_radii = self.key_radii.to(self.device)
         print(f"[IKE_CHAIN] loaded {len(self.codebook)} keys from {path}", flush=True)
 
     def get_stats(self):
         """Return statistics about stored keys."""
-        return {
+        stats = {
             "num_keys": len(self.codebook),
             "num_edits": len(self._added_uids),
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
+            "auto_k_method": self.auto_k_method,
         }
+        if self.key_radii is not None:
+            stats["avg_radius"] = float(self.key_radii.mean())
+            stats["radius_method"] = self.radius_method
+        return stats
 
-    def plot_codebook(self, max_edits=20, figsize=(6, 4)):
+    def plot_codebook(self, max_edits=20, figsize=(5, 3)):
         """Plot force-directed network of keys based on pairwise L2 distance.
         
         Args:
@@ -639,9 +711,9 @@ class IKE_CHAIN(nn.Module):
         fig, ax = plt.subplots(figsize=figsize)
         nx.draw_networkx_edges(G, pos, alpha=0.15, width=0.1, ax=ax)
         # Raw nodes: circles
-        nx.draw_networkx_nodes(G, pos, nodelist=raw_nodes, node_color=raw_colors, node_size=30, alpha=0.8, node_shape='o', ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=raw_nodes, node_color=raw_colors, node_size=20, alpha=0.8, node_shape='o', ax=ax)
         # Aug nodes: triangles
-        nx.draw_networkx_nodes(G, pos, nodelist=aug_nodes, node_color=aug_colors, node_size=30, alpha=0.8, node_shape='^', ax=ax)
+        nx.draw_networkx_nodes(G, pos, nodelist=aug_nodes, node_color=aug_colors, node_size=20, alpha=0.8, node_shape='^', ax=ax)
         
         # Legend
         ax.scatter([], [], c='gray', s=15, marker='o', label=f'raw ({len(raw_nodes)})')
