@@ -1,4 +1,4 @@
-"""ReasonEdit: IKE_PROTO retrieval + k1/k2 finetuning."""
+"""ReasonEdit: IKE retrieval + k1/k2 finetuning."""
 
 from copy import deepcopy
 from itertools import combinations
@@ -12,7 +12,7 @@ from .utils import brackets_to_periods, parent_module
 
 class ReasonEdit(nn.Module):
     """
-    Retriever-finetuner editor combining IKE_PROTO retrieval with layer finetuning.
+    Retriever-finetuner editor combining retrieval with layer finetuning.
     
     For each edit (image, question, answer, rationale=[s1, s2, ...]):
     - k1: train on (image, question, answer) with answer-only unmasked
@@ -20,14 +20,14 @@ class ReasonEdit(nn.Module):
       - k2_use_subsets=True: all subsets (s1), (s2), (s1 s2), ... as separate samples
       - k2_use_subsets=False: single full COT (s1 s2 s3...) as one sample
     
-    Inference: if IKE_PROTO retrieves facts → prepend facts to prompt AND use layer_edit.
+    Inference: if retrieves facts → prepend facts to prompt AND use layer_edit.
     """
 
     def __init__(self, config, model):
         super().__init__()
         cfg = getattr(config, "editor", config)
 
-        # IKE_PROTO for retrieval
+        # for retrieval
         self.retrievername = "chain"
         if self.retrievername == "chain":
             self.retriever = IKE_CHAIN(config, model)
@@ -223,12 +223,12 @@ class ReasonEdit(nn.Module):
         self.switcher.use_edit = False  # Default off; retrieval toggles
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
-        """Add new edits: store in IKE_PROTO + build training samples + finetune."""
+        """Add new edits: store in retriever + build training samples + finetune."""
         if edit_ds is None:
             return self.model
 
-        # Stage 1: Add to IKE_PROTO retriever (stores keys for retrieval)
-        print("[ReasonEdit] Stage 1: Adding to IKE_PROTO retriever...")
+        # Stage 1: Add to retriever (stores keys for retrieval)
+        print("[ReasonEdit] Stage 1: Adding to retriever...")
         self.retriever.edit(config, tokens, batch_history, edit_ds, train_ds)
 
         # Stage 2: Build training samples

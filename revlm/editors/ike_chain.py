@@ -31,7 +31,7 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_n = int(getattr(cfg, "top_n", 30))
-        self.cap_k = int(getattr(cfg, "cap_k", 3))  # Cap entry points: 1=top-1, >1=multiple entries
+        self.cap_k = int(getattr(cfg, "cap_k", 1))  # Cap entry points: 1=top-1, >1=multiple entries
         self.prefix = getattr(cfg, "cot_prefix", "New Fact: ")
         self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
         self.neighbor_window = int(getattr(cfg, "neighbor_window", 0))  # 0=exact, 1=[prev,curr,next], etc.
