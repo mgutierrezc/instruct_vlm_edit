@@ -38,15 +38,18 @@ class IKE_CHAIN(nn.Module):
         self.auto_k_method = getattr(cfg, "auto_k_method", "radius")  # "grubbs", "otsu", "ensemble", or "radius"
         
         # Radius estimation config (for auto_k_method="radius")
-        self.radius_method = getattr(cfg, "radius_method", "balance")  # "balance" or "augment"
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 20))
+        self.radius_method = getattr(cfg, "radius_method", "balance")  # "balance", "augment", or "balancekey" (need more than 2 edits)
+        # "augment": radius based on percentile of augmented image distances
+        self.n_radiusaug_samples = int(getattr(cfg, "n_radiusaug_samples", 10))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
-        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
+        # "balance": radius based on positive (augmented image+text) and negative (blank image) samples
         self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
+        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.3))
+        # "balancekey": radius based on positive (augmented image+text) and other keys in codebook
         
         # Augmentation config (0 = disabled)
-        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 1))  # Augmented entry points per edit
-        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 1))    # Augmented sentence keys per edit
+        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit # 1 
+        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit # 1
         needs_aug = self.n_aug_entry > 0 or self.n_aug_sent > 0 or self.auto_k_method == "radius"
         self.augmenter = Augmenter(self.wrapper) if needs_aug else None
         
@@ -155,10 +158,10 @@ class IKE_CHAIN(nn.Module):
     @torch.no_grad()
     def _estimate_radius_augment(self, key, img, text):
         """Estimate radius via percentile of augmented image distances."""
-        if self.n_radius_samples <= 0:
+        if self.n_radiusaug_samples <= 0:
             return 0.0
         aug_keys = []
-        for _ in range(self.n_radius_samples):
+        for _ in range(self.n_radiusaug_samples):
             aug_img = self.augmenter.image(img)
             aug_key = self._encode_vlm([aug_img], [text])
             aug_keys.append(aug_key)
@@ -168,12 +171,13 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _estimate_radius_balance(self, key, img, text):
-        """Estimate radius via positive (rephrased text) and negative (blank image) samples."""
-        # Positive: same image, rephrased text(s)
+        """Estimate radius via positive (augmented image+text) and negative (blank image) samples."""
+        # Positive: augmented image + augmented text
         pos_dists = []
         for _ in range(self.n_positive_samples):
-            reph_text = self.augmenter.question(text) if text else ""
-            pos_key = self._encode_vlm([img], [reph_text])
+            aug_img = self.augmenter.image(img)
+            aug_text = self.augmenter.question(text) if text else ""
+            pos_key = self._encode_vlm([aug_img], [aug_text])
             pos_dists.append(float(torch.norm(pos_key - key)))
         d_pos = float(np.median(pos_dists)) if pos_dists else 0.0
         # Negative: blank image, same text
@@ -182,10 +186,39 @@ class IKE_CHAIN(nn.Module):
         # Combined: ε = (1 - α) * d(Pos, k) + α * d(Neg, k)
         return (1 - self.balance_alpha) * d_pos + self.balance_alpha * d_neg
 
+    @torch.no_grad()
+    def _estimate_radius_balancekey(self, key, img, text):
+        """Estimate radius via positive samples (short) and other keys in codebook (long).
+        
+        Short radius: median distance to augmented (image, text) pairs
+        Long radius: median distance to all other existing keys
+        Final: midpoint of short and long
+        """
+        # Short: median dist to positive samples (augmented image + augmented text)
+        pos_dists = []
+        for _ in range(self.n_positive_samples):
+            aug_img = self.augmenter.image(img)
+            aug_text = self.augmenter.question(text) if text else ""
+            pos_key = self._encode_vlm([aug_img], [aug_text])
+            pos_dists.append(float(torch.norm(pos_key - key)))
+        d_short = float(np.median(pos_dists)) if pos_dists else 0.0
+        
+        # Long: median dist to all other keys in codebook
+        if self.key_embs is not None and len(self.key_embs) > 0:
+            all_dists = torch.norm(self.key_embs.float() - key.float(), dim=-1).cpu().numpy()
+            d_long = float(np.median(all_dists))
+        else:
+            d_long = d_short * 2  # fallback for first key: double the short radius
+        
+        # Final: alpha-weighted mean (same as balance)
+        return (1 - self.balance_alpha) * d_short + self.balance_alpha * d_long
+
     def _estimate_radius(self, key, img, text):
         """Estimate radius for a key using configured method."""
         if self.radius_method == "balance":
             return self._estimate_radius_balance(key, img, text)
+        elif self.radius_method == "balancekey":
+            return self._estimate_radius_balancekey(key, img, text)
         return self._estimate_radius_augment(key, img, text)
 
     @torch.no_grad()
@@ -687,7 +720,7 @@ class IKE_CHAIN(nn.Module):
                        edit_idx=self.codebook[idx].get("edit_idx", 0))
         
         # Add edges (only keep stronger connections for cleaner layout)
-        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], 75)
+        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], 90)
         for i in range(len(indices)):
             for j in range(i + 1, len(indices)):
                 if sims[i, j] > thresh:
@@ -718,8 +751,8 @@ class IKE_CHAIN(nn.Module):
         # Legend
         ax.scatter([], [], c='gray', s=15, marker='o', label=f'raw ({len(raw_nodes)})')
         ax.scatter([], [], c='gray', s=15, marker='^', label=f'aug ({len(aug_nodes)})')
-        ax.legend(loc='upper right', fontsize=7, markerscale=0.8)
-        ax.set_title(f'Codebook Network (n={len(indices)}, {n_edits} edits)')
+        ax.legend(loc='lower left', fontsize=5, markerscale=0.7)
+        ax.set_title(f'Codebook Space ({n_edits} edits)', fontsize=10)
         ax.axis('off')
         plt.tight_layout()
         plt.show()
