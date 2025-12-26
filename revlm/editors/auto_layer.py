@@ -37,7 +37,7 @@ EXCLUDE_PATTERNS = [
     # Attention intermediates
     "rotary", "rope", "attention.attention",
     # # QFormer
-    # "qformer", 
+    "qformer", 
     "intermediate", "up_proj", "down_proj"
 ]
 
@@ -57,11 +57,11 @@ class AutoLayer:
         self._samples = None
         self.n_samples = 20
         self.n_aug = 10
-        self.use_percentile = False
-        self.percentile_threshold = 0.0
+        self.percentile_threshold = 0.0    # Filter out similarities below this percentile (0-1)
+        self.threshold_mask = True         # True: exclude from calc, False: zero them
         self.blank_image_for_lang = True   # Use <blank, text> for language robustness
         self.blank_text_for_vision = True  # Use <image, ""> for vision robustness
-        self.contrastive_both = True       # Use contrastive target for "both" robustness
+        self.contrastive_bimodal = True       # Use contrastive target for "bimodal" robustness
         self.weighted_contrastive = False  # Use weighted target [1, 0.5, 0] for contrastive
         self.verbalize_mode = "none"       # "none": <I,T>, "replace": <blank, verb(I)+T>, "augment": <I, verb(I)+T>
         self._verb_cache = {}              # Cache image descriptions
@@ -271,15 +271,15 @@ class AutoLayer:
         return target
 
     def _build_contrastive_target_text_partial(self, n_samples, n_aug, device):
-        """Text sensitivity target: cluster by same text.
+        """Text sensitivity target: ONLY cross-subcluster A↔C.
         
         For sample i's 3 sub-clusters (A, B, C):
           A: <I_i, T_i>    B: <I_i, T_j>    C: <I_k, T_i>
         
-        A and C share text T_i → cluster together
-        B has different text T_j → separate
+        A and C share text T_i → should cluster together
+        Tests: Do embeddings cluster by text regardless of image?
         
-        Target: A↔A=1, C↔C=1, A↔C=1, B↔B=1, A↔B=0, B↔C=0
+        Target: ONLY A↔C=1, everything else=0
         """
         group_size = 1 + n_aug
         n_subclusters = 3 * n_samples
@@ -289,36 +289,27 @@ class AutoLayer:
         
         for sample_idx in range(n_samples):
             a_start = (3 * sample_idx + 0) * group_size
-            b_start = (3 * sample_idx + 1) * group_size
             c_start = (3 * sample_idx + 2) * group_size
             
             a_end = a_start + group_size
-            b_end = b_start + group_size
             c_end = c_start + group_size
             
-            # Diagonal blocks
-            target[a_start:a_end, a_start:a_end] = 1.0
-            target[b_start:b_end, b_start:b_end] = 1.0
-            target[c_start:c_end, c_start:c_end] = 1.0
-            
-            # A↔C: same text T_i → cluster
+            # ONLY A↔C: same text T_i → cluster
             target[a_start:a_end, c_start:c_end] = 1.0
             target[c_start:c_end, a_start:a_end] = 1.0
-            
-            # A↔B, B↔C: different text → 0 (already zeros)
         
         return target
 
     def _build_contrastive_target_image_partial(self, n_samples, n_aug, device):
-        """Image sensitivity target: cluster by same image.
+        """Image sensitivity target: ONLY cross-subcluster A↔B.
         
         For sample i's 3 sub-clusters (A, B, C):
           A: <I_i, T_i>    B: <I_i, T_j>    C: <I_k, T_i>
         
-        A and B share image I_i → cluster together
-        C has different image I_k → separate
+        A and B share image I_i → should cluster together
+        Tests: Do embeddings cluster by image regardless of text?
         
-        Target: A↔A=1, B↔B=1, A↔B=1, C↔C=1, A↔C=0, B↔C=0
+        Target: ONLY A↔B=1, everything else=0
         """
         group_size = 1 + n_aug
         n_subclusters = 3 * n_samples
@@ -329,88 +320,99 @@ class AutoLayer:
         for sample_idx in range(n_samples):
             a_start = (3 * sample_idx + 0) * group_size
             b_start = (3 * sample_idx + 1) * group_size
-            c_start = (3 * sample_idx + 2) * group_size
             
             a_end = a_start + group_size
             b_end = b_start + group_size
-            c_end = c_start + group_size
             
-            # Diagonal blocks
-            target[a_start:a_end, a_start:a_end] = 1.0
-            target[b_start:b_end, b_start:b_end] = 1.0
-            target[c_start:c_end, c_start:c_end] = 1.0
-            
-            # A↔B: same image I_i → cluster
+            # ONLY A↔B: same image I_i → cluster
             target[a_start:a_end, b_start:b_end] = 1.0
             target[b_start:b_end, a_start:a_end] = 1.0
-            
-            # A↔C, B↔C: different image → 0 (already zeros)
         
         return target
 
     # ==================== Metrics ====================
 
-    def _compute_metrics_with_target(self, embs, target, use_percentile=False, percentile_threshold=0.0):
-        """Compute metrics with custom target matrix (all higher = better)."""
+    def _compute_metrics_with_target(self, embs, target, percentile_threshold=0.0, use_mask=True):
+        """Compute metrics with custom target matrix (all higher = better).
+        
+        Args:
+            percentile_threshold: If > 0, filter out similarities below this percentile.
+                                  E.g., 0.25 filters out bottom 25% of similarities.
+            use_mask: If True, exclude filtered pairs from calculation (default).
+                      If False, zero them but keep in calculation.
+        """
         N = len(embs)
         
         # Pairwise L2 distance -> similarity (0-1)
         l2_dist = torch.cdist(embs, embs, p=2)
         sim = 1 / (1 + l2_dist)
         
-        # Upper triangle (exclude diagonal)
+        # Upper triangle indices
         triu_idx = torch.triu_indices(N, N, offset=1, device=embs.device)
+        
+        # Apply percentile threshold filter
+        mask = None
+        if percentile_threshold > 0:
+            sim_triu = sim[triu_idx[0], triu_idx[1]]
+            thresh_val = torch.quantile(sim_triu, percentile_threshold)
+            mask = sim >= thresh_val
+            mask.fill_diagonal_(True)  # Keep diagonal
+            if not use_mask:
+                # Zero mode: set below-threshold to 0
+                sim = sim * mask.float()
+        
+        # Get upper triangle values
         sim_triu = sim[triu_idx[0], triu_idx[1]]
-        
-        if use_percentile:
-            ranks = sim_triu.argsort().argsort().float()
-            vals_triu = (ranks / max(len(sim_triu) - 1, 1))
-            vals_triu = (vals_triu * 1000).round() / 1000
-        else:
-            vals_triu = sim_triu
-        
-        # Full symmetric matrix for log-likelihood
-        sim_full = torch.zeros_like(sim)
-        sim_full[triu_idx[0], triu_idx[1]] = vals_triu
-        sim_full[triu_idx[1], triu_idx[0]] = vals_triu
-        
         target_triu = target[triu_idx[0], triu_idx[1]]
-        
-        # Apply threshold filter
-        mask = vals_triu >= percentile_threshold
-        vals_filtered = vals_triu * mask.float()
+        mask_triu = mask[triu_idx[0], triu_idx[1]] if mask is not None else None
         
         # Compute scores
-        mse_raw = ((vals_filtered - target_triu) ** 2).mean().item()
+        if use_mask and mask_triu is not None:
+            # Mask mode: exclude filtered pairs
+            sim_masked = sim_triu[mask_triu]
+            target_masked = target_triu[mask_triu]
+            n_pairs = mask_triu.sum().item()
+            mse_raw = ((sim_masked - target_masked) ** 2).sum().item() / max(n_pairs, 1)
+            n_in_block = target_masked.sum().item()
+            dot = (sim_masked * target_masked).sum().item() / max(n_in_block, 1)
+        else:
+            # Zero mode or no threshold
+            mse_raw = ((sim_triu - target_triu) ** 2).mean().item()
+            n_in_block = target_triu.sum().item()
+            dot = (sim_triu * target_triu).sum().item() / max(n_in_block, 1)
+        
         mse = 1 / (1 + mse_raw)
         
-        n_in_block = target_triu.sum().item()
-        dot = (vals_filtered * target_triu).sum().item() / max(n_in_block, 1)
-        
-        log_probs = torch.log(sim_full + 1e-16)
+        # Log-likelihood (use full matrix)
+        log_probs = torch.log(sim + 1e-16)
         ll = (torch.sum(target * log_probs) / N).item()
         
-        # Weighted modularity Q
-        k = sim.sum(dim=1)
-        m = sim.sum() / 2
-        null_model = torch.outer(k, k) / (2 * m)
-        Q = ((sim - null_model) * target).sum() / (2 * m)
-        modularity = Q.item()
+        # Weighted modularity Q (remove self-connections)
+        sim_no_diag = sim.clone()
+        sim_no_diag.fill_diagonal_(0.0)
+        k = sim_no_diag.sum(dim=1)
+        m = sim_no_diag.sum() / 2
+        if m > 0:
+            null_model = torch.outer(k, k) / (2 * m)
+            Q = ((sim_no_diag - null_model) * target).sum() / (2 * m)
+            modularity = Q.item()
+        else:
+            modularity = 0.0
         
         return {"mse": mse, "dot": dot, "ll": ll, "Q": modularity}
 
-    def _compute_metrics(self, embs, n_samples, n_aug, use_percentile=False, percentile_threshold=0.0):
+    def _compute_metrics(self, embs, n_samples, n_aug, percentile_threshold=0.0, use_mask=True):
         """Compute metrics with standard target (1 cluster per sample)."""
         target = self._build_standard_target(n_samples, n_aug, embs.device)
-        return self._compute_metrics_with_target(embs, target, use_percentile, percentile_threshold)
+        return self._compute_metrics_with_target(embs, target, percentile_threshold, use_mask)
 
-    def _compute_metrics_contrastive(self, embs, n_samples, n_aug, use_percentile=False, percentile_threshold=0.0):
+    def _compute_metrics_contrastive(self, embs, n_samples, n_aug, percentile_threshold=0.0, use_mask=True):
         """Compute metrics with contrastive target (3 sub-clusters per sample)."""
         if self.weighted_contrastive:
             target = self._build_contrastive_target_weighted(n_samples, n_aug, embs.device)
         else:
             target = self._build_contrastive_target(n_samples, n_aug, embs.device)
-        return self._compute_metrics_with_target(embs, target, use_percentile, percentile_threshold)
+        return self._compute_metrics_with_target(embs, target, percentile_threshold, use_mask)
 
     # ==================== Public API ====================
 
@@ -419,8 +421,8 @@ class AutoLayer:
         if len(lst) == 0 or lst[0].shape == emb.shape:
             lst.append(emb)
 
-    def _encode_both_contrastive(self, samples, layers, all_embs, n_aug, pbar):
-        """Encode contrastive 'both' robustness: 3 sub-clusters per sample.
+    def _encode_bimodal_contrastive(self, samples, layers, all_embs, n_aug, pbar):
+        """Encode contrastive 'bimodal' robustness: 3 sub-clusters per sample.
         
         For sample i with (I_i, T_i):
           A: <I_i, T_i>     + n_aug × <aug(I_i), aug(T_i)>     (original binding)
@@ -459,7 +461,7 @@ class AutoLayer:
             embs = self._encode_all(img_in, text_in)
             for layer in layers:
                 if layer in embs:
-                    self._safe_append(all_embs[layer]["both"], embs[layer])
+                    self._safe_append(all_embs[layer]["bimodal"], embs[layer])
             pbar.update(1)
             for _ in range(n_aug):
                 aug_img = self.augmenter.image(img_i)
@@ -468,7 +470,7 @@ class AutoLayer:
                 embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
-                        self._safe_append(all_embs[layer]["both"], embs[layer])
+                        self._safe_append(all_embs[layer]["bimodal"], embs[layer])
                 pbar.update(1)
             
             # Sub-cluster B: <I_i, T_j> + augs (counterfact text)
@@ -476,7 +478,7 @@ class AutoLayer:
             embs = self._encode_all(img_in, text_in)
             for layer in layers:
                 if layer in embs:
-                    self._safe_append(all_embs[layer]["both"], embs[layer])
+                    self._safe_append(all_embs[layer]["bimodal"], embs[layer])
             pbar.update(1)
             for _ in range(n_aug):
                 aug_img = self.augmenter.image(img_i)
@@ -485,7 +487,7 @@ class AutoLayer:
                 embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
-                        self._safe_append(all_embs[layer]["both"], embs[layer])
+                        self._safe_append(all_embs[layer]["bimodal"], embs[layer])
                 pbar.update(1)
             
             # Sub-cluster C: <I_k, T_i> + augs (counterfact image)
@@ -493,7 +495,7 @@ class AutoLayer:
             embs = self._encode_all(img_in, text_in)
             for layer in layers:
                 if layer in embs:
-                    self._safe_append(all_embs[layer]["both"], embs[layer])
+                    self._safe_append(all_embs[layer]["bimodal"], embs[layer])
             pbar.update(1)
             for _ in range(n_aug):
                 aug_img = self.augmenter.image(img_k)
@@ -502,17 +504,17 @@ class AutoLayer:
                 embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
-                        self._safe_append(all_embs[layer]["both"], embs[layer])
+                        self._safe_append(all_embs[layer]["bimodal"], embs[layer])
                 pbar.update(1)
 
-    def _encode_both_standard(self, img, text, layers, all_embs, n_aug, pbar):
-        """Encode standard 'both' robustness: 1 cluster per sample."""
+    def _encode_bimodal_standard(self, img, text, layers, all_embs, n_aug, pbar):
+        """Encode standard 'bimodal' robustness: 1 cluster per sample."""
         # Anchor
         img_in, text_in = self._prepare_input(img, text)
         embs = self._encode_all(img_in, text_in)
         for layer in layers:
             if layer in embs:
-                self._safe_append(all_embs[layer]["both"], embs[layer])
+                self._safe_append(all_embs[layer]["bimodal"], embs[layer])
         pbar.update(1)
         # Augmentations
         for _ in range(n_aug):
@@ -522,8 +524,127 @@ class AutoLayer:
             embs = self._encode_all(img_in, text_in)
             for layer in layers:
                 if layer in embs:
-                    self._safe_append(all_embs[layer]["both"], embs[layer])
+                    self._safe_append(all_embs[layer]["bimodal"], embs[layer])
             pbar.update(1)
+
+    @torch.no_grad()
+    def _compute_concat_scores(self, n_samples, n_aug, verbose=True):
+        """Compute scores for __concat__ layer using config's inner_params_vision and inner_params_lang.
+        
+        Returns dict with scores for all 5 modes, or None if config doesn't have the params.
+        """
+        # Get layer names from config
+        model_cfg = getattr(self.config, "model", None)
+        if model_cfg is None:
+            if verbose:
+                print("[Concat] No model config found, skipping __concat__")
+            return None
+        
+        vis_param_list = getattr(model_cfg, "inner_params_vision", None)
+        lang_param_list = getattr(model_cfg, "inner_params_lang", None)
+        
+        if not vis_param_list or not lang_param_list:
+            if verbose:
+                print("[Concat] Config missing inner_params_vision or inner_params_lang, skipping __concat__")
+            return None
+        
+        vis_layer = vis_param_list[0]  # e.g., "model.visual.blocks.21.mlp.linear_fc1.weight"
+        lang_layer = lang_param_list[0]  # e.g., "model.language_model.layers.35.mlp.gate_proj.weight"
+        
+        if verbose:
+            print(f"\n[Concat] Computing __concat__ pseudo-layer scores...")
+            print(f"         vis_layer  = {vis_layer}")
+            print(f"         lang_layer = {lang_layer}")
+        
+        samples = self._samples[:n_samples]
+        n = len(samples)
+        
+        self._hook_all_layers([vis_layer, lang_layer])
+        
+        def get_img(s):
+            img = s["image"]
+            return Image.open(img).convert("RGB") if isinstance(img, str) else img
+        
+        def encode_concat(img, text):
+            """Encode as concat(vis(<img,"">), lang(<blank,text>))."""
+            blank = Image.new("RGB", img.size, (128, 128, 128))
+            vis = self._encode_all(img, "").get(vis_layer)
+            lang = self._encode_all(blank, text).get(lang_layer)
+            if vis is None or lang is None:
+                return None
+            return torch.cat([vis, lang], dim=-1)
+        
+        vis_embs, lang_embs, bimodal_embs = [], [], []
+        
+        for i, s in enumerate(samples):
+            img_i = get_img(s)
+            text_i = s.get("question", "")
+            
+            # Vision: vary image, keep text
+            emb = encode_concat(img_i, text_i)
+            if emb is not None:
+                vis_embs.append(emb)
+            for _ in range(n_aug):
+                emb = encode_concat(self.augmenter.image(img_i), text_i)
+                if emb is not None:
+                    vis_embs.append(emb)
+            
+            # Language: vary text, keep image
+            emb = encode_concat(img_i, text_i)
+            if emb is not None:
+                lang_embs.append(emb)
+            for _ in range(n_aug):
+                emb = encode_concat(img_i, self.augmenter.question(text_i) if text_i else "")
+                if emb is not None:
+                    lang_embs.append(emb)
+            
+            # Bimodal contrastive: A, B, C
+            img_k = get_img(samples[(i+2) % n])
+            text_j = samples[(i+1) % n].get("question", "")
+            
+            for img, text in [(img_i, text_i), (img_i, text_j), (img_k, text_i)]:
+                emb = encode_concat(img, text)
+                if emb is not None:
+                    bimodal_embs.append(emb)
+                for _ in range(n_aug):
+                    emb = encode_concat(self.augmenter.image(img), self.augmenter.question(text) if text else "")
+                    if emb is not None:
+                        bimodal_embs.append(emb)
+        
+        self._remove_hooks()
+        
+        if not vis_embs or not lang_embs or not bimodal_embs:
+            if verbose:
+                print("[Concat] No embeddings collected, skipping")
+            return None
+        
+        vis_tensor = torch.cat(vis_embs, dim=0).to(self.device)
+        lang_tensor = torch.cat(lang_embs, dim=0).to(self.device)
+        bimodal_tensor = torch.cat(bimodal_embs, dim=0).to(self.device)
+        
+        result = {
+            "vision": self._compute_metrics(vis_tensor, n_samples, n_aug, self.percentile_threshold, self.threshold_mask),
+            "language": self._compute_metrics(lang_tensor, n_samples, n_aug, self.percentile_threshold, self.threshold_mask),
+            "bimodal": self._compute_metrics_contrastive(bimodal_tensor, n_samples, n_aug, self.percentile_threshold, self.threshold_mask),
+        }
+        
+        if self.contrastive_bimodal:
+            result["bimodal_text_partial"] = self._compute_metrics_with_target(
+                bimodal_tensor, self._build_contrastive_target_text_partial(n_samples, n_aug, self.device),
+                self.percentile_threshold, self.threshold_mask)
+            result["bimodal_image_partial"] = self._compute_metrics_with_target(
+                bimodal_tensor, self._build_contrastive_target_image_partial(n_samples, n_aug, self.device),
+                self.percentile_threshold, self.threshold_mask)
+        
+        if verbose:
+            print(f"[Concat] vis={result['vision']['Q']:.3f}, lang={result['language']['Q']:.3f}, "
+                  f"bimodal={result['bimodal']['Q']:.3f}", end="")
+            if self.contrastive_bimodal:
+                print(f", text_p={result['bimodal_text_partial']['Q']:.3f}, img_p={result['bimodal_image_partial']['Q']:.3f}")
+            else:
+                print()
+        
+        return result
 
     @torch.no_grad()
     def score_layers(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
@@ -536,16 +657,16 @@ class AutoLayer:
             self._samples = random.sample(list(data), min(n_samples, len(data)))
         
         self._hook_all_layers(layers)
-        all_embs = {l: {"vis": [], "lang": [], "both": []} for l in layers}
+        all_embs = {l: {"vis": [], "lang": [], "bimodal": []} for l in layers}
         
-        # Forward count: vision + language + both
+        # Forward count: vision + language + bimodal
         n_forwards = n_samples * (1 + n_aug) * 2  # vis + lang base
         if self.blank_image_for_lang:
             n_forwards += n_samples
         if self.blank_text_for_vision:
             n_forwards += n_samples
-        # Both: contrastive = 3 sub-clusters, standard = 1 cluster
-        if self.contrastive_both:
+        # Bimodal: contrastive = 3 sub-clusters, standard = 1 cluster
+        if self.contrastive_bimodal:
             n_forwards += n_samples * 3 * (1 + n_aug)
         else:
             n_forwards += n_samples * (1 + n_aug)
@@ -611,73 +732,81 @@ class AutoLayer:
                         self._safe_append(all_embs[layer]["lang"], embs[layer])
                 pbar.update(1)
             
-            # Standard both (if not contrastive)
-            if not self.contrastive_both:
-                self._encode_both_standard(img, text, layers, all_embs, n_aug, pbar)
+            # Standard bimodal (if not contrastive)
+            if not self.contrastive_bimodal:
+                self._encode_bimodal_standard(img, text, layers, all_embs, n_aug, pbar)
         
-        # Contrastive both (needs all samples together for counterfactuals)
-        if self.contrastive_both:
-            self._encode_both_contrastive(self._samples[:n_samples], layers, all_embs, n_aug, pbar)
+        # Contrastive bimodal (needs all samples together for counterfactuals)
+        if self.contrastive_bimodal:
+            self._encode_bimodal_contrastive(self._samples[:n_samples], layers, all_embs, n_aug, pbar)
         
         pbar.close()
         self._remove_hooks()
         
         # Compute metrics
         expected_vis_lang = n_samples * (1 + n_aug)
-        expected_both = n_samples * 3 * (1 + n_aug) if self.contrastive_both else n_samples * (1 + n_aug)
-        vis_scores, lang_scores, both_scores = {}, {}, {}
-        both_text_partial_scores, both_image_partial_scores = {}, {}
+        expected_bimodal = n_samples * 3 * (1 + n_aug) if self.contrastive_bimodal else n_samples * (1 + n_aug)
+        vis_scores, lang_scores, bimodal_scores = {}, {}, {}
+        bimodal_text_partial_scores, bimodal_image_partial_scores = {}, {}
         
         for layer in (tqdm(layers, desc="metrics") if verbose else layers):
-            vis_list, lang_list, both_list = all_embs[layer]["vis"], all_embs[layer]["lang"], all_embs[layer]["both"]
+            vis_list, lang_list, bimodal_list = all_embs[layer]["vis"], all_embs[layer]["lang"], all_embs[layer]["bimodal"]
             
-            if len(vis_list) < expected_vis_lang * 0.5 or len(lang_list) < expected_vis_lang * 0.5 or len(both_list) < expected_both * 0.5:
+            if len(vis_list) < expected_vis_lang * 0.5 or len(lang_list) < expected_vis_lang * 0.5 or len(bimodal_list) < expected_bimodal * 0.5:
                 if verbose:
                     tqdm.write(f"  Skipping {layer}: insufficient samples")
                 continue
             
             vis_embs = torch.cat(vis_list, dim=0)
             lang_embs = torch.cat(lang_list, dim=0)
-            both_embs = torch.cat(both_list, dim=0)
+            bimodal_embs = torch.cat(bimodal_list, dim=0)
             
             self._cache[layer] = {
                 "vision": (vis_embs, n_samples, n_aug),
                 "language": (lang_embs, n_samples, n_aug),
-                "both": (both_embs, n_samples, n_aug),
+                "bimodal": (bimodal_embs, n_samples, n_aug),
             }
             
-            vis_scores[layer] = self._compute_metrics(vis_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
-            lang_scores[layer] = self._compute_metrics(lang_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
+            vis_scores[layer] = self._compute_metrics(vis_embs.to(self.device), n_samples, n_aug, self.percentile_threshold, self.threshold_mask)
+            lang_scores[layer] = self._compute_metrics(lang_embs.to(self.device), n_samples, n_aug, self.percentile_threshold, self.threshold_mask)
             
-            # Use contrastive metrics for "both" if enabled
-            if self.contrastive_both:
-                both_embs_gpu = both_embs.to(self.device)
-                both_scores[layer] = self._compute_metrics_contrastive(both_embs_gpu, n_samples, n_aug, self.use_percentile, self.percentile_threshold)
+            # Use contrastive metrics for "bimodal" if enabled
+            if self.contrastive_bimodal:
+                bimodal_embs_gpu = bimodal_embs.to(self.device)
+                bimodal_scores[layer] = self._compute_metrics_contrastive(bimodal_embs_gpu, n_samples, n_aug, self.percentile_threshold, self.threshold_mask)
                 
                 # Compute partial sensitivity scores (text and image)
                 text_target = self._build_contrastive_target_text_partial(n_samples, n_aug, self.device)
                 image_target = self._build_contrastive_target_image_partial(n_samples, n_aug, self.device)
-                both_text_partial_scores[layer] = self._compute_metrics_with_target(both_embs_gpu, text_target, self.use_percentile, self.percentile_threshold)
-                both_image_partial_scores[layer] = self._compute_metrics_with_target(both_embs_gpu, image_target, self.use_percentile, self.percentile_threshold)
+                bimodal_text_partial_scores[layer] = self._compute_metrics_with_target(bimodal_embs_gpu, text_target, self.percentile_threshold, self.threshold_mask)
+                bimodal_image_partial_scores[layer] = self._compute_metrics_with_target(bimodal_embs_gpu, image_target, self.percentile_threshold, self.threshold_mask)
             else:
-                both_scores[layer] = self._compute_metrics(both_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
+                bimodal_scores[layer] = self._compute_metrics(bimodal_embs.to(self.device), n_samples, n_aug, self.percentile_threshold, self.threshold_mask)
             torch.cuda.empty_cache()
             
             if verbose:
-                if self.contrastive_both:
-                    tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, both={both_scores[layer]['Q']:.3f}, text_p={both_text_partial_scores[layer]['Q']:.3f}, img_p={both_image_partial_scores[layer]['Q']:.3f}")
+                if self.contrastive_bimodal:
+                    tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, bimodal={bimodal_scores[layer]['Q']:.3f}, text_p={bimodal_text_partial_scores[layer]['Q']:.3f}, img_p={bimodal_image_partial_scores[layer]['Q']:.3f}")
                 else:
-                    tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, both={both_scores[layer]['Q']:.3f}")
+                    tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, bimodal={bimodal_scores[layer]['Q']:.3f}")
         
-        result = {"vision": vis_scores, "language": lang_scores, "both": both_scores}
-        if self.contrastive_both:
-            result["both_text_partial"] = both_text_partial_scores
-            result["both_image_partial"] = both_image_partial_scores
+        result = {"vision": vis_scores, "language": lang_scores, "bimodal": bimodal_scores}
+        if self.contrastive_bimodal:
+            result["bimodal_text_partial"] = bimodal_text_partial_scores
+            result["bimodal_image_partial"] = bimodal_image_partial_scores
+        
+        # Add __concat__ pseudo-layer using config's inner_params_vision and inner_params_lang
+        concat_scores = self._compute_concat_scores(n_samples, n_aug, verbose)
+        if concat_scores:
+            for mode in concat_scores:
+                if mode in result:
+                    result[mode]["__concat__"] = concat_scores[mode]
+        
         return result
 
     def _find_best_in(self, scores_dict, layer_subset, metric, is_agg=False):
-        """Find best layer within a subset (higher = better)."""
-        subset = {k: v for k, v in scores_dict.items() if k in layer_subset}
+        """Find best layer within a subset (higher = better). Skips __concat__."""
+        subset = {k: v for k, v in scores_dict.items() if k in layer_subset and k != "__concat__"}
         if not subset:
             return None
         if is_agg:
@@ -702,7 +831,7 @@ class AutoLayer:
             n_forwards += n_samples
         if self.blank_text_for_vision:
             n_forwards += n_samples
-        if self.contrastive_both:
+        if self.contrastive_bimodal:
             n_forwards += n_samples * 3 * (1 + n_aug)
         else:
             n_forwards += n_samples * (1 + n_aug)
@@ -728,16 +857,16 @@ class AutoLayer:
                     print(f"            Language robustness: <I, verb(I) + T> vs <I, verb(I) + aug(T)>")
                 else:
                     print(f"            Language robustness: <blank, T> mode")
-            if self.contrastive_both:
+            if self.contrastive_bimodal:
                 mode_str = "CONTRASTIVE"
                 if self.weighted_contrastive:
                     mode_str += " + WEIGHTED [1, 0.5, 0]"
                 if self.verbalize_mode != "none":
-                    print(f"            Both robustness: {mode_str} (verb_mode={self.verbalize_mode})")
+                    print(f"            Bimodal robustness: {mode_str} (verb_mode={self.verbalize_mode})")
                 else:
-                    print(f"            Both robustness: {mode_str} (3 sub-clusters: A=<I,T>, B=<I,T'>, C=<I',T>)")
+                    print(f"            Bimodal robustness: {mode_str} (3 sub-clusters: A=<I,T>, B=<I,T'>, C=<I',T>)")
             else:
-                print(f"            Both robustness: <I, T> vs <aug(I), aug(T)>")
+                print(f"            Bimodal robustness: <I, T> vs <aug(I), aug(T)>")
         
         scores = self.score_layers(dataset, layers, n_samples, n_aug, verbose)
         
@@ -754,27 +883,27 @@ class AutoLayer:
                 "merger_layer": self._find_best_in(scores["language"], merger_layers, metric),
                 "language_layer": self._find_best_in(scores["language"], lang_layers, metric),
             },
-            "both_robustness": {
-                "overall": self._find_best_in(scores["both"], layers, metric),
-                "vision_layer": self._find_best_in(scores["both"], vis_layers, metric),
-                "merger_layer": self._find_best_in(scores["both"], merger_layers, metric),
-                "language_layer": self._find_best_in(scores["both"], lang_layers, metric),
+            "bimodal_robustness": {
+                "overall": self._find_best_in(scores["bimodal"], layers, metric),
+                "vision_layer": self._find_best_in(scores["bimodal"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["bimodal"], merger_layers, metric),
+                "language_layer": self._find_best_in(scores["bimodal"], lang_layers, metric),
             },
         }
         
         # Add partial sensitivity best layers if contrastive mode
-        if self.contrastive_both and "both_text_partial" in scores:
-            best["both_text_partial"] = {
-                "overall": self._find_best_in(scores["both_text_partial"], layers, metric),
-                "vision_layer": self._find_best_in(scores["both_text_partial"], vis_layers, metric),
-                "merger_layer": self._find_best_in(scores["both_text_partial"], merger_layers, metric),
-                "language_layer": self._find_best_in(scores["both_text_partial"], lang_layers, metric),
+        if self.contrastive_bimodal and "bimodal_text_partial" in scores:
+            best["bimodal_text_partial"] = {
+                "overall": self._find_best_in(scores["bimodal_text_partial"], layers, metric),
+                "vision_layer": self._find_best_in(scores["bimodal_text_partial"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["bimodal_text_partial"], merger_layers, metric),
+                "language_layer": self._find_best_in(scores["bimodal_text_partial"], lang_layers, metric),
             }
-            best["both_image_partial"] = {
-                "overall": self._find_best_in(scores["both_image_partial"], layers, metric),
-                "vision_layer": self._find_best_in(scores["both_image_partial"], vis_layers, metric),
-                "merger_layer": self._find_best_in(scores["both_image_partial"], merger_layers, metric),
-                "language_layer": self._find_best_in(scores["both_image_partial"], lang_layers, metric),
+            best["bimodal_image_partial"] = {
+                "overall": self._find_best_in(scores["bimodal_image_partial"], layers, metric),
+                "vision_layer": self._find_best_in(scores["bimodal_image_partial"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["bimodal_image_partial"], merger_layers, metric),
+                "language_layer": self._find_best_in(scores["bimodal_image_partial"], lang_layers, metric),
             }
         
         if verbose:
@@ -786,11 +915,11 @@ class AutoLayer:
                 elif "language_rob" in rob_type:
                     mode_key = "language"
                 elif "text_partial" in rob_type:
-                    mode_key = "both_text_partial"
+                    mode_key = "bimodal_text_partial"
                 elif "image_partial" in rob_type:
-                    mode_key = "both_image_partial"
+                    mode_key = "bimodal_image_partial"
                 else:
-                    mode_key = "both"
+                    mode_key = "bimodal"
                 print(f"{rob_type}:")
                 for group, layer in bests.items():
                     if layer and mode_key in scores:
@@ -876,11 +1005,12 @@ class AutoLayer:
                 all_scores.append(json.load(fp)["scores"])
         
         metrics = ["mse", "dot", "ll", "Q"]
+        all_modes = ["vision", "language", "bimodal", "bimodal_text_partial", "bimodal_image_partial"]
         agg = {}
-        for mode in ["vision", "language", "both"]:
-            agg[mode] = {}
+        for mode in all_modes:
             if mode not in all_scores[0]:
                 continue
+            agg[mode] = {}
             layers = list(all_scores[0][mode].keys())
             for layer in layers:
                 agg[mode][layer] = {}
@@ -913,20 +1043,46 @@ class AutoLayer:
             },
         }
         
-        if "both" in agg_scores:
-            best["both_robustness"] = {
-                "overall": self._find_best_in(agg_scores["both"], layers, metric, is_agg=True),
-                "vision_layer": self._find_best_in(agg_scores["both"], vis_layers, metric, is_agg=True),
-                "merger_layer": self._find_best_in(agg_scores["both"], merger_layers, metric, is_agg=True),
-                "language_layer": self._find_best_in(agg_scores["both"], lang_layers, metric, is_agg=True),
+        if "bimodal" in agg_scores:
+            best["bimodal_robustness"] = {
+                "overall": self._find_best_in(agg_scores["bimodal"], layers, metric, is_agg=True),
+                "vision_layer": self._find_best_in(agg_scores["bimodal"], vis_layers, metric, is_agg=True),
+                "merger_layer": self._find_best_in(agg_scores["bimodal"], merger_layers, metric, is_agg=True),
+                "language_layer": self._find_best_in(agg_scores["bimodal"], lang_layers, metric, is_agg=True),
+            }
+        
+        if "bimodal_text_partial" in agg_scores:
+            best["bimodal_text_partial"] = {
+                "overall": self._find_best_in(agg_scores["bimodal_text_partial"], layers, metric, is_agg=True),
+                "vision_layer": self._find_best_in(agg_scores["bimodal_text_partial"], vis_layers, metric, is_agg=True),
+                "merger_layer": self._find_best_in(agg_scores["bimodal_text_partial"], merger_layers, metric, is_agg=True),
+                "language_layer": self._find_best_in(agg_scores["bimodal_text_partial"], lang_layers, metric, is_agg=True),
+            }
+        
+        if "bimodal_image_partial" in agg_scores:
+            best["bimodal_image_partial"] = {
+                "overall": self._find_best_in(agg_scores["bimodal_image_partial"], layers, metric, is_agg=True),
+                "vision_layer": self._find_best_in(agg_scores["bimodal_image_partial"], vis_layers, metric, is_agg=True),
+                "merger_layer": self._find_best_in(agg_scores["bimodal_image_partial"], merger_layers, metric, is_agg=True),
+                "language_layer": self._find_best_in(agg_scores["bimodal_image_partial"], lang_layers, metric, is_agg=True),
             }
         
         print(f"Best layers (from {metric} mean):")
         for rob, bests in best.items():
-            mode_key = "vision" if "vision_rob" in rob else ("language" if "language_rob" in rob else "both")
+            # Map robustness type to scores key
+            if "vision_rob" in rob:
+                mode_key = "vision"
+            elif "language_rob" in rob:
+                mode_key = "language"
+            elif "text_partial" in rob:
+                mode_key = "bimodal_text_partial"
+            elif "image_partial" in rob:
+                mode_key = "bimodal_image_partial"
+            else:
+                mode_key = "bimodal"
             print(f"  {rob}:")
             for group, layer in bests.items():
-                if layer:
+                if layer and mode_key in agg_scores:
                     score = agg_scores[mode_key][layer][metric]["mean"]
                     parts = layer.split('.')
                     short = parts[-3] if len(parts) >= 3 else parts[-1]
@@ -936,11 +1092,14 @@ class AutoLayer:
     # ==================== Plotting ====================
 
     def plot_scores(self, scores, metric="Q", normalize=False, figsize=None):
-        """Line plot of scores with optional error bars (vision=green, merger=orange, language=blue)."""
+        """Line plot of scores with optional error bars (vision=green, merger=orange, language=blue).
+        
+        __concat__ layer (if present) is shown as red diamond at rightmost position.
+        """
         import matplotlib.pyplot as plt
         
         metrics = [metric] if isinstance(metric, str) else metric
-        all_modes = ["vision", "language", "both", "both_text_partial", "both_image_partial"]
+        all_modes = ["vision", "language", "bimodal", "bimodal_text_partial", "bimodal_image_partial"]
         modes = [m for m in all_modes if m in scores]
         fig, axes = plt.subplots(len(metrics), len(modes), figsize=figsize or (4 * len(modes), 3 * len(metrics)), squeeze=False)
         
@@ -948,22 +1107,25 @@ class AutoLayer:
             for col, mode in enumerate(modes):
                 mode_scores = scores[mode]
                 ax = axes[row, col]
-                layers = list(mode_scores.keys())
                 
-                sample_val = mode_scores[layers[0]][m]
+                # Separate real layers from __concat__
+                real_layers = [l for l in mode_scores.keys() if l != "__concat__"]
+                has_concat = "__concat__" in mode_scores
+                
+                sample_val = mode_scores[real_layers[0]][m]
                 is_agg = isinstance(sample_val, dict) and "mean" in sample_val
                 
                 if is_agg:
-                    vals = np.array([mode_scores[l][m]["mean"] for l in layers])
-                    stds = np.array([mode_scores[l][m]["std"] for l in layers])
+                    vals = np.array([mode_scores[l][m]["mean"] for l in real_layers])
+                    stds = np.array([mode_scores[l][m]["std"] for l in real_layers])
                 else:
-                    vals = np.array([mode_scores[l][m] for l in layers])
+                    vals = np.array([mode_scores[l][m] for l in real_layers])
                     stds = None
                 
-                indices = np.arange(len(layers))
-                is_vis = np.array([self._is_vision(l) for l in layers])
-                is_merger = np.array([self._is_merger(l) for l in layers])
-                is_lang = np.array([self._is_language(l) for l in layers])
+                indices = np.arange(len(real_layers))
+                is_vis = np.array([self._is_vision(l) for l in real_layers])
+                is_merger = np.array([self._is_merger(l) for l in real_layers])
+                is_lang = np.array([self._is_language(l) for l in real_layers])
                 
                 if normalize:
                     vmin, vmax = vals.min(), vals.max()
@@ -981,7 +1143,18 @@ class AutoLayer:
                         else:
                             ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
                 
-                # Mark best overall (red star), best per group (triangles)
+                # Plot __concat__ as red diamond at rightmost position
+                if has_concat:
+                    concat_idx = len(real_layers) + 2  # Gap after last layer
+                    if is_agg:
+                        concat_val = mode_scores["__concat__"][m]["mean"]
+                        concat_std = mode_scores["__concat__"][m]["std"]
+                        ax.errorbar([concat_idx], [concat_val], yerr=[concat_std], fmt='D', ms=8, color='red', capsize=3, label='concat', zorder=7)
+                    else:
+                        concat_val = mode_scores["__concat__"][m]
+                        ax.scatter([concat_idx], [concat_val], c='red', s=100, marker='D', zorder=7, label='concat', edgecolors='black')
+                
+                # Mark best overall (red star), best per group (triangles) - excluding concat
                 best = np.argmax(vals)
                 ax.scatter([indices[best]], [vals[best]], c='red', s=120, zorder=6, marker='*', edgecolors='black')
                 
@@ -993,24 +1166,33 @@ class AutoLayer:
                 
                 ax.set_xlabel("Layer" if row == len(metrics) - 1 else "")
                 ax.set_ylabel(f"{m} (↑)" if col == 0 else "")
-                # Shorter titles for partial modes
-                title_map = {"both_text_partial": "Text Sens.", "both_image_partial": "Image Sens."}
+                title_map = {"bimodal_text_partial": "Bimodal Text Partial.", "bimodal_image_partial": "Bimodal Image Partial."}
                 title = title_map.get(mode, mode.capitalize())
                 ax.set_title(f"{title} - {m}" if row == 0 else "")
                 ax.legend(fontsize=7, loc='lower right')
                 ax.grid(alpha=0.3)
         
+        # Share y-axis per row (same metric)
+        for row in range(len(metrics)):
+            ylims = [axes[row, col].get_ylim() for col in range(len(modes))]
+            ymin, ymax = min(y[0] for y in ylims), max(y[1] for y in ylims)
+            for col in range(len(modes)):
+                axes[row, col].set_ylim(ymin, ymax)
+        
         plt.tight_layout()
         plt.show()
 
     def plot_all_metrics(self, scores, normalize=False, figsize=None):
-        """Plot all metrics in a grid with vision=green, merger=orange, language=blue."""
+        """Plot all metrics in a grid with vision=green, merger=orange, language=blue.
+        
+        __concat__ layer (if present) is shown as red diamond at rightmost position.
+        """
         import matplotlib.pyplot as plt
         
         metrics = ["mse", "dot", "ll", "Q"]
-        all_modes = ["vision", "language", "both", "both_text_partial", "both_image_partial"]
+        all_modes = ["vision", "language", "bimodal", "bimodal_text_partial", "bimodal_image_partial"]
         modes = [m for m in all_modes if m in scores]
-        title_map = {"both_text_partial": "Text Sens.", "both_image_partial": "Image Sens."}
+        title_map = {"bimodal_text_partial": "Text Sens.", "bimodal_image_partial": "Image Sens."}
         
         figsize = figsize or (14, 2.5 * len(modes))
         fig, axes = plt.subplots(len(modes), 4, figsize=figsize, squeeze=False)
@@ -1019,22 +1201,25 @@ class AutoLayer:
             for row, mode in enumerate(modes):
                 mode_scores = scores[mode]
                 ax = axes[row, col]
-                layers = list(mode_scores.keys())
                 
-                sample_val = mode_scores[layers[0]][metric]
+                # Separate real layers from __concat__
+                real_layers = [l for l in mode_scores.keys() if l != "__concat__"]
+                has_concat = "__concat__" in mode_scores
+                
+                sample_val = mode_scores[real_layers[0]][metric]
                 is_agg = isinstance(sample_val, dict) and "mean" in sample_val
                 
                 if is_agg:
-                    vals = np.array([mode_scores[l][metric]["mean"] for l in layers])
-                    stds = np.array([mode_scores[l][metric]["std"] for l in layers])
+                    vals = np.array([mode_scores[l][metric]["mean"] for l in real_layers])
+                    stds = np.array([mode_scores[l][metric]["std"] for l in real_layers])
                 else:
-                    vals = np.array([mode_scores[l][metric] for l in layers])
+                    vals = np.array([mode_scores[l][metric] for l in real_layers])
                     stds = None
                 
-                is_vis = np.array([self._is_vision(l) for l in layers])
-                is_merger = np.array([self._is_merger(l) for l in layers])
-                is_lang = np.array([self._is_language(l) for l in layers])
-                indices = np.arange(len(layers))
+                is_vis = np.array([self._is_vision(l) for l in real_layers])
+                is_merger = np.array([self._is_merger(l) for l in real_layers])
+                is_lang = np.array([self._is_language(l) for l in real_layers])
+                indices = np.arange(len(real_layers))
                 
                 if normalize:
                     vmin, vmax = vals.min(), vals.max()
@@ -1051,6 +1236,17 @@ class AutoLayer:
                             ax.errorbar(idx, vals[mask], yerr=stds[mask], fmt='o-', ms=3, lw=1, capsize=2, alpha=0.8, color=color, label=label)
                         else:
                             ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
+                
+                # Plot __concat__ as red diamond at rightmost position
+                if has_concat:
+                    concat_idx = len(real_layers) + 2
+                    if is_agg:
+                        concat_val = mode_scores["__concat__"][metric]["mean"]
+                        concat_std = mode_scores["__concat__"][metric]["std"]
+                        ax.errorbar([concat_idx], [concat_val], yerr=[concat_std], fmt='D', ms=8, color='red', capsize=3, label='concat', zorder=7)
+                    else:
+                        concat_val = mode_scores["__concat__"][metric]
+                        ax.scatter([concat_idx], [concat_val], c='red', s=100, marker='D', zorder=7, label='concat', edgecolors='black')
                 
                 # Mark best overall and per group
                 best = np.argmax(vals)
@@ -1069,6 +1265,13 @@ class AutoLayer:
                     ax.set_ylabel(title_map.get(mode, mode.capitalize()))
                 if col == 3 and row == 0:
                     ax.legend(fontsize=7, loc='lower right')
+        
+        # Share y-axis per column (same metric)
+        for col in range(4):
+            ylims = [axes[row, col].get_ylim() for row in range(len(modes))]
+            ymin, ymax = min(y[0] for y in ylims), max(y[1] for y in ylims)
+            for row in range(len(modes)):
+                axes[row, col].set_ylim(ymin, ymax)
         
         plt.tight_layout()
         plt.show()

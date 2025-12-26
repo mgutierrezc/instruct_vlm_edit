@@ -479,6 +479,13 @@ class IKE_CHAIN(nn.Module):
             axes[ax_idx].set_xlabel('Distance')
         axes[0].set_ylabel('Count')
         axes[0].legend(fontsize=7, frameon=False)
+        
+        # Share y-axis limits across subplots
+        ylims = [ax.get_ylim() for ax in axes]
+        ymin, ymax = min(y[0] for y in ylims), max(y[1] for y in ylims)
+        for ax in axes:
+            ax.set_ylim(ymin - 0.01, ymax + 0.01)
+        
         fig.suptitle(f'Distance distributions (n_keys={len(self.codebook)})', fontsize=11)
         plt.tight_layout()
         plt.show()
