@@ -1094,7 +1094,7 @@ class AutoLayer:
     def plot_scores(self, scores, metric="Q", normalize=False, figsize=None):
         """Line plot of scores with optional error bars (vision=green, merger=orange, language=blue).
         
-        __concat__ layer (if present) is shown as red diamond at rightmost position.
+        __concat__ layer (if present) is shown as red dashed horizontal line.
         """
         import matplotlib.pyplot as plt
         
@@ -1143,16 +1143,13 @@ class AutoLayer:
                         else:
                             ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
                 
-                # Plot __concat__ as red diamond at rightmost position
+                # Plot __concat__ as red horizontal line
                 if has_concat:
-                    concat_idx = len(real_layers) + 2  # Gap after last layer
                     if is_agg:
                         concat_val = mode_scores["__concat__"][m]["mean"]
-                        concat_std = mode_scores["__concat__"][m]["std"]
-                        ax.errorbar([concat_idx], [concat_val], yerr=[concat_std], fmt='D', ms=8, color='red', capsize=3, label='concat', zorder=7)
                     else:
                         concat_val = mode_scores["__concat__"][m]
-                        ax.scatter([concat_idx], [concat_val], c='red', s=100, marker='D', zorder=7, label='concat', edgecolors='black')
+                    ax.axhline(y=concat_val, color='red', linestyle='--', lw=1.5, label='concat', zorder=3)
                 
                 # Mark best overall (red star), best per group (triangles) - excluding concat
                 best = np.argmax(vals)
@@ -1185,7 +1182,7 @@ class AutoLayer:
     def plot_all_metrics(self, scores, normalize=False, figsize=None):
         """Plot all metrics in a grid with vision=green, merger=orange, language=blue.
         
-        __concat__ layer (if present) is shown as red diamond at rightmost position.
+        __concat__ layer (if present) is shown as red dashed horizontal line.
         """
         import matplotlib.pyplot as plt
         
@@ -1237,16 +1234,13 @@ class AutoLayer:
                         else:
                             ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
                 
-                # Plot __concat__ as red diamond at rightmost position
+                # Plot __concat__ as red horizontal line
                 if has_concat:
-                    concat_idx = len(real_layers) + 2
                     if is_agg:
                         concat_val = mode_scores["__concat__"][metric]["mean"]
-                        concat_std = mode_scores["__concat__"][metric]["std"]
-                        ax.errorbar([concat_idx], [concat_val], yerr=[concat_std], fmt='D', ms=8, color='red', capsize=3, label='concat', zorder=7)
                     else:
                         concat_val = mode_scores["__concat__"][metric]
-                        ax.scatter([concat_idx], [concat_val], c='red', s=100, marker='D', zorder=7, label='concat', edgecolors='black')
+                    ax.axhline(y=concat_val, color='red', linestyle='--', lw=1.5, label='concat', zorder=3)
                 
                 # Mark best overall and per group
                 best = np.argmax(vals)
