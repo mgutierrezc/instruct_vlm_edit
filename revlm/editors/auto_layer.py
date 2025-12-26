@@ -36,6 +36,9 @@ EXCLUDE_PATTERNS = [
     "o_proj", "attn.proj",
     # Attention intermediates
     "rotary", "rope", "attention.attention",
+    # # QFormer
+    # "qformer", 
+    "intermediate"
 ]
 
 
@@ -56,6 +59,8 @@ class AutoLayer:
         self.n_aug = 10
         self.use_percentile = False
         self.percentile_threshold = 0.0
+        self.blank_image_for_lang = True   # Use <blank, text> for language robustness
+        self.blank_text_for_vision = True  # Use <image, ""> for vision robustness
 
     def get_candidate_layers(self, include_all=False):
         layers = [n for n, p in self.model.named_parameters() if n.endswith(".weight")]
@@ -136,13 +141,14 @@ class AutoLayer:
     def _is_vision(self, layer_name):
         """Vision layers: vision tower + merger."""
         l = layer_name.lower()
-        if "language" in l:
+        if "language" in l and not "language_projection" in l:
             return False
-        return any(p in l for p in ["vision", "visual", "projector", "merger", "qformer"])
+        return any(p in l for p in ["vision", "visual", "projector", "merger", "qformer", "language_projection"])
 
     def _is_language(self, layer_name):
-        """Language layers: LLM backbone."""
-        return "language" in layer_name.lower()
+        """Language layers: LLM backbone (excludes language_projection which is vision)."""
+        l = layer_name.lower()
+        return "language" in l and "language_projection" not in l
 
     # ==================== Metrics ====================
 
@@ -220,9 +226,13 @@ class AutoLayer:
             self._samples = random.sample(list(data), min(n_samples, len(data)))
         
         self._hook_all_layers(layers)
-        all_embs = {l: {"vis": [], "lang": []} for l in layers}
+        all_embs = {l: {"vis": [], "lang": [], "both": []} for l in layers}
         
-        n_forwards = n_samples * (1 + 2 * n_aug)
+        n_forwards = n_samples * (1 + 3 * n_aug)  # anchor + vis_aug + lang_aug + both_aug
+        if self.blank_image_for_lang:
+            n_forwards += n_samples  # extra forwards for blank image anchors
+        if self.blank_text_for_vision:
+            n_forwards += n_samples  # extra forwards for blank text anchors
         pbar = tqdm(total=n_forwards, desc="encoding", disable=not verbose)
         
         for i, s in enumerate(self._samples[:n_samples]):
@@ -233,28 +243,60 @@ class AutoLayer:
             img = Image.open(img).convert("RGB") if isinstance(img, str) else img
             text = s.get("question", "")
             
-            # Anchor
+            # Blank image/text for isolated robustness testing
+            blank_img = Image.new("RGB", img.size, (128, 128, 128)) if self.blank_image_for_lang else None
+            lang_img = blank_img if self.blank_image_for_lang else img
+            vis_text = "" if self.blank_text_for_vision else text
+            
+            # Anchor for "both" robustness (always <image, text>)
             embs = self._encode_all(img, text)
             for layer in layers:
                 if layer in embs:
-                    self._safe_append(all_embs[layer]["vis"], embs[layer])
-                    self._safe_append(all_embs[layer]["lang"], embs[layer])
+                    self._safe_append(all_embs[layer]["both"], embs[layer])
+                    if not self.blank_text_for_vision:
+                        self._safe_append(all_embs[layer]["vis"], embs[layer])
+                    if not self.blank_image_for_lang:
+                        self._safe_append(all_embs[layer]["lang"], embs[layer])
             pbar.update(1)
             
-            # Vision augmentations
-            for _ in range(n_aug):
-                embs = self._encode_all(self.augmenter.image(img), text)
+            # Vision anchor with blank text (if enabled)
+            if self.blank_text_for_vision:
+                embs = self._encode_all(img, vis_text)
                 for layer in layers:
                     if layer in embs:
                         self._safe_append(all_embs[layer]["vis"], embs[layer])
                 pbar.update(1)
             
-            # Language augmentations
-            for _ in range(n_aug):
-                embs = self._encode_all(img, self.augmenter.question(text) if text else "")
+            # Language anchor with blank image (if enabled)
+            if self.blank_image_for_lang:
+                embs = self._encode_all(lang_img, text)
                 for layer in layers:
                     if layer in embs:
                         self._safe_append(all_embs[layer]["lang"], embs[layer])
+                pbar.update(1)
+            
+            # Vision augmentations (may use blank text)
+            for _ in range(n_aug):
+                embs = self._encode_all(self.augmenter.image(img), vis_text)
+                for layer in layers:
+                    if layer in embs:
+                        self._safe_append(all_embs[layer]["vis"], embs[layer])
+                pbar.update(1)
+            
+            # Language augmentations (may use blank image)
+            for _ in range(n_aug):
+                embs = self._encode_all(lang_img, self.augmenter.question(text) if text else "")
+                for layer in layers:
+                    if layer in embs:
+                        self._safe_append(all_embs[layer]["lang"], embs[layer])
+                pbar.update(1)
+            
+            # Both augmentations (<aug(image), aug(text)>)
+            for _ in range(n_aug):
+                embs = self._encode_all(self.augmenter.image(img), self.augmenter.question(text) if text else "")
+                for layer in layers:
+                    if layer in embs:
+                        self._safe_append(all_embs[layer]["both"], embs[layer])
                 pbar.update(1)
         
         pbar.close()
@@ -262,32 +304,35 @@ class AutoLayer:
         
         # Compute metrics
         expected = n_samples * (1 + n_aug)
-        vis_scores, lang_scores = {}, {}
+        vis_scores, lang_scores, both_scores = {}, {}, {}
         
         for layer in (tqdm(layers, desc="metrics") if verbose else layers):
-            vis_list, lang_list = all_embs[layer]["vis"], all_embs[layer]["lang"]
+            vis_list, lang_list, both_list = all_embs[layer]["vis"], all_embs[layer]["lang"], all_embs[layer]["both"]
             
-            if len(vis_list) < expected * 0.5 or len(lang_list) < expected * 0.5:
+            if len(vis_list) < expected * 0.5 or len(lang_list) < expected * 0.5 or len(both_list) < expected * 0.5:
                 if verbose:
                     tqdm.write(f"  Skipping {layer}: insufficient samples")
                 continue
             
             vis_embs = torch.cat(vis_list, dim=0)
             lang_embs = torch.cat(lang_list, dim=0)
+            both_embs = torch.cat(both_list, dim=0)
             
             self._cache[layer] = {
                 "vision": (vis_embs, n_samples, n_aug),
                 "language": (lang_embs, n_samples, n_aug),
+                "both": (both_embs, n_samples, n_aug),
             }
             
             vis_scores[layer] = self._compute_metrics(vis_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
             lang_scores[layer] = self._compute_metrics(lang_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
+            both_scores[layer] = self._compute_metrics(both_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
             torch.cuda.empty_cache()
             
             if verbose:
-                tqdm.write(f"  {layer}: vis={vis_scores[layer]['mse']:.3f}, lang={lang_scores[layer]['mse']:.3f}")
+                tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, both={both_scores[layer]['Q']:.3f}")
         
-        return {"vision": vis_scores, "language": lang_scores}
+        return {"vision": vis_scores, "language": lang_scores, "both": both_scores}
 
     def _find_best_in(self, scores_dict, layer_subset, metric, is_agg=False):
         """Find best layer within a subset (higher = better)."""
@@ -308,10 +353,19 @@ class AutoLayer:
         vis_layers = [l for l in layers if self._is_vision(l)]
         lang_layers = [l for l in layers if self._is_language(l)]
         
-        n_forwards = n_samples * (1 + 2 * n_aug)
+        n_forwards = n_samples * (1 + 3 * n_aug)  # anchor + vis_aug + lang_aug + both_aug
+        if self.blank_image_for_lang:
+            n_forwards += n_samples
+        if self.blank_text_for_vision:
+            n_forwards += n_samples
         if verbose:
             print(f"[AutoLayer] {len(layers)} layers ({len(vis_layers)} vision, {len(lang_layers)} language)")
             print(f"            {n_samples} samples × {n_aug} augs → {n_forwards} forwards")
+            if self.blank_text_for_vision:
+                print(f"            Vision robustness: <image, \"\"> mode")
+            if self.blank_image_for_lang:
+                print(f"            Language robustness: <blank, text> mode")
+            print(f"            Both robustness: <image, text> vs <aug(image), aug(text)>")
         
         scores = self.score_layers(dataset, layers, n_samples, n_aug, verbose)
         
@@ -326,15 +380,21 @@ class AutoLayer:
                 "vision_layer": self._find_best_in(scores["language"], vis_layers, metric),
                 "language_layer": self._find_best_in(scores["language"], lang_layers, metric),
             },
+            "both_robustness": {
+                "overall": self._find_best_in(scores["both"], layers, metric),
+                "vision_layer": self._find_best_in(scores["both"], vis_layers, metric),
+                "language_layer": self._find_best_in(scores["both"], lang_layers, metric),
+            },
         }
         
         if verbose:
             print(f"\n{'='*60}")
             for rob_type, bests in best.items():
+                mode_key = "vision" if "vision_rob" in rob_type else ("language" if "language_rob" in rob_type else "both")
                 print(f"{rob_type}:")
                 for group, layer in bests.items():
                     if layer:
-                        score = scores["vision" if "vision" in rob_type else "language"][layer][metric]
+                        score = scores[mode_key][layer][metric]
                         print(f"  {group:15} → {layer} ({metric}={score:.3f})")
             print(f"{'='*60}")
         
@@ -417,13 +477,15 @@ class AutoLayer:
         
         metrics = ["mse", "dot", "ll", "Q"]
         agg = {}
-        for mode in ["vision", "language"]:
+        for mode in ["vision", "language", "both"]:
             agg[mode] = {}
+            if mode not in all_scores[0]:
+                continue
             layers = list(all_scores[0][mode].keys())
             for layer in layers:
                 agg[mode][layer] = {}
                 for m in metrics:
-                    vals = [s[mode][layer][m] for s in all_scores if layer in s[mode]]
+                    vals = [s[mode][layer][m] for s in all_scores if mode in s and layer in s[mode]]
                     agg[mode][layer][m] = {"mean": np.mean(vals), "std": np.std(vals)}
         
         print(f"[AutoLayer] Aggregated {len(files)} runs")
@@ -448,12 +510,20 @@ class AutoLayer:
             },
         }
         
+        if "both" in agg_scores:
+            best["both_robustness"] = {
+                "overall": self._find_best_in(agg_scores["both"], layers, metric, is_agg=True),
+                "vision_layer": self._find_best_in(agg_scores["both"], vis_layers, metric, is_agg=True),
+                "language_layer": self._find_best_in(agg_scores["both"], lang_layers, metric, is_agg=True),
+            }
+        
         print(f"Best layers (from {metric} mean):")
         for rob, bests in best.items():
+            mode_key = "vision" if "vision_rob" in rob else ("language" if "language_rob" in rob else "both")
             print(f"  {rob}:")
             for group, layer in bests.items():
                 if layer:
-                    score = agg_scores["vision" if "vision" in rob else "language"][layer][metric]["mean"]
+                    score = agg_scores[mode_key][layer][metric]["mean"]
                     parts = layer.split('.')
                     short = parts[-3] if len(parts) >= 3 else parts[-1]
                     print(f"    {group}: {short} ({score:.3f})")
@@ -462,14 +532,16 @@ class AutoLayer:
     # ==================== Plotting ====================
 
     def plot_scores(self, scores, metric="Q", normalize=True, figsize=None):
-        """Line plot of scores with optional error bars."""
+        """Line plot of scores with optional error bars (vision=green, language=blue)."""
         import matplotlib.pyplot as plt
         
         metrics = [metric] if isinstance(metric, str) else metric
-        fig, axes = plt.subplots(len(metrics), 2, figsize=figsize or (10, 3 * len(metrics)), squeeze=False)
+        modes = [m for m in ["vision", "language", "both"] if m in scores]
+        fig, axes = plt.subplots(len(metrics), len(modes), figsize=figsize or (5 * len(modes), 3 * len(metrics)), squeeze=False)
         
         for row, m in enumerate(metrics):
-            for col, (mode, mode_scores) in enumerate(scores.items()):
+            for col, mode in enumerate(modes):
+                mode_scores = scores[mode]
                 ax = axes[row, col]
                 layers = list(mode_scores.keys())
                 
@@ -494,39 +566,58 @@ class AutoLayer:
                         if stds is not None:
                             stds = stds / (vmax - vmin)
                 
+                # Plot vision layers (green) and language layers (blue) separately
+                vis_idx = indices[is_vis]
+                lang_idx = indices[is_lang]
+                vis_vals = vals[is_vis]
+                lang_vals = vals[is_lang]
+                
+                if len(vis_idx) > 0:
+                    if stds is not None:
+                        ax.errorbar(vis_idx, vis_vals, yerr=stds[is_vis], fmt='o-', ms=3, lw=1, 
+                                   capsize=2, alpha=0.8, color='green', label='vision')
+                    else:
+                        ax.plot(vis_idx, vis_vals, 'o-', ms=3, lw=1, color='green', label='vision')
+                
+                if len(lang_idx) > 0:
+                    if stds is not None:
+                        ax.errorbar(lang_idx, lang_vals, yerr=stds[is_lang], fmt='o-', ms=3, lw=1, 
+                                   capsize=2, alpha=0.8, color='blue', label='language')
+                    else:
+                        ax.plot(lang_idx, lang_vals, 'o-', ms=3, lw=1, color='blue', label='language')
+                
+                # Mark best overall (red star), best vision (green triangle), best language (blue triangle)
                 best = np.argmax(vals)
-                best_vis = np.argmax(np.where(is_vis, vals, -np.inf)) if is_vis.any() else None
-                best_lang = np.argmax(np.where(is_lang, vals, -np.inf)) if is_lang.any() else None
+                ax.scatter([indices[best]], [vals[best]], c='red', s=120, zorder=6, marker='*', edgecolors='black')
                 
-                if stds is not None:
-                    ax.errorbar(indices, vals, yerr=stds, fmt='o-', ms=4, lw=1.5, capsize=2, alpha=0.8)
-                else:
-                    ax.plot(indices, vals, 'o-', ms=4, lw=1.5)
+                if len(vis_vals) > 0:
+                    best_vis = vis_idx[np.argmax(vis_vals)]
+                    ax.scatter([best_vis], [vals[best_vis]], c='green', s=80, zorder=5, marker='^', edgecolors='black')
                 
-                ax.scatter([indices[best]], [vals[best]], c='red', s=100, zorder=5, label=f'best: {best}')
-                if best_vis is not None and is_vis[best_vis]:
-                    ax.scatter([indices[best_vis]], [vals[best_vis]], c='green', s=80, marker='^', zorder=4, label=f'vis: {best_vis}')
-                if best_lang is not None and is_lang[best_lang]:
-                    ax.scatter([indices[best_lang]], [vals[best_lang]], c='blue', s=80, marker='s', zorder=4, label=f'lang: {best_lang}')
+                if len(lang_vals) > 0:
+                    best_lang = lang_idx[np.argmax(lang_vals)]
+                    ax.scatter([best_lang], [vals[best_lang]], c='blue', s=80, zorder=5, marker='^', edgecolors='black')
                 
                 ax.set_xlabel("Layer" if row == len(metrics) - 1 else "")
                 ax.set_ylabel(f"{m} (↑)" if col == 0 else "")
                 ax.set_title(f"{mode.capitalize()} - {m}" if row == 0 else "")
-                ax.legend(fontsize=7)
+                ax.legend(fontsize=7, loc='lower right')
                 ax.grid(alpha=0.3)
         
         plt.tight_layout()
         plt.show()
 
-    def plot_all_metrics(self, scores, normalize=True, figsize=(14, 6)):
-        """Plot all metrics in a 2x4 grid with vision/language layers colored differently."""
+    def plot_all_metrics(self, scores, normalize=True, figsize=(14, 9)):
+        """Plot all metrics in a 3x4 grid with vision/language layers colored differently."""
         import matplotlib.pyplot as plt
         
         metrics = ["mse", "dot", "ll", "Q"]
-        fig, axes = plt.subplots(2, 4, figsize=figsize)
+        modes = [m for m in ["vision", "language", "both"] if m in scores]
+        fig, axes = plt.subplots(len(modes), 4, figsize=figsize, squeeze=False)
         
         for col, metric in enumerate(metrics):
-            for row, (mode, mode_scores) in enumerate(scores.items()):
+            for row, mode in enumerate(modes):
+                mode_scores = scores[mode]
                 ax = axes[row, col]
                 layers = list(mode_scores.keys())
                 
@@ -587,7 +678,7 @@ class AutoLayer:
                     ax.scatter([best_lang], [vals[best_lang]], c='blue', s=80, zorder=5, marker='^')
                 
                 ax.set_title(f"{mode} - {metric} (↑)" if row == 0 else f"{metric} (↑)")
-                ax.set_xlabel("Layer" if row == 1 else "")
+                ax.set_xlabel("Layer" if row == len(modes) - 1 else "")
                 ax.grid(alpha=0.3)
                 if col == 0:
                     ax.set_ylabel(mode.capitalize())

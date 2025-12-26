@@ -58,12 +58,12 @@ class IKE_CHAIN(nn.Module):
 
         # Hook for VLM activations (supports dual-layer: vision + language)
         model_cfg = getattr(config, "model", config)
-        inner_params = getattr(model_cfg, "inner_params", [])
+        inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
         inner_params_vision = getattr(model_cfg, "inner_params_vision", [])
-        if not inner_params:
-            raise ValueError("Requires config.model.inner_params")
+        if not inner_params_lang:
+            raise ValueError("Requires config.model.inner_params_lang")
         
-        # Dual-layer mode: inner_params (language) + inner_params_vision (vision)
+        # Dual-layer mode: inner_params_lang (language) + inner_params_vision (vision)
         self._dual_layer = len(inner_params_vision) > 0
         self._vision_act = None
         self._lang_act = None
@@ -76,8 +76,8 @@ class IKE_CHAIN(nn.Module):
                 lambda m, i, o, an=attr_name: setattr(self, an, i[0].detach() if isinstance(i[0], torch.Tensor) else None)
             )
         
-        # Language layer from inner_params, vision layer from inner_params_vision
-        self._lang_hook = _setup_hook(inner_params[0], "_lang_act")
+        # Language layer from inner_params_lang, vision layer from inner_params_vision
+        self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act")
         self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act") if self._dual_layer else None
         
         # Blank image for language-only embedding (gray 224x224)
