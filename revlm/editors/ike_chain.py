@@ -720,7 +720,7 @@ class IKE_CHAIN(nn.Module):
                        edit_idx=self.codebook[idx].get("edit_idx", 0))
         
         # Add edges (only keep stronger connections for cleaner layout)
-        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], 50)
+        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], 90)
         for i in range(len(indices)):
             for j in range(i + 1, len(indices)):
                 if sims[i, j] > thresh:
