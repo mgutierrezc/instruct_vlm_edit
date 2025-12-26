@@ -48,8 +48,8 @@ class IKE_CHAIN(nn.Module):
         # "balancekey": radius based on positive (augmented image+text) and other keys in codebook
         
         # Augmentation config (0 = disabled)
-        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 1))  # Augmented entry points per edit # 1 
-        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 1))    # Augmented sentence keys per edit # 1
+        self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit # 1 
+        self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit # 1
         needs_aug = self.n_aug_entry > 0 or self.n_aug_sent > 0 or self.auto_k_method == "radius"
         self.augmenter = Augmenter(self.wrapper) if needs_aug else None
         
