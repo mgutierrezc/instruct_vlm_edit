@@ -61,6 +61,47 @@ class AutoLayer:
         self.percentile_threshold = 0.0
         self.blank_image_for_lang = True   # Use <blank, text> for language robustness
         self.blank_text_for_vision = True  # Use <image, ""> for vision robustness
+        self.contrastive_both = True       # Use contrastive target for "both" robustness
+        self.weighted_contrastive = False  # Use weighted target [1, 0.5, 0] for contrastive
+        self.verbalize_mode = "none"       # "none": <I,T>, "replace": <blank, verb(I)+T>, "augment": <I, verb(I)+T>
+        self._verb_cache = {}              # Cache image descriptions
+
+    def _verbalize(self, image):
+        """Generate text description of image using VLM."""
+        img_id = id(image)
+        if img_id not in self._verb_cache:
+            prompt = "Describe this image briefly in one sentence."
+            desc = self.wrapper.generate([image], [prompt])[0]
+            self._verb_cache[img_id] = desc
+        return self._verb_cache[img_id]
+
+    def _prepare_input(self, image, text):
+        """Prepare inputs based on verbalize_mode.
+        
+        Modes:
+          - "none":    <I, T>                (original)
+          - "replace": <blank, verb(I) + T>  (image → text)
+          - "augment": <I, verb(I) + T>      (keep image, add verb)
+        """
+        if self.verbalize_mode == "none" or image is None:
+            return image, text
+        
+        # Check if already a blank image
+        is_blank = getattr(image, '_is_blank', False)
+        if is_blank:
+            return image, text
+        
+        desc = self._verbalize(image)
+        combined = f"{desc} {text}".strip()
+        
+        if self.verbalize_mode == "replace":
+            blank = Image.new("RGB", image.size, (128, 128, 128))
+            blank._is_blank = True
+            return blank, combined
+        elif self.verbalize_mode == "augment":
+            return image, combined
+        else:
+            return image, text
 
     def get_candidate_layers(self, include_all=False):
         layers = [n for n, p in self.model.named_parameters() if n.endswith(".weight")]
@@ -158,11 +199,159 @@ class AutoLayer:
             return False
         return "language" in l
 
+    # ==================== Target Matrix Builders ====================
+
+    def _build_standard_target(self, n_samples, n_aug, device):
+        """Standard target: 1 cluster per sample (anchor + augs)."""
+        group_size = 1 + n_aug
+        N = n_samples * group_size
+        labels = torch.arange(N, device=device) // group_size
+        return (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+
+    def _build_contrastive_target(self, n_samples, n_aug, device):
+        """Contrastive target: 3 sub-clusters per sample (A, B, C), all disjoint.
+        
+        For sample i:
+          A: <I_i, T_i> + augs     (sub-cluster 3*i + 0)
+          B: <I_i, T_j> + augs     (sub-cluster 3*i + 1)  
+          C: <I_k, T_i> + augs     (sub-cluster 3*i + 2)
+        
+        Target: 1s within each sub-cluster, 0s between all sub-clusters.
+        """
+        group_size = 1 + n_aug
+        n_subclusters = 3 * n_samples
+        N = n_subclusters * group_size
+        labels = torch.arange(N, device=device) // group_size
+        return (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+
+    def _build_contrastive_target_weighted(self, n_samples, n_aug, device):
+        """Weighted contrastive target: captures shared modality relationships.
+        
+        For sample i's 3 sub-clusters (A, B, C):
+          A: <I_i, T_i>    B: <I_i, T_j>    C: <I_k, T_i>
+        
+        Target weights:
+          - Same sub-cluster (diagonal): 1.0
+          - A↔B (share image I_i): 0.5
+          - A↔C (share text T_i): 0.5  
+          - B↔C (share nothing): 0.0
+        """
+        group_size = 1 + n_aug
+        n_subclusters = 3 * n_samples
+        N = n_subclusters * group_size
+        
+        # Start with zeros
+        target = torch.zeros(N, N, device=device)
+        
+        for sample_idx in range(n_samples):
+            # Sub-cluster indices for this sample
+            a_start = (3 * sample_idx + 0) * group_size
+            b_start = (3 * sample_idx + 1) * group_size
+            c_start = (3 * sample_idx + 2) * group_size
+            
+            a_end = a_start + group_size
+            b_end = b_start + group_size
+            c_end = c_start + group_size
+            
+            # Diagonal blocks: 1.0 (same sub-cluster)
+            target[a_start:a_end, a_start:a_end] = 1.0
+            target[b_start:b_end, b_start:b_end] = 1.0
+            target[c_start:c_end, c_start:c_end] = 1.0
+            
+            # A↔B: share image → 0.5
+            target[a_start:a_end, b_start:b_end] = 0.5
+            target[b_start:b_end, a_start:a_end] = 0.5
+            
+            # A↔C: share text → 0.5
+            target[a_start:a_end, c_start:c_end] = 0.5
+            target[c_start:c_end, a_start:a_end] = 0.5
+            
+            # B↔C: share nothing → 0.0 (already zeros)
+        
+        return target
+
+    def _build_contrastive_target_text_partial(self, n_samples, n_aug, device):
+        """Text sensitivity target: cluster by same text.
+        
+        For sample i's 3 sub-clusters (A, B, C):
+          A: <I_i, T_i>    B: <I_i, T_j>    C: <I_k, T_i>
+        
+        A and C share text T_i → cluster together
+        B has different text T_j → separate
+        
+        Target: A↔A=1, C↔C=1, A↔C=1, B↔B=1, A↔B=0, B↔C=0
+        """
+        group_size = 1 + n_aug
+        n_subclusters = 3 * n_samples
+        N = n_subclusters * group_size
+        
+        target = torch.zeros(N, N, device=device)
+        
+        for sample_idx in range(n_samples):
+            a_start = (3 * sample_idx + 0) * group_size
+            b_start = (3 * sample_idx + 1) * group_size
+            c_start = (3 * sample_idx + 2) * group_size
+            
+            a_end = a_start + group_size
+            b_end = b_start + group_size
+            c_end = c_start + group_size
+            
+            # Diagonal blocks
+            target[a_start:a_end, a_start:a_end] = 1.0
+            target[b_start:b_end, b_start:b_end] = 1.0
+            target[c_start:c_end, c_start:c_end] = 1.0
+            
+            # A↔C: same text T_i → cluster
+            target[a_start:a_end, c_start:c_end] = 1.0
+            target[c_start:c_end, a_start:a_end] = 1.0
+            
+            # A↔B, B↔C: different text → 0 (already zeros)
+        
+        return target
+
+    def _build_contrastive_target_image_partial(self, n_samples, n_aug, device):
+        """Image sensitivity target: cluster by same image.
+        
+        For sample i's 3 sub-clusters (A, B, C):
+          A: <I_i, T_i>    B: <I_i, T_j>    C: <I_k, T_i>
+        
+        A and B share image I_i → cluster together
+        C has different image I_k → separate
+        
+        Target: A↔A=1, B↔B=1, A↔B=1, C↔C=1, A↔C=0, B↔C=0
+        """
+        group_size = 1 + n_aug
+        n_subclusters = 3 * n_samples
+        N = n_subclusters * group_size
+        
+        target = torch.zeros(N, N, device=device)
+        
+        for sample_idx in range(n_samples):
+            a_start = (3 * sample_idx + 0) * group_size
+            b_start = (3 * sample_idx + 1) * group_size
+            c_start = (3 * sample_idx + 2) * group_size
+            
+            a_end = a_start + group_size
+            b_end = b_start + group_size
+            c_end = c_start + group_size
+            
+            # Diagonal blocks
+            target[a_start:a_end, a_start:a_end] = 1.0
+            target[b_start:b_end, b_start:b_end] = 1.0
+            target[c_start:c_end, c_start:c_end] = 1.0
+            
+            # A↔B: same image I_i → cluster
+            target[a_start:a_end, b_start:b_end] = 1.0
+            target[b_start:b_end, a_start:a_end] = 1.0
+            
+            # A↔C, B↔C: different image → 0 (already zeros)
+        
+        return target
+
     # ==================== Metrics ====================
 
-    def _compute_metrics(self, embs, n_samples, n_aug, use_percentile=False, percentile_threshold=0.0):
-        """Compute metrics (all higher = better)."""
-        group_size = 1 + n_aug
+    def _compute_metrics_with_target(self, embs, target, use_percentile=False, percentile_threshold=0.0):
+        """Compute metrics with custom target matrix (all higher = better)."""
         N = len(embs)
         
         # Pairwise L2 distance -> similarity (0-1)
@@ -174,12 +363,10 @@ class AutoLayer:
         sim_triu = sim[triu_idx[0], triu_idx[1]]
         
         if use_percentile:
-            # Convert to percentile ranks
             ranks = sim_triu.argsort().argsort().float()
             vals_triu = (ranks / max(len(sim_triu) - 1, 1))
             vals_triu = (vals_triu * 1000).round() / 1000
         else:
-            # Use raw similarity directly
             vals_triu = sim_triu
         
         # Full symmetric matrix for log-likelihood
@@ -187,9 +374,6 @@ class AutoLayer:
         sim_full[triu_idx[0], triu_idx[1]] = vals_triu
         sim_full[triu_idx[1], triu_idx[0]] = vals_triu
         
-        # Target (1 in-block, 0 off-block)
-        labels = torch.arange(N, device=embs.device) // group_size
-        target = (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
         target_triu = target[triu_idx[0], triu_idx[1]]
         
         # Apply threshold filter
@@ -206,15 +390,27 @@ class AutoLayer:
         log_probs = torch.log(sim_full + 1e-16)
         ll = (torch.sum(target * log_probs) / N).item()
         
-        # Weighted modularity Q (uses raw similarity, not filtered)
-        # Q = (1/2m) * sum_ij (w_ij - k_i*k_j/2m) * 1[z_i=z_j]
-        k = sim.sum(dim=1)  # weighted degree per node
-        m = sim.sum() / 2   # total weight
+        # Weighted modularity Q
+        k = sim.sum(dim=1)
+        m = sim.sum() / 2
         null_model = torch.outer(k, k) / (2 * m)
         Q = ((sim - null_model) * target).sum() / (2 * m)
         modularity = Q.item()
         
         return {"mse": mse, "dot": dot, "ll": ll, "Q": modularity}
+
+    def _compute_metrics(self, embs, n_samples, n_aug, use_percentile=False, percentile_threshold=0.0):
+        """Compute metrics with standard target (1 cluster per sample)."""
+        target = self._build_standard_target(n_samples, n_aug, embs.device)
+        return self._compute_metrics_with_target(embs, target, use_percentile, percentile_threshold)
+
+    def _compute_metrics_contrastive(self, embs, n_samples, n_aug, use_percentile=False, percentile_threshold=0.0):
+        """Compute metrics with contrastive target (3 sub-clusters per sample)."""
+        if self.weighted_contrastive:
+            target = self._build_contrastive_target_weighted(n_samples, n_aug, embs.device)
+        else:
+            target = self._build_contrastive_target(n_samples, n_aug, embs.device)
+        return self._compute_metrics_with_target(embs, target, use_percentile, percentile_threshold)
 
     # ==================== Public API ====================
 
@@ -222,6 +418,112 @@ class AutoLayer:
         """Append only if shape matches existing entries."""
         if len(lst) == 0 or lst[0].shape == emb.shape:
             lst.append(emb)
+
+    def _encode_both_contrastive(self, samples, layers, all_embs, n_aug, pbar):
+        """Encode contrastive 'both' robustness: 3 sub-clusters per sample.
+        
+        For sample i with (I_i, T_i):
+          A: <I_i, T_i>     + n_aug × <aug(I_i), aug(T_i)>     (original binding)
+          B: <I_i, T_j>     + n_aug × <aug(I_i), aug(T_j)>     (counterfact text)
+          C: <I_k, T_i>     + n_aug × <aug(I_k), aug(T_i)>     (counterfact image)
+        
+        With verbalize_mode != "none": applies verbalization via _prepare_input()
+        """
+        n = len(samples)
+        
+        # Preload all images and texts
+        images, texts = [], []
+        for s in samples:
+            img = s["image"]
+            img = Image.open(img).convert("RGB") if isinstance(img, str) else img
+            images.append(img)
+            texts.append(s.get("question", ""))
+        
+        # Pre-verbalize all images if enabled (cache them)
+        if self.verbalize_mode != "none":
+            for img in images:
+                self._verbalize(img)
+        
+        for i in range(n):
+            if i > 0 and i % 10 == 0:
+                torch.cuda.empty_cache()
+            
+            img_i = images[i]
+            text_i = texts[i]
+            # Counterfactual: rotate indices
+            text_j = texts[(i + 1) % n]
+            img_k = images[(i + 2) % n]
+            
+            # Sub-cluster A: <I_i, T_i> + augs
+            img_in, text_in = self._prepare_input(img_i, text_i)
+            embs = self._encode_all(img_in, text_in)
+            for layer in layers:
+                if layer in embs:
+                    self._safe_append(all_embs[layer]["both"], embs[layer])
+            pbar.update(1)
+            for _ in range(n_aug):
+                aug_img = self.augmenter.image(img_i)
+                aug_text = self.augmenter.question(text_i) if text_i else ""
+                img_in, text_in = self._prepare_input(aug_img, aug_text)
+                embs = self._encode_all(img_in, text_in)
+                for layer in layers:
+                    if layer in embs:
+                        self._safe_append(all_embs[layer]["both"], embs[layer])
+                pbar.update(1)
+            
+            # Sub-cluster B: <I_i, T_j> + augs (counterfact text)
+            img_in, text_in = self._prepare_input(img_i, text_j)
+            embs = self._encode_all(img_in, text_in)
+            for layer in layers:
+                if layer in embs:
+                    self._safe_append(all_embs[layer]["both"], embs[layer])
+            pbar.update(1)
+            for _ in range(n_aug):
+                aug_img = self.augmenter.image(img_i)
+                aug_text = self.augmenter.question(text_j) if text_j else ""
+                img_in, text_in = self._prepare_input(aug_img, aug_text)
+                embs = self._encode_all(img_in, text_in)
+                for layer in layers:
+                    if layer in embs:
+                        self._safe_append(all_embs[layer]["both"], embs[layer])
+                pbar.update(1)
+            
+            # Sub-cluster C: <I_k, T_i> + augs (counterfact image)
+            img_in, text_in = self._prepare_input(img_k, text_i)
+            embs = self._encode_all(img_in, text_in)
+            for layer in layers:
+                if layer in embs:
+                    self._safe_append(all_embs[layer]["both"], embs[layer])
+            pbar.update(1)
+            for _ in range(n_aug):
+                aug_img = self.augmenter.image(img_k)
+                aug_text = self.augmenter.question(text_i) if text_i else ""
+                img_in, text_in = self._prepare_input(aug_img, aug_text)
+                embs = self._encode_all(img_in, text_in)
+                for layer in layers:
+                    if layer in embs:
+                        self._safe_append(all_embs[layer]["both"], embs[layer])
+                pbar.update(1)
+
+    def _encode_both_standard(self, img, text, layers, all_embs, n_aug, pbar):
+        """Encode standard 'both' robustness: 1 cluster per sample."""
+        # Anchor
+        img_in, text_in = self._prepare_input(img, text)
+        embs = self._encode_all(img_in, text_in)
+        for layer in layers:
+            if layer in embs:
+                self._safe_append(all_embs[layer]["both"], embs[layer])
+        pbar.update(1)
+        # Augmentations
+        for _ in range(n_aug):
+            aug_img = self.augmenter.image(img)
+            aug_text = self.augmenter.question(text) if text else ""
+            img_in, text_in = self._prepare_input(aug_img, aug_text)
+            embs = self._encode_all(img_in, text_in)
+            for layer in layers:
+                if layer in embs:
+                    self._safe_append(all_embs[layer]["both"], embs[layer])
+            pbar.update(1)
 
     @torch.no_grad()
     def score_layers(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
@@ -236,13 +538,21 @@ class AutoLayer:
         self._hook_all_layers(layers)
         all_embs = {l: {"vis": [], "lang": [], "both": []} for l in layers}
         
-        n_forwards = n_samples * (1 + 3 * n_aug)  # anchor + vis_aug + lang_aug + both_aug
+        # Forward count: vision + language + both
+        n_forwards = n_samples * (1 + n_aug) * 2  # vis + lang base
         if self.blank_image_for_lang:
-            n_forwards += n_samples  # extra forwards for blank image anchors
+            n_forwards += n_samples
         if self.blank_text_for_vision:
-            n_forwards += n_samples  # extra forwards for blank text anchors
+            n_forwards += n_samples
+        # Both: contrastive = 3 sub-clusters, standard = 1 cluster
+        if self.contrastive_both:
+            n_forwards += n_samples * 3 * (1 + n_aug)
+        else:
+            n_forwards += n_samples * (1 + n_aug)
+        
         pbar = tqdm(total=n_forwards, desc="encoding", disable=not verbose)
         
+        # Encode vision & language
         for i, s in enumerate(self._samples[:n_samples]):
             if i > 0 and i % 10 == 0:
                 torch.cuda.empty_cache()
@@ -251,73 +561,77 @@ class AutoLayer:
             img = Image.open(img).convert("RGB") if isinstance(img, str) else img
             text = s.get("question", "")
             
-            # Blank image/text for isolated robustness testing
-            blank_img = Image.new("RGB", img.size, (128, 128, 128)) if self.blank_image_for_lang else None
-            lang_img = blank_img if self.blank_image_for_lang else img
-            vis_text = "" if self.blank_text_for_vision else text
-            
-            # Anchor for "both" robustness (always <image, text>)
-            embs = self._encode_all(img, text)
-            for layer in layers:
-                if layer in embs:
-                    self._safe_append(all_embs[layer]["both"], embs[layer])
-                    if not self.blank_text_for_vision:
-                        self._safe_append(all_embs[layer]["vis"], embs[layer])
-                    if not self.blank_image_for_lang:
-                        self._safe_append(all_embs[layer]["lang"], embs[layer])
-            pbar.update(1)
-            
-            # Vision anchor with blank text (if enabled)
+            # For vision: test image robustness
+            # With verbalize: <blank, verb(I)> vs <blank, verb(aug(I))>
+            # Without: <I, ""> vs <aug(I), "">
             if self.blank_text_for_vision:
-                embs = self._encode_all(img, vis_text)
+                img_in, text_in = self._prepare_input(img, "")
+                embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
                         self._safe_append(all_embs[layer]["vis"], embs[layer])
                 pbar.update(1)
             
-            # Language anchor with blank image (if enabled)
+            # For language: test text robustness
+            # With verbalize: uses _prepare_input to add verb(I) context
+            # Without: <blank, T> vs <blank, aug(T)>
             if self.blank_image_for_lang:
-                embs = self._encode_all(lang_img, text)
+                if self.verbalize_mode != "none":
+                    img_in, text_in = self._prepare_input(img, text)
+                else:
+                    blank_img = Image.new("RGB", img.size, (128, 128, 128))
+                    img_in, text_in = blank_img, text
+                embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
                         self._safe_append(all_embs[layer]["lang"], embs[layer])
                 pbar.update(1)
             
-            # Vision augmentations (may use blank text)
+            # Vision augmentations
             for _ in range(n_aug):
-                embs = self._encode_all(self.augmenter.image(img), vis_text)
+                aug_img = self.augmenter.image(img)
+                img_in, text_in = self._prepare_input(aug_img, "")
+                embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
                         self._safe_append(all_embs[layer]["vis"], embs[layer])
                 pbar.update(1)
             
-            # Language augmentations (may use blank image)
+            # Language augmentations
             for _ in range(n_aug):
-                embs = self._encode_all(lang_img, self.augmenter.question(text) if text else "")
+                aug_text = self.augmenter.question(text) if text else ""
+                if self.verbalize_mode != "none":
+                    img_in, text_in = self._prepare_input(img, aug_text)
+                else:
+                    blank_img = Image.new("RGB", img.size, (128, 128, 128))
+                    img_in, text_in = blank_img, aug_text
+                embs = self._encode_all(img_in, text_in)
                 for layer in layers:
                     if layer in embs:
                         self._safe_append(all_embs[layer]["lang"], embs[layer])
                 pbar.update(1)
             
-            # Both augmentations (<aug(image), aug(text)>)
-            for _ in range(n_aug):
-                embs = self._encode_all(self.augmenter.image(img), self.augmenter.question(text) if text else "")
-                for layer in layers:
-                    if layer in embs:
-                        self._safe_append(all_embs[layer]["both"], embs[layer])
-                pbar.update(1)
+            # Standard both (if not contrastive)
+            if not self.contrastive_both:
+                self._encode_both_standard(img, text, layers, all_embs, n_aug, pbar)
+        
+        # Contrastive both (needs all samples together for counterfactuals)
+        if self.contrastive_both:
+            self._encode_both_contrastive(self._samples[:n_samples], layers, all_embs, n_aug, pbar)
         
         pbar.close()
         self._remove_hooks()
         
         # Compute metrics
-        expected = n_samples * (1 + n_aug)
+        expected_vis_lang = n_samples * (1 + n_aug)
+        expected_both = n_samples * 3 * (1 + n_aug) if self.contrastive_both else n_samples * (1 + n_aug)
         vis_scores, lang_scores, both_scores = {}, {}, {}
+        both_text_partial_scores, both_image_partial_scores = {}, {}
         
         for layer in (tqdm(layers, desc="metrics") if verbose else layers):
             vis_list, lang_list, both_list = all_embs[layer]["vis"], all_embs[layer]["lang"], all_embs[layer]["both"]
             
-            if len(vis_list) < expected * 0.5 or len(lang_list) < expected * 0.5 or len(both_list) < expected * 0.5:
+            if len(vis_list) < expected_vis_lang * 0.5 or len(lang_list) < expected_vis_lang * 0.5 or len(both_list) < expected_both * 0.5:
                 if verbose:
                     tqdm.write(f"  Skipping {layer}: insufficient samples")
                 continue
@@ -334,13 +648,32 @@ class AutoLayer:
             
             vis_scores[layer] = self._compute_metrics(vis_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
             lang_scores[layer] = self._compute_metrics(lang_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
-            both_scores[layer] = self._compute_metrics(both_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
+            
+            # Use contrastive metrics for "both" if enabled
+            if self.contrastive_both:
+                both_embs_gpu = both_embs.to(self.device)
+                both_scores[layer] = self._compute_metrics_contrastive(both_embs_gpu, n_samples, n_aug, self.use_percentile, self.percentile_threshold)
+                
+                # Compute partial sensitivity scores (text and image)
+                text_target = self._build_contrastive_target_text_partial(n_samples, n_aug, self.device)
+                image_target = self._build_contrastive_target_image_partial(n_samples, n_aug, self.device)
+                both_text_partial_scores[layer] = self._compute_metrics_with_target(both_embs_gpu, text_target, self.use_percentile, self.percentile_threshold)
+                both_image_partial_scores[layer] = self._compute_metrics_with_target(both_embs_gpu, image_target, self.use_percentile, self.percentile_threshold)
+            else:
+                both_scores[layer] = self._compute_metrics(both_embs.to(self.device), n_samples, n_aug, self.use_percentile, self.percentile_threshold)
             torch.cuda.empty_cache()
             
             if verbose:
-                tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, both={both_scores[layer]['Q']:.3f}")
+                if self.contrastive_both:
+                    tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, both={both_scores[layer]['Q']:.3f}, text_p={both_text_partial_scores[layer]['Q']:.3f}, img_p={both_image_partial_scores[layer]['Q']:.3f}")
+                else:
+                    tqdm.write(f"  {layer}: vis={vis_scores[layer]['Q']:.3f}, lang={lang_scores[layer]['Q']:.3f}, both={both_scores[layer]['Q']:.3f}")
         
-        return {"vision": vis_scores, "language": lang_scores, "both": both_scores}
+        result = {"vision": vis_scores, "language": lang_scores, "both": both_scores}
+        if self.contrastive_both:
+            result["both_text_partial"] = both_text_partial_scores
+            result["both_image_partial"] = both_image_partial_scores
+        return result
 
     def _find_best_in(self, scores_dict, layer_subset, metric, is_agg=False):
         """Find best layer within a subset (higher = better)."""
@@ -357,24 +690,54 @@ class AutoLayer:
         n_aug = n_aug or self.n_aug
         self._samples = None
         self._cache = {}
+        self._verb_cache = {}  # Clear verbalization cache
         
         vis_layers = [l for l in layers if self._is_vision(l)]
         merger_layers = [l for l in layers if self._is_merger(l)]
         lang_layers = [l for l in layers if self._is_language(l)]
         
-        n_forwards = n_samples * (1 + 3 * n_aug)
+        # Forward count
+        n_forwards = n_samples * (1 + n_aug) * 2  # vis + lang
         if self.blank_image_for_lang:
             n_forwards += n_samples
         if self.blank_text_for_vision:
             n_forwards += n_samples
+        if self.contrastive_both:
+            n_forwards += n_samples * 3 * (1 + n_aug)
+        else:
+            n_forwards += n_samples * (1 + n_aug)
+        
         if verbose:
             print(f"[AutoLayer] {len(layers)} layers ({len(vis_layers)} vision, {len(merger_layers)} merger, {len(lang_layers)} language)")
             print(f"            {n_samples} samples × {n_aug} augs → {n_forwards} forwards")
+            if self.verbalize_mode == "replace":
+                print(f"            VERBALIZE MODE: replace → <blank, verb(I) + T>")
+            elif self.verbalize_mode == "augment":
+                print(f"            VERBALIZE MODE: augment → <I, verb(I) + T>")
             if self.blank_text_for_vision:
-                print(f"            Vision robustness: <image, \"\"> mode")
+                if self.verbalize_mode == "replace":
+                    print(f"            Vision robustness: <blank, verb(I)> vs <blank, verb(aug(I))>")
+                elif self.verbalize_mode == "augment":
+                    print(f"            Vision robustness: <I, verb(I)> vs <aug(I), verb(aug(I))>")
+                else:
+                    print(f"            Vision robustness: <I, \"\"> mode")
             if self.blank_image_for_lang:
-                print(f"            Language robustness: <blank, text> mode")
-            print(f"            Both robustness: <image, text> vs <aug(image), aug(text)>")
+                if self.verbalize_mode == "replace":
+                    print(f"            Language robustness: <blank, verb(I) + T> vs <blank, verb(I) + aug(T)>")
+                elif self.verbalize_mode == "augment":
+                    print(f"            Language robustness: <I, verb(I) + T> vs <I, verb(I) + aug(T)>")
+                else:
+                    print(f"            Language robustness: <blank, T> mode")
+            if self.contrastive_both:
+                mode_str = "CONTRASTIVE"
+                if self.weighted_contrastive:
+                    mode_str += " + WEIGHTED [1, 0.5, 0]"
+                if self.verbalize_mode != "none":
+                    print(f"            Both robustness: {mode_str} (verb_mode={self.verbalize_mode})")
+                else:
+                    print(f"            Both robustness: {mode_str} (3 sub-clusters: A=<I,T>, B=<I,T'>, C=<I',T>)")
+            else:
+                print(f"            Both robustness: <I, T> vs <aug(I), aug(T)>")
         
         scores = self.score_layers(dataset, layers, n_samples, n_aug, verbose)
         
@@ -399,13 +762,38 @@ class AutoLayer:
             },
         }
         
+        # Add partial sensitivity best layers if contrastive mode
+        if self.contrastive_both and "both_text_partial" in scores:
+            best["both_text_partial"] = {
+                "overall": self._find_best_in(scores["both_text_partial"], layers, metric),
+                "vision_layer": self._find_best_in(scores["both_text_partial"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["both_text_partial"], merger_layers, metric),
+                "language_layer": self._find_best_in(scores["both_text_partial"], lang_layers, metric),
+            }
+            best["both_image_partial"] = {
+                "overall": self._find_best_in(scores["both_image_partial"], layers, metric),
+                "vision_layer": self._find_best_in(scores["both_image_partial"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["both_image_partial"], merger_layers, metric),
+                "language_layer": self._find_best_in(scores["both_image_partial"], lang_layers, metric),
+            }
+        
         if verbose:
             print(f"\n{'='*60}")
             for rob_type, bests in best.items():
-                mode_key = "vision" if "vision_rob" in rob_type else ("language" if "language_rob" in rob_type else "both")
+                # Map rob_type to scores key
+                if "vision_rob" in rob_type:
+                    mode_key = "vision"
+                elif "language_rob" in rob_type:
+                    mode_key = "language"
+                elif "text_partial" in rob_type:
+                    mode_key = "both_text_partial"
+                elif "image_partial" in rob_type:
+                    mode_key = "both_image_partial"
+                else:
+                    mode_key = "both"
                 print(f"{rob_type}:")
                 for group, layer in bests.items():
-                    if layer:
+                    if layer and mode_key in scores:
                         score = scores[mode_key][layer][metric]
                         print(f"  {group:15} → {layer} ({metric}={score:.3f})")
             print(f"{'='*60}")
@@ -547,13 +935,14 @@ class AutoLayer:
 
     # ==================== Plotting ====================
 
-    def plot_scores(self, scores, metric="Q", normalize=True, figsize=None):
+    def plot_scores(self, scores, metric="Q", normalize=False, figsize=None):
         """Line plot of scores with optional error bars (vision=green, merger=orange, language=blue)."""
         import matplotlib.pyplot as plt
         
         metrics = [metric] if isinstance(metric, str) else metric
-        modes = [m for m in ["vision", "language", "both"] if m in scores]
-        fig, axes = plt.subplots(len(metrics), len(modes), figsize=figsize or (5 * len(modes), 3 * len(metrics)), squeeze=False)
+        all_modes = ["vision", "language", "both", "both_text_partial", "both_image_partial"]
+        modes = [m for m in all_modes if m in scores]
+        fig, axes = plt.subplots(len(metrics), len(modes), figsize=figsize or (4 * len(modes), 3 * len(metrics)), squeeze=False)
         
         for row, m in enumerate(metrics):
             for col, mode in enumerate(modes):
@@ -604,19 +993,26 @@ class AutoLayer:
                 
                 ax.set_xlabel("Layer" if row == len(metrics) - 1 else "")
                 ax.set_ylabel(f"{m} (↑)" if col == 0 else "")
-                ax.set_title(f"{mode.capitalize()} - {m}" if row == 0 else "")
+                # Shorter titles for partial modes
+                title_map = {"both_text_partial": "Text Sens.", "both_image_partial": "Image Sens."}
+                title = title_map.get(mode, mode.capitalize())
+                ax.set_title(f"{title} - {m}" if row == 0 else "")
                 ax.legend(fontsize=7, loc='lower right')
                 ax.grid(alpha=0.3)
         
         plt.tight_layout()
         plt.show()
 
-    def plot_all_metrics(self, scores, normalize=True, figsize=(14, 9)):
+    def plot_all_metrics(self, scores, normalize=False, figsize=None):
         """Plot all metrics in a grid with vision=green, merger=orange, language=blue."""
         import matplotlib.pyplot as plt
         
         metrics = ["mse", "dot", "ll", "Q"]
-        modes = [m for m in ["vision", "language", "both"] if m in scores]
+        all_modes = ["vision", "language", "both", "both_text_partial", "both_image_partial"]
+        modes = [m for m in all_modes if m in scores]
+        title_map = {"both_text_partial": "Text Sens.", "both_image_partial": "Image Sens."}
+        
+        figsize = figsize or (14, 2.5 * len(modes))
         fig, axes = plt.subplots(len(modes), 4, figsize=figsize, squeeze=False)
         
         for col, metric in enumerate(metrics):
@@ -666,11 +1062,11 @@ class AutoLayer:
                         best_idx = idx[np.argmax(vals[mask])]
                         ax.scatter([best_idx], [vals[best_idx]], c=color, s=80, zorder=5, marker='^')
                 
-                ax.set_title(f"{mode} - {metric} (↑)" if row == 0 else f"{metric} (↑)")
+                ax.set_title(f"{metric} (↑)" if row == 0 else "")
                 ax.set_xlabel("Layer" if row == len(modes) - 1 else "")
                 ax.grid(alpha=0.3)
                 if col == 0:
-                    ax.set_ylabel(mode.capitalize())
+                    ax.set_ylabel(title_map.get(mode, mode.capitalize()))
                 if col == 3 and row == 0:
                     ax.legend(fontsize=7, loc='lower right')
         
@@ -799,3 +1195,4 @@ class AutoLayer:
         self._remove_hooks()
         self._cache = {}
         self._samples = None
+        self._verb_cache = {}
