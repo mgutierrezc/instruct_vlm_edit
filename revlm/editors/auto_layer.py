@@ -38,7 +38,7 @@ EXCLUDE_PATTERNS = [
     "rotary", "rope", "attention.attention",
     # # QFormer
     # "qformer", 
-    "intermediate"
+    "intermediate", "up_proj", "down_proj"
 ]
 
 
@@ -67,8 +67,9 @@ class AutoLayer:
         if not include_all:
             layers = [l for l in layers if not any(pat in l for pat in EXCLUDE_PATTERNS)]
         vis = [l for l in layers if self._is_vision(l)]
+        merger = [l for l in layers if self._is_merger(l)]
         lang = [l for l in layers if self._is_language(l)]
-        print(f"[AutoLayer] {len(layers)} candidate layers (vision: {len(vis)}, language: {len(lang)})")
+        print(f"[AutoLayer] {len(layers)} candidate layers (vision: {len(vis)}, merger: {len(merger)}, language: {len(lang)})")
         return layers
 
     def _hook_all_layers(self, layer_names):
@@ -138,17 +139,24 @@ class AutoLayer:
         self._all_acts = {}
         return result
 
-    def _is_vision(self, layer_name):
-        """Vision layers: vision tower + merger."""
+    def _is_merger(self, layer_name):
+        """Merger layers: vision-language projection (LLaVA: multi_modal_projector, Qwen: merger, BLIP: language_projection)."""
         l = layer_name.lower()
-        if "language" in l and not "language_projection" in l:
+        return any(p in l for p in ["multi_modal_projector", "merger", "language_projection"])
+
+    def _is_vision(self, layer_name):
+        """Vision layers: vision tower (excludes merger)."""
+        l = layer_name.lower()
+        if self._is_merger(layer_name) or self._is_language(layer_name):
             return False
-        return any(p in l for p in ["vision", "visual", "projector", "merger", "qformer", "language_projection"])
+        return any(p in l for p in ["vision", "visual", "qformer"])
 
     def _is_language(self, layer_name):
-        """Language layers: LLM backbone (excludes language_projection which is vision)."""
+        """Language layers: LLM backbone (excludes merger)."""
         l = layer_name.lower()
-        return "language" in l and "language_projection" not in l
+        if self._is_merger(layer_name):
+            return False
+        return "language" in l
 
     # ==================== Metrics ====================
 
@@ -351,15 +359,16 @@ class AutoLayer:
         self._cache = {}
         
         vis_layers = [l for l in layers if self._is_vision(l)]
+        merger_layers = [l for l in layers if self._is_merger(l)]
         lang_layers = [l for l in layers if self._is_language(l)]
         
-        n_forwards = n_samples * (1 + 3 * n_aug)  # anchor + vis_aug + lang_aug + both_aug
+        n_forwards = n_samples * (1 + 3 * n_aug)
         if self.blank_image_for_lang:
             n_forwards += n_samples
         if self.blank_text_for_vision:
             n_forwards += n_samples
         if verbose:
-            print(f"[AutoLayer] {len(layers)} layers ({len(vis_layers)} vision, {len(lang_layers)} language)")
+            print(f"[AutoLayer] {len(layers)} layers ({len(vis_layers)} vision, {len(merger_layers)} merger, {len(lang_layers)} language)")
             print(f"            {n_samples} samples × {n_aug} augs → {n_forwards} forwards")
             if self.blank_text_for_vision:
                 print(f"            Vision robustness: <image, \"\"> mode")
@@ -373,16 +382,19 @@ class AutoLayer:
             "vision_robustness": {
                 "overall": self._find_best_in(scores["vision"], layers, metric),
                 "vision_layer": self._find_best_in(scores["vision"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["vision"], merger_layers, metric),
                 "language_layer": self._find_best_in(scores["vision"], lang_layers, metric),
             },
             "language_robustness": {
                 "overall": self._find_best_in(scores["language"], layers, metric),
                 "vision_layer": self._find_best_in(scores["language"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["language"], merger_layers, metric),
                 "language_layer": self._find_best_in(scores["language"], lang_layers, metric),
             },
             "both_robustness": {
                 "overall": self._find_best_in(scores["both"], layers, metric),
                 "vision_layer": self._find_best_in(scores["both"], vis_layers, metric),
+                "merger_layer": self._find_best_in(scores["both"], merger_layers, metric),
                 "language_layer": self._find_best_in(scores["both"], lang_layers, metric),
             },
         }
@@ -495,17 +507,20 @@ class AutoLayer:
         """Get best layers from aggregated scores."""
         layers = list(agg_scores["vision"].keys())
         vis_layers = [l for l in layers if self._is_vision(l)]
+        merger_layers = [l for l in layers if self._is_merger(l)]
         lang_layers = [l for l in layers if self._is_language(l)]
         
         best = {
             "vision_robustness": {
                 "overall": self._find_best_in(agg_scores["vision"], layers, metric, is_agg=True),
                 "vision_layer": self._find_best_in(agg_scores["vision"], vis_layers, metric, is_agg=True),
+                "merger_layer": self._find_best_in(agg_scores["vision"], merger_layers, metric, is_agg=True),
                 "language_layer": self._find_best_in(agg_scores["vision"], lang_layers, metric, is_agg=True),
             },
             "language_robustness": {
                 "overall": self._find_best_in(agg_scores["language"], layers, metric, is_agg=True),
                 "vision_layer": self._find_best_in(agg_scores["language"], vis_layers, metric, is_agg=True),
+                "merger_layer": self._find_best_in(agg_scores["language"], merger_layers, metric, is_agg=True),
                 "language_layer": self._find_best_in(agg_scores["language"], lang_layers, metric, is_agg=True),
             },
         }
@@ -514,6 +529,7 @@ class AutoLayer:
             best["both_robustness"] = {
                 "overall": self._find_best_in(agg_scores["both"], layers, metric, is_agg=True),
                 "vision_layer": self._find_best_in(agg_scores["both"], vis_layers, metric, is_agg=True),
+                "merger_layer": self._find_best_in(agg_scores["both"], merger_layers, metric, is_agg=True),
                 "language_layer": self._find_best_in(agg_scores["both"], lang_layers, metric, is_agg=True),
             }
         
@@ -532,7 +548,7 @@ class AutoLayer:
     # ==================== Plotting ====================
 
     def plot_scores(self, scores, metric="Q", normalize=True, figsize=None):
-        """Line plot of scores with optional error bars (vision=green, language=blue)."""
+        """Line plot of scores with optional error bars (vision=green, merger=orange, language=blue)."""
         import matplotlib.pyplot as plt
         
         metrics = [metric] if isinstance(metric, str) else metric
@@ -557,6 +573,7 @@ class AutoLayer:
                 
                 indices = np.arange(len(layers))
                 is_vis = np.array([self._is_vision(l) for l in layers])
+                is_merger = np.array([self._is_merger(l) for l in layers])
                 is_lang = np.array([self._is_language(l) for l in layers])
                 
                 if normalize:
@@ -566,37 +583,24 @@ class AutoLayer:
                         if stds is not None:
                             stds = stds / (vmax - vmin)
                 
-                # Plot vision layers (green) and language layers (blue) separately
-                vis_idx = indices[is_vis]
-                lang_idx = indices[is_lang]
-                vis_vals = vals[is_vis]
-                lang_vals = vals[is_lang]
+                # Plot by group: vision=green, merger=orange, language=blue
+                for mask, color, label in [(is_vis, 'green', 'vision'), (is_merger, 'orange', 'merger'), (is_lang, 'blue', 'language')]:
+                    idx = indices[mask]
+                    if len(idx) > 0:
+                        if stds is not None:
+                            ax.errorbar(idx, vals[mask], yerr=stds[mask], fmt='o-', ms=3, lw=1, capsize=2, alpha=0.8, color=color, label=label)
+                        else:
+                            ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
                 
-                if len(vis_idx) > 0:
-                    if stds is not None:
-                        ax.errorbar(vis_idx, vis_vals, yerr=stds[is_vis], fmt='o-', ms=3, lw=1, 
-                                   capsize=2, alpha=0.8, color='green', label='vision')
-                    else:
-                        ax.plot(vis_idx, vis_vals, 'o-', ms=3, lw=1, color='green', label='vision')
-                
-                if len(lang_idx) > 0:
-                    if stds is not None:
-                        ax.errorbar(lang_idx, lang_vals, yerr=stds[is_lang], fmt='o-', ms=3, lw=1, 
-                                   capsize=2, alpha=0.8, color='blue', label='language')
-                    else:
-                        ax.plot(lang_idx, lang_vals, 'o-', ms=3, lw=1, color='blue', label='language')
-                
-                # Mark best overall (red star), best vision (green triangle), best language (blue triangle)
+                # Mark best overall (red star), best per group (triangles)
                 best = np.argmax(vals)
                 ax.scatter([indices[best]], [vals[best]], c='red', s=120, zorder=6, marker='*', edgecolors='black')
                 
-                if len(vis_vals) > 0:
-                    best_vis = vis_idx[np.argmax(vis_vals)]
-                    ax.scatter([best_vis], [vals[best_vis]], c='green', s=80, zorder=5, marker='^', edgecolors='black')
-                
-                if len(lang_vals) > 0:
-                    best_lang = lang_idx[np.argmax(lang_vals)]
-                    ax.scatter([best_lang], [vals[best_lang]], c='blue', s=80, zorder=5, marker='^', edgecolors='black')
+                for mask, color in [(is_vis, 'green'), (is_merger, 'orange'), (is_lang, 'blue')]:
+                    idx = indices[mask]
+                    if len(idx) > 0:
+                        best_idx = idx[np.argmax(vals[mask])]
+                        ax.scatter([best_idx], [vals[best_idx]], c=color, s=80, zorder=5, marker='^', edgecolors='black')
                 
                 ax.set_xlabel("Layer" if row == len(metrics) - 1 else "")
                 ax.set_ylabel(f"{m} (↑)" if col == 0 else "")
@@ -608,7 +612,7 @@ class AutoLayer:
         plt.show()
 
     def plot_all_metrics(self, scores, normalize=True, figsize=(14, 9)):
-        """Plot all metrics in a 3x4 grid with vision/language layers colored differently."""
+        """Plot all metrics in a grid with vision=green, merger=orange, language=blue."""
         import matplotlib.pyplot as plt
         
         metrics = ["mse", "dot", "ll", "Q"]
@@ -621,7 +625,6 @@ class AutoLayer:
                 ax = axes[row, col]
                 layers = list(mode_scores.keys())
                 
-                # Detect aggregated format
                 sample_val = mode_scores[layers[0]][metric]
                 is_agg = isinstance(sample_val, dict) and "mean" in sample_val
                 
@@ -632,10 +635,9 @@ class AutoLayer:
                     vals = np.array([mode_scores[l][metric] for l in layers])
                     stds = None
                 
-                # Identify vision vs language layers
                 is_vis = np.array([self._is_vision(l) for l in layers])
+                is_merger = np.array([self._is_merger(l) for l in layers])
                 is_lang = np.array([self._is_language(l) for l in layers])
-                
                 indices = np.arange(len(layers))
                 
                 if normalize:
@@ -645,44 +647,31 @@ class AutoLayer:
                         if stds is not None:
                             stds = stds / (vmax - vmin)
                 
-                # Plot vision layers (green) and language layers (blue) separately
-                vis_idx = indices[is_vis]
-                lang_idx = indices[is_lang]
-                vis_vals = vals[is_vis]
-                lang_vals = vals[is_lang]
+                # Plot by group
+                for mask, color, label in [(is_vis, 'green', 'vision'), (is_merger, 'orange', 'merger'), (is_lang, 'blue', 'language')]:
+                    idx = indices[mask]
+                    if len(idx) > 0:
+                        if stds is not None:
+                            ax.errorbar(idx, vals[mask], yerr=stds[mask], fmt='o-', ms=3, lw=1, capsize=2, alpha=0.8, color=color, label=label)
+                        else:
+                            ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
                 
-                if len(vis_idx) > 0:
-                    if stds is not None:
-                        ax.errorbar(vis_idx, vis_vals, yerr=stds[is_vis], fmt='o-', ms=3, lw=1, 
-                                   capsize=2, alpha=0.8, color='green', label='vision')
-                    else:
-                        ax.plot(vis_idx, vis_vals, 'o-', ms=3, lw=1, color='green', label='vision')
-                
-                if len(lang_idx) > 0:
-                    if stds is not None:
-                        ax.errorbar(lang_idx, lang_vals, yerr=stds[is_lang], fmt='o-', ms=3, lw=1, 
-                                   capsize=2, alpha=0.8, color='blue', label='language')
-                    else:
-                        ax.plot(lang_idx, lang_vals, 'o-', ms=3, lw=1, color='blue', label='language')
-                
-                # Mark best overall (red star), best vision (green triangle), best language (blue triangle)
+                # Mark best overall and per group
                 best = np.argmax(vals)
                 ax.scatter([indices[best]], [vals[best]], c='red', s=120, zorder=6, marker='*')
                 
-                if len(vis_vals) > 0:
-                    best_vis = vis_idx[np.argmax(vis_vals)]
-                    ax.scatter([best_vis], [vals[best_vis]], c='green', s=80, zorder=5, marker='^')
-                
-                if len(lang_vals) > 0:
-                    best_lang = lang_idx[np.argmax(lang_vals)]
-                    ax.scatter([best_lang], [vals[best_lang]], c='blue', s=80, zorder=5, marker='^')
+                for mask, color in [(is_vis, 'green'), (is_merger, 'orange'), (is_lang, 'blue')]:
+                    idx = indices[mask]
+                    if len(idx) > 0:
+                        best_idx = idx[np.argmax(vals[mask])]
+                        ax.scatter([best_idx], [vals[best_idx]], c=color, s=80, zorder=5, marker='^')
                 
                 ax.set_title(f"{mode} - {metric} (↑)" if row == 0 else f"{metric} (↑)")
                 ax.set_xlabel("Layer" if row == len(modes) - 1 else "")
                 ax.grid(alpha=0.3)
                 if col == 0:
                     ax.set_ylabel(mode.capitalize())
-                if col == 3 and row == 0:  # Legend on top-right plot
+                if col == 3 and row == 0:
                     ax.legend(fontsize=7, loc='lower right')
         
         plt.tight_layout()
