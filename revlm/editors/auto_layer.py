@@ -298,7 +298,7 @@ class AutoLayer:
             return max(subset, key=lambda k: subset[k][metric]["mean"])
         return max(subset, key=lambda k: subset[k][metric])
 
-    def find_best(self, dataset, layers, n_samples=None, n_aug=None, metric="ll", verbose=True):
+    def find_best(self, dataset, layers, n_samples=None, n_aug=None, metric="Q", verbose=True):
         """Find best layers for vision and language robustness."""
         n_samples = n_samples or self.n_samples
         n_aug = n_aug or self.n_aug
@@ -429,7 +429,7 @@ class AutoLayer:
         print(f"[AutoLayer] Aggregated {len(files)} runs")
         return agg
 
-    def get_best_from_agg(self, agg_scores, metric="ll"):
+    def get_best_from_agg(self, agg_scores, metric="Q"):
         """Get best layers from aggregated scores."""
         layers = list(agg_scores["vision"].keys())
         vis_layers = [l for l in layers if self._is_vision(l)]
@@ -461,7 +461,7 @@ class AutoLayer:
 
     # ==================== Plotting ====================
 
-    def plot_scores(self, scores, metric="ll", normalize=True, figsize=None):
+    def plot_scores(self, scores, metric="Q", normalize=True, figsize=None):
         """Line plot of scores with optional error bars."""
         import matplotlib.pyplot as plt
         
@@ -678,7 +678,7 @@ class AutoLayer:
         for i in range(len(all_embs)):
             G.add_node(i, ntype=node_types[i], sample_idx=sample_ids[i])
         
-        thresh = np.percentile(sims[np.triu_indices(len(all_embs), k=1)], 50)
+        thresh = np.percentile(sims[np.triu_indices(len(all_embs), k=1)], 25)
         for i in range(len(all_embs)):
             for j in range(i + 1, len(all_embs)):
                 if sims[i, j] > thresh:
