@@ -358,10 +358,15 @@ class AutoLayer:
             sim = (1.0 - ranks / (len(dist_flat) - 1)).view(N, N)
             sim = (sim * 1000).round() / 1000
         else:
-            # sim = 1 / (1 + l2_dist)
-            # Linear transform: l2_max - l2 (preserves relative structure)
+            # Linear transform: normalize to [0, 1]
             l2_max = l2_dist.max()
-            sim = l2_max - l2_dist
+            l2_min = l2_dist.min()
+            denom = l2_max - l2_min
+            if denom < 1e-8:
+                # Degenerate case: all embeddings nearly identical
+                sim = torch.ones_like(l2_dist)
+            else:
+                sim = (l2_max - l2_dist) / denom
         
         # Threshold mask (keep top pairs)
         triu_idx = torch.triu_indices(N, N, offset=1, device=embs.device)
@@ -391,7 +396,7 @@ class AutoLayer:
         # LL
         ll = (target * torch.log(sim_masked + 1e-16)).sum().item() / N
         
-        # Q (modularity)
+        # Q (modularity) how well does the ground-truth partition explain this network’s weights.
         sim_no_diag = sim_masked.clone()
         sim_no_diag.fill_diagonal_(0.0)
         m = sim_no_diag.sum() / 2
@@ -776,15 +781,21 @@ class AutoLayer:
         self._remove_hooks()
         
         # Compute metrics
-        expected_vis_lang = n_samples * (1 + n_aug)
+        # Group sizes: with anchor = 1+n_aug, without anchor = n_aug
+        vis_has_anchor = self.blank_text_for_vision
+        lang_has_anchor = self.blank_image_for_lang
+        
+        expected_vis = n_samples * (1 + n_aug if vis_has_anchor else n_aug)
+        expected_lang = n_samples * (1 + n_aug if lang_has_anchor else n_aug)
         expected_bimodal = n_samples * 3 * (1 + n_aug) if self.contrastive_bimodal else n_samples * (1 + n_aug)
+        
         vis_scores, lang_scores, bimodal_scores = {}, {}, {}
         bimodal_text_partial_scores, bimodal_image_partial_scores = {}, {}
         
         for layer in (tqdm(layers, desc="metrics") if verbose else layers):
             vis_list, lang_list, bimodal_list = all_embs[layer]["vis"], all_embs[layer]["lang"], all_embs[layer]["bimodal"]
             
-            if len(vis_list) < expected_vis_lang * 0.5 or len(lang_list) < expected_vis_lang * 0.5 or len(bimodal_list) < expected_bimodal * 0.5:
+            if len(vis_list) < expected_vis * 0.5 or len(lang_list) < expected_lang * 0.5 or len(bimodal_list) < expected_bimodal * 0.5:
                 if verbose:
                     tqdm.write(f"  Skipping {layer}: insufficient samples")
                 continue
@@ -804,8 +815,13 @@ class AutoLayer:
                 "bimodal": (bimodal_embs, n_samples, n_aug),
             }
             
-            vis_scores[layer] = self._compute_metrics(vis_embs.to(self.device), n_samples, n_aug, self.percentile_threshold, self.threshold_mask)
-            lang_scores[layer] = self._compute_metrics(lang_embs.to(self.device), n_samples, n_aug, self.percentile_threshold, self.threshold_mask)
+            # _build_standard_target expects n_aug such that group_size = 1 + n_aug
+            # When no anchor: actual_group = n_aug, so pass n_aug - 1
+            vis_n_aug_param = n_aug if vis_has_anchor else n_aug - 1
+            lang_n_aug_param = n_aug if lang_has_anchor else n_aug - 1
+            
+            vis_scores[layer] = self._compute_metrics(vis_embs.to(self.device), n_samples, vis_n_aug_param, self.percentile_threshold, self.threshold_mask)
+            lang_scores[layer] = self._compute_metrics(lang_embs.to(self.device), n_samples, lang_n_aug_param, self.percentile_threshold, self.threshold_mask)
             
             # Use contrastive metrics for "bimodal" if enabled
             if self.contrastive_bimodal:
@@ -1097,9 +1113,9 @@ class AutoLayer:
             idx = indices[mask]
             if len(idx) > 0:
                 if stds is not None:
-                    ax.errorbar(idx, vals[mask], yerr=stds[mask], fmt='o-', ms=3, lw=1, capsize=2, alpha=0.8, color=color, label=label)
+                    ax.errorbar(idx, vals[mask], yerr=stds[mask], fmt='o', ms=3, capsize=2, alpha=0.8, color=color, label=label)
                 else:
-                    ax.plot(idx, vals[mask], 'o-', ms=3, lw=1, color=color, label=label)
+                    ax.plot(idx, vals[mask], 'o', ms=3, color=color, label=label)
         
         # Plot __concat__ as red horizontal line (only meaningful for bimodal modes)
         if "__concat__" in mode_scores and mode in ["bimodal", "bimodal_text_partial", "bimodal_image_partial"]:
@@ -1121,7 +1137,7 @@ class AutoLayer:
         
         ax.grid(alpha=0.3)
         if show_legend:
-            ax.legend(fontsize=7, loc='lower right')
+            ax.legend(fontsize=7, loc='upper left')
 
     def plot_scores(self, scores, metric="Q", normalize=False, figsize=None):
         """Line plot of scores with optional error bars."""
