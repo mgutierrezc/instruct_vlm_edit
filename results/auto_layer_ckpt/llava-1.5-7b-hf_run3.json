@@ -1,0 +1,3231 @@
+{
+  "model_tag": "llava-1.5-7b-hf",
+  "model_name": "llava-hf/llava-1.5-7b-hf",
+  "n_samples": 100,
+  "n_aug": 10,
+  "run_id": 3,
+  "best": {
+    "vision_robustness": {
+      "overall": "model.language_model.layers.31.mlp.gate_proj.weight",
+      "vision_layer": "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight",
+      "merger_layer": "model.multi_modal_projector.linear_2.weight",
+      "language_layer": "model.language_model.layers.31.mlp.gate_proj.weight"
+    },
+    "language_robustness": {
+      "overall": "model.language_model.layers.18.mlp.gate_proj.weight",
+      "vision_layer": "model.vision_tower.vision_model.encoder.layers.0.self_attn.out_proj.weight",
+      "merger_layer": "model.multi_modal_projector.linear_1.weight",
+      "language_layer": "model.language_model.layers.18.mlp.gate_proj.weight"
+    },
+    "bimodal_robustness": {
+      "overall": "model.language_model.layers.31.mlp.gate_proj.weight",
+      "vision_layer": "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight",
+      "merger_layer": "model.multi_modal_projector.linear_2.weight",
+      "language_layer": "model.language_model.layers.31.mlp.gate_proj.weight"
+    },
+    "bimodal_text_partial": {
+      "overall": "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight",
+      "vision_layer": "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight",
+      "merger_layer": "model.multi_modal_projector.linear_1.weight",
+      "language_layer": "model.language_model.layers.26.mlp.gate_proj.weight"
+    },
+    "bimodal_image_partial": {
+      "overall": "model.language_model.layers.31.mlp.gate_proj.weight",
+      "vision_layer": "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight",
+      "merger_layer": "model.multi_modal_projector.linear_2.weight",
+      "language_layer": "model.language_model.layers.31.mlp.gate_proj.weight"
+    }
+  },
+  "scores": {
+    "vision": {
+      "model.vision_tower.vision_model.encoder.layers.0.self_attn.out_proj.weight": {
+        "mse": 0.07014069263345331,
+        "dot": 4.328193536931818,
+        "ll": 16.23446377840909,
+        "Q": 0.0008930577314458787
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc1.weight": {
+        "mse": 0.0014051561615291502,
+        "dot": 31.618318181818182,
+        "ll": 38.091683238636364,
+        "Q": 0.0008735476294532418
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc2.weight": {
+        "mse": 0.05619231996422815,
+        "dot": 4.933067826704545,
+        "ll": 17.618597301136365,
+        "Q": 0.0010207900777459145
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.self_attn.out_proj.weight": {
+        "mse": 0.21330936684207386,
+        "dot": 2.5384818892045455,
+        "ll": 10.473536044034091,
+        "Q": 0.002134860958904028
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc1.weight": {
+        "mse": 0.0014556902080844472,
+        "dot": 32.80380681818182,
+        "ll": 38.51783380681818,
+        "Q": 0.001522701233625412
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc2.weight": {
+        "mse": 0.10075070892707648,
+        "dot": 3.9193686079545453,
+        "ll": 15.193473011363636,
+        "Q": 0.0020269746892154217
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.self_attn.out_proj.weight": {
+        "mse": 0.185199605889892,
+        "dot": 2.713505504261364,
+        "ll": 11.184810014204546,
+        "Q": 0.0018497621640563011
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc1.weight": {
+        "mse": 0.004904272545128572,
+        "dot": 17.95859375,
+        "ll": 31.919783380681817,
+        "Q": 0.0015652081929147243
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc2.weight": {
+        "mse": 0.23665959278429013,
+        "dot": 2.288663707386364,
+        "ll": 9.302283380681818,
+        "Q": 0.0016261684941127896
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.self_attn.out_proj.weight": {
+        "mse": 0.12593907740848534,
+        "dot": 3.557364346590909,
+        "ll": 14.184377663352272,
+        "Q": 0.002391190966591239
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc1.weight": {
+        "mse": 0.007239133650141163,
+        "dot": 15.610651988636363,
+        "ll": 30.425003551136363,
+        "Q": 0.0022347900085151196
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc2.weight": {
+        "mse": 0.19766824924904233,
+        "dot": 2.6482034801136365,
+        "ll": 10.926338778409091,
+        "Q": 0.001996781909838319
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.self_attn.out_proj.weight": {
+        "mse": 0.34519209383046773,
+        "dot": 1.9598568892045454,
+        "ll": 7.711969992897727,
+        "Q": 0.0030040338169783354
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc1.weight": {
+        "mse": 0.00881535703635272,
+        "dot": 14.09359090909091,
+        "ll": 29.30976740056818,
+        "Q": 0.0021869626361876726
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc2.weight": {
+        "mse": 0.26197916598350274,
+        "dot": 2.2161722301136364,
+        "ll": 8.996536754261363,
+        "Q": 0.0020389226265251637
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.self_attn.out_proj.weight": {
+        "mse": 0.2747788465758971,
+        "dot": 2.4510765269886363,
+        "ll": 10.185973011363636,
+        "Q": 0.003874334041029215
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc1.weight": {
+        "mse": 0.006200554677915264,
+        "dot": 17.122826704545453,
+        "ll": 31.478451704545453,
+        "Q": 0.0024028809275478125
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc2.weight": {
+        "mse": 0.15579864755477,
+        "dot": 3.0577336647727273,
+        "ll": 12.526783558238636,
+        "Q": 0.001985441893339157
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.self_attn.out_proj.weight": {
+        "mse": 0.15044761197688541,
+        "dot": 3.525481534090909,
+        "ll": 14.172125355113636,
+        "Q": 0.00364282401278615
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc1.weight": {
+        "mse": 0.009416629757231107,
+        "dot": 14.448190340909091,
+        "ll": 29.65223721590909,
+        "Q": 0.002946374239400029
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc2.weight": {
+        "mse": 0.2864855294994503,
+        "dot": 2.302296519886364,
+        "ll": 9.456911399147728,
+        "Q": 0.0034218833316117525
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.self_attn.out_proj.weight": {
+        "mse": 0.18340017291012853,
+        "dot": 3.1313615056818183,
+        "ll": 12.909868607954545,
+        "Q": 0.003657660912722349
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc1.weight": {
+        "mse": 0.011177401509979347,
+        "dot": 14.09058096590909,
+        "ll": 29.416676136363638,
+        "Q": 0.003823821200057864
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc2.weight": {
+        "mse": 0.1854587365648333,
+        "dot": 2.9697322443181817,
+        "ll": 12.26493252840909,
+        "Q": 0.0030207533854991198
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.self_attn.out_proj.weight": {
+        "mse": 0.1704709330733454,
+        "dot": 3.4629673295454544,
+        "ll": 14.03992276278409,
+        "Q": 0.004527402576059103
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc1.weight": {
+        "mse": 0.011906592765222416,
+        "dot": 14.253558238636364,
+        "ll": 29.551118607954546,
+        "Q": 0.0044838129542768
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc2.weight": {
+        "mse": 0.18536490595733063,
+        "dot": 3.083546164772727,
+        "ll": 12.67726651278409,
+        "Q": 0.0035554873757064342
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.self_attn.out_proj.weight": {
+        "mse": 0.17234420354437927,
+        "dot": 3.584561434659091,
+        "ll": 14.45388671875,
+        "Q": 0.005020489450544119
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc1.weight": {
+        "mse": 0.010200157229596456,
+        "dot": 15.7356875,
+        "ll": 30.617581676136364,
+        "Q": 0.0047391001135110855
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc2.weight": {
+        "mse": 0.22801927639842637,
+        "dot": 3.02951953125,
+        "ll": 12.532420099431818,
+        "Q": 0.005111677572131157
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.self_attn.out_proj.weight": {
+        "mse": 0.2336356989972051,
+        "dot": 3.368818181818182,
+        "ll": 13.761880326704546,
+        "Q": 0.007126311305910349
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc1.weight": {
+        "mse": 0.010874322148972871,
+        "dot": 16.152238636363638,
+        "ll": 30.88142755681818,
+        "Q": 0.005628551356494427
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc2.weight": {
+        "mse": 0.3072803084888275,
+        "dot": 2.8472604758522726,
+        "ll": 11.828737571022728,
+        "Q": 0.007447575684636831
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.self_attn.out_proj.weight": {
+        "mse": 0.24338975457947515,
+        "dot": 3.4324197443181816,
+        "ll": 13.946915838068183,
+        "Q": 0.007913854904472828
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc1.weight": {
+        "mse": 0.012437514470832495,
+        "dot": 16.01262215909091,
+        "ll": 30.772478693181817,
+        "Q": 0.006608934141695499
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc2.weight": {
+        "mse": 0.3247684256911456,
+        "dot": 2.786606534090909,
+        "ll": 11.564415838068182,
+        "Q": 0.007778570055961609
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.self_attn.out_proj.weight": {
+        "mse": 0.25805543421416927,
+        "dot": 3.3967819602272726,
+        "ll": 13.807927911931818,
+        "Q": 0.008436658419668674
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc1.weight": {
+        "mse": 0.015034934152191544,
+        "dot": 15.617613636363636,
+        "ll": 30.484343039772728,
+        "Q": 0.00790648814290762
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc2.weight": {
+        "mse": 0.3079982840290305,
+        "dot": 2.897336647727273,
+        "ll": 11.96268465909091,
+        "Q": 0.007762549910694361
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.self_attn.out_proj.weight": {
+        "mse": 0.29333831100433394,
+        "dot": 3.4506470170454544,
+        "ll": 13.943248401988637,
+        "Q": 0.010609343647956848
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc1.weight": {
+        "mse": 0.016020556650541036,
+        "dot": 16.140642045454545,
+        "ll": 30.840671164772726,
+        "Q": 0.009201513603329659
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc2.weight": {
+        "mse": 0.2527234643477565,
+        "dot": 3.183892755681818,
+        "ll": 12.968755326704546,
+        "Q": 0.007025667931884527
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.self_attn.out_proj.weight": {
+        "mse": 0.2563275122156202,
+        "dot": 3.5216637073863635,
+        "ll": 14.132799183238637,
+        "Q": 0.009059708565473557
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc1.weight": {
+        "mse": 0.01345432287562337,
+        "dot": 17.52002272727273,
+        "ll": 31.731463068181817,
+        "Q": 0.00903144758194685
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc2.weight": {
+        "mse": 0.34296457814550807,
+        "dot": 2.7958696732954547,
+        "ll": 11.540110085227273,
+        "Q": 0.008555874228477478
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.self_attn.out_proj.weight": {
+        "mse": 0.27998422749679736,
+        "dot": 3.718893821022727,
+        "ll": 14.734920099431818,
+        "Q": 0.011512008495628834
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc1.weight": {
+        "mse": 0.01185692303656349,
+        "dot": 19.38626278409091,
+        "ll": 32.83490767045455,
+        "Q": 0.009825940243899822
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc2.weight": {
+        "mse": 0.30580034376349946,
+        "dot": 2.984525568181818,
+        "ll": 12.242306463068182,
+        "Q": 0.008206704631447792
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.self_attn.out_proj.weight": {
+        "mse": 0.2556481716933995,
+        "dot": 3.965169034090909,
+        "ll": 15.414904119318182,
+        "Q": 0.011476586572825909
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc1.weight": {
+        "mse": 0.008589670048853618,
+        "dot": 23.52435085227273,
+        "ll": 34.959140625,
+        "Q": 0.010416011326014996
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc2.weight": {
+        "mse": 0.18042258324388852,
+        "dot": 3.7566186079545454,
+        "ll": 14.735908203125,
+        "Q": 0.0061232903972268105
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.self_attn.out_proj.weight": {
+        "mse": 0.21336126667787825,
+        "dot": 4.45555859375,
+        "ll": 16.686429332386364,
+        "Q": 0.011438223533332348
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc1.weight": {
+        "mse": 0.007476348075019477,
+        "dot": 26.671988636363636,
+        "ll": 36.34227627840909,
+        "Q": 0.011666003614664078
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc2.weight": {
+        "mse": 0.23284415733150846,
+        "dot": 3.496856534090909,
+        "ll": 13.958432173295455,
+        "Q": 0.007701410911977291
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.self_attn.out_proj.weight": {
+        "mse": 0.06269301667154642,
+        "dot": 6.784024147727273,
+        "ll": 21.252927911931817,
+        "Q": 0.006053559947758913
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc1.weight": {
+        "mse": 0.005295063913884111,
+        "dot": 31.27149431818182,
+        "ll": 38.086811079545456,
+        "Q": 0.01130139734596014
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc2.weight": {
+        "mse": 0.09646434357621175,
+        "dot": 5.128032670454545,
+        "ll": 18.136349431818182,
+        "Q": 0.005337193608283997
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.self_attn.out_proj.weight": {
+        "mse": 0.07131297011036761,
+        "dot": 6.946644176136363,
+        "ll": 21.51797940340909,
+        "Q": 0.00766251515597105
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc1.weight": {
+        "mse": 0.005178056531647094,
+        "dot": 31.38909090909091,
+        "ll": 38.127883522727274,
+        "Q": 0.011120765469968319
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc2.weight": {
+        "mse": 0.0603164725778968,
+        "dot": 6.0371207386363634,
+        "ll": 19.920452769886364,
+        "Q": 0.004034288693219423
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.self_attn.out_proj.weight": {
+        "mse": 0.06747441772382332,
+        "dot": 7.289455965909091,
+        "ll": 22.07478338068182,
+        "Q": 0.007988127879798412
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc1.weight": {
+        "mse": 0.004150384564136158,
+        "dot": 35.12746022727273,
+        "ll": 39.37144886363637,
+        "Q": 0.011122576892375946
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc2.weight": {
+        "mse": 0.0072252665595930144,
+        "dot": 14.972389204545454,
+        "ll": 29.85748224431818,
+        "Q": 0.001722566899843514
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight": {
+        "mse": 0.10788130809131416,
+        "dot": 7.305738636363636,
+        "ll": 22.133430397727274,
+        "Q": 0.013720106333494186
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc1.weight": {
+        "mse": 0.0019298615927388957,
+        "dot": 42.254678977272725,
+        "ll": 41.36049715909091,
+        "Q": 0.007139364257454872
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc2.weight": {
+        "mse": 0.018314982998080778,
+        "dot": 10.216830965909091,
+        "ll": 25.679378551136363,
+        "Q": 0.002793720690533519
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight": {
+        "mse": 0.047891033575735285,
+        "dot": 10.089531960227273,
+        "ll": 25.67532137784091,
+        "Q": 0.011092369444668293
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc1.weight": {
+        "mse": 0.0035810867299906723,
+        "dot": 35.64634090909091,
+        "ll": 39.51243607954545,
+        "Q": 0.009778141044080257
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc2.weight": {
+        "mse": 0.07119311142336796,
+        "dot": 6.4896725852272725,
+        "ll": 20.752894176136362,
+        "Q": 0.006488121580332518
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.self_attn.out_proj.weight": {
+        "mse": 0.025267641680350606,
+        "dot": 14.848710227272727,
+        "ll": 29.87408380681818,
+        "Q": 0.01229354739189148
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc1.weight": {
+        "mse": 0.009799286286112962,
+        "dot": 21.40592755681818,
+        "ll": 33.900316051136365,
+        "Q": 0.009691111743450165
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc2.weight": {
+        "mse": 0.17343860743110306,
+        "dot": 4.251807528409091,
+        "ll": 16.130385298295455,
+        "Q": 0.007862690836191177
+      },
+      "model.multi_modal_projector.linear_1.weight": {
+        "mse": 0.011562382454875023,
+        "dot": 14.958196022727273,
+        "ll": 29.913387784090908,
+        "Q": 0.004831289406865835
+      },
+      "model.multi_modal_projector.linear_2.weight": {
+        "mse": 0.07308156161433797,
+        "dot": 6.905893465909091,
+        "ll": 21.44997159090909,
+        "Q": 0.007810954004526138
+      },
+      "model.language_model.layers.0.mlp.gate_proj.weight": {
+        "mse": 0.7667184934945617,
+        "dot": 1.2624215198863635,
+        "ll": 2.7495885120738635,
+        "Q": 0.01091011893004179
+      },
+      "model.language_model.layers.1.mlp.gate_proj.weight": {
+        "mse": 0.5046044525889661,
+        "dot": 2.281539772727273,
+        "ll": 9.260767045454546,
+        "Q": 0.011183002963662148
+      },
+      "model.language_model.layers.2.mlp.gate_proj.weight": {
+        "mse": 0.37790115988056344,
+        "dot": 2.9579616477272728,
+        "ll": 12.118341619318182,
+        "Q": 0.011277029290795326
+      },
+      "model.language_model.layers.3.mlp.gate_proj.weight": {
+        "mse": 0.27186666561229283,
+        "dot": 3.778269886363636,
+        "ll": 14.811379616477273,
+        "Q": 0.01136310026049614
+      },
+      "model.language_model.layers.4.mlp.gate_proj.weight": {
+        "mse": 0.23608891722801267,
+        "dot": 4.162113636363636,
+        "ll": 15.875632102272727,
+        "Q": 0.011432974599301815
+      },
+      "model.language_model.layers.5.mlp.gate_proj.weight": {
+        "mse": 0.21478596368434363,
+        "dot": 4.486651988636364,
+        "ll": 16.70084694602273,
+        "Q": 0.011770278215408325
+      },
+      "model.language_model.layers.6.mlp.gate_proj.weight": {
+        "mse": 0.19041828696616375,
+        "dot": 4.845619673295454,
+        "ll": 17.545268110795455,
+        "Q": 0.01181941106915474
+      },
+      "model.language_model.layers.7.mlp.gate_proj.weight": {
+        "mse": 0.1696841062098587,
+        "dot": 5.153705255681818,
+        "ll": 18.222613636363636,
+        "Q": 0.011637220159173012
+      },
+      "model.language_model.layers.8.mlp.gate_proj.weight": {
+        "mse": 0.16042384932725548,
+        "dot": 5.19741015625,
+        "ll": 18.3139453125,
+        "Q": 0.011081046424806118
+      },
+      "model.language_model.layers.9.mlp.gate_proj.weight": {
+        "mse": 0.14468737098437132,
+        "dot": 5.2639801136363635,
+        "ll": 18.45272372159091,
+        "Q": 0.010043730959296227
+      },
+      "model.language_model.layers.10.mlp.gate_proj.weight": {
+        "mse": 0.13147370970289032,
+        "dot": 5.313754971590909,
+        "ll": 18.555403053977273,
+        "Q": 0.009100707247853279
+      },
+      "model.language_model.layers.11.mlp.gate_proj.weight": {
+        "mse": 0.12033137213724471,
+        "dot": 5.403458451704545,
+        "ll": 18.74067471590909,
+        "Q": 0.008442504331469536
+      },
+      "model.language_model.layers.12.mlp.gate_proj.weight": {
+        "mse": 0.11166445288543568,
+        "dot": 5.504341974431818,
+        "ll": 18.941917613636363,
+        "Q": 0.0079987533390522
+      },
+      "model.language_model.layers.13.mlp.gate_proj.weight": {
+        "mse": 0.1026603402064924,
+        "dot": 5.633069602272728,
+        "ll": 19.195715553977273,
+        "Q": 0.007556124124675989
+      },
+      "model.language_model.layers.14.mlp.gate_proj.weight": {
+        "mse": 0.1001268563543957,
+        "dot": 5.816340198863636,
+        "ll": 19.547515980113637,
+        "Q": 0.007895645685493946
+      },
+      "model.language_model.layers.15.mlp.gate_proj.weight": {
+        "mse": 0.09808497930636449,
+        "dot": 5.992485795454545,
+        "ll": 19.875593039772728,
+        "Q": 0.00824755895882845
+      },
+      "model.language_model.layers.16.mlp.gate_proj.weight": {
+        "mse": 0.09592912170515126,
+        "dot": 6.501491477272728,
+        "ll": 20.77088778409091,
+        "Q": 0.009643688797950745
+      },
+      "model.language_model.layers.17.mlp.gate_proj.weight": {
+        "mse": 0.09327278439599375,
+        "dot": 6.789806818181818,
+        "ll": 21.24795099431818,
+        "Q": 0.010218940675258636
+      },
+      "model.language_model.layers.18.mlp.gate_proj.weight": {
+        "mse": 0.08816446150973199,
+        "dot": 7.137424715909091,
+        "ll": 21.796576704545455,
+        "Q": 0.010645720176398754
+      },
+      "model.language_model.layers.19.mlp.gate_proj.weight": {
+        "mse": 0.08894948307003028,
+        "dot": 7.3011555397727275,
+        "ll": 22.04796697443182,
+        "Q": 0.011247197166085243
+      },
+      "model.language_model.layers.20.mlp.gate_proj.weight": {
+        "mse": 0.08643422313052863,
+        "dot": 7.932382102272728,
+        "ll": 22.95588955965909,
+        "Q": 0.012867036275565624
+      },
+      "model.language_model.layers.21.mlp.gate_proj.weight": {
+        "mse": 0.0812207464811348,
+        "dot": 8.262963778409091,
+        "ll": 23.402203480113638,
+        "Q": 0.013031005859375
+      },
+      "model.language_model.layers.22.mlp.gate_proj.weight": {
+        "mse": 0.08576748936961007,
+        "dot": 8.424803977272727,
+        "ll": 23.6166015625,
+        "Q": 0.014312301762402058
+      },
+      "model.language_model.layers.23.mlp.gate_proj.weight": {
+        "mse": 0.07432850990326369,
+        "dot": 8.883563920454545,
+        "ll": 24.19512428977273,
+        "Q": 0.013648712076246738
+      },
+      "model.language_model.layers.24.mlp.gate_proj.weight": {
+        "mse": 0.0779127813099559,
+        "dot": 9.038008522727273,
+        "ll": 24.385619673295455,
+        "Q": 0.014813855290412903
+      },
+      "model.language_model.layers.25.mlp.gate_proj.weight": {
+        "mse": 0.07217710075034653,
+        "dot": 9.328576704545455,
+        "ll": 24.73330965909091,
+        "Q": 0.014555311761796474
+      },
+      "model.language_model.layers.26.mlp.gate_proj.weight": {
+        "mse": 0.06952734315194697,
+        "dot": 9.447527698863636,
+        "ll": 24.873533380681817,
+        "Q": 0.01434989832341671
+      },
+      "model.language_model.layers.27.mlp.gate_proj.weight": {
+        "mse": 0.07152386633339029,
+        "dot": 9.448134943181818,
+        "ll": 24.877531960227273,
+        "Q": 0.014778017066419125
+      },
+      "model.language_model.layers.28.mlp.gate_proj.weight": {
+        "mse": 0.07069949807331705,
+        "dot": 9.486056818181819,
+        "ll": 24.92494850852273,
+        "Q": 0.014719468541443348
+      },
+      "model.language_model.layers.29.mlp.gate_proj.weight": {
+        "mse": 0.06364020985605852,
+        "dot": 9.818058238636363,
+        "ll": 25.304236505681818,
+        "Q": 0.014120548963546753
+      },
+      "model.language_model.layers.30.mlp.gate_proj.weight": {
+        "mse": 0.06815628986260856,
+        "dot": 9.587630681818181,
+        "ll": 25.04615234375,
+        "Q": 0.014481612481176853
+      },
+      "model.language_model.layers.31.mlp.gate_proj.weight": {
+        "mse": 0.09124504388668578,
+        "dot": 8.468715909090909,
+        "ll": 23.684415838068183,
+        "Q": 0.015491390600800514
+      }
+    },
+    "language": {
+      "model.vision_tower.vision_model.encoder.layers.0.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.self_attn.out_proj.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.multi_modal_projector.linear_1.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.multi_modal_projector.linear_2.weight": {
+        "mse": 0.9909828677069699,
+        "dot": 0.0,
+        "ll": -405.255,
+        "Q": 0.0
+      },
+      "model.language_model.layers.0.mlp.gate_proj.weight": {
+        "mse": 0.9891142830847252,
+        "dot": 0.07948637806285512,
+        "ll": -27.860374644886363,
+        "Q": 0.002621457679197192
+      },
+      "model.language_model.layers.1.mlp.gate_proj.weight": {
+        "mse": 0.9855758266276026,
+        "dot": 0.12416643732244319,
+        "ll": -22.956969105113636,
+        "Q": 0.002929183654487133
+      },
+      "model.language_model.layers.2.mlp.gate_proj.weight": {
+        "mse": 0.9824803160319796,
+        "dot": 0.16332155539772727,
+        "ll": -19.95093927556818,
+        "Q": 0.003888353006914258
+      },
+      "model.language_model.layers.3.mlp.gate_proj.weight": {
+        "mse": 0.9769101233058932,
+        "dot": 0.20999733664772727,
+        "ll": -17.191859019886362,
+        "Q": 0.004258118104189634
+      },
+      "model.language_model.layers.4.mlp.gate_proj.weight": {
+        "mse": 0.9787294649236202,
+        "dot": 0.23083904474431818,
+        "ll": -16.173006036931817,
+        "Q": 0.006423582788556814
+      },
+      "model.language_model.layers.5.mlp.gate_proj.weight": {
+        "mse": 0.9790792134448365,
+        "dot": 0.25156685014204544,
+        "ll": -15.235005326704545,
+        "Q": 0.007948416285216808
+      },
+      "model.language_model.layers.6.mlp.gate_proj.weight": {
+        "mse": 0.9792358361265228,
+        "dot": 0.27033784623579543,
+        "ll": -14.452001953125,
+        "Q": 0.00926058366894722
+      },
+      "model.language_model.layers.7.mlp.gate_proj.weight": {
+        "mse": 0.9776682731603392,
+        "dot": 0.28760966352982953,
+        "ll": -13.77176669034091,
+        "Q": 0.009420160204172134
+      },
+      "model.language_model.layers.8.mlp.gate_proj.weight": {
+        "mse": 0.9773197915211693,
+        "dot": 0.2921359197443182,
+        "ll": -13.599928977272727,
+        "Q": 0.009516489692032337
+      },
+      "model.language_model.layers.9.mlp.gate_proj.weight": {
+        "mse": 0.9762784861228542,
+        "dot": 0.30252923029119316,
+        "ll": -13.213037997159091,
+        "Q": 0.009583397768437862
+      },
+      "model.language_model.layers.10.mlp.gate_proj.weight": {
+        "mse": 0.974479838168555,
+        "dot": 0.31149498401988635,
+        "ll": -12.88782315340909,
+        "Q": 0.009209509007632732
+      },
+      "model.language_model.layers.11.mlp.gate_proj.weight": {
+        "mse": 0.9701605964081906,
+        "dot": 0.3292547274502841,
+        "ll": -12.270217507102272,
+        "Q": 0.008366462774574757
+      },
+      "model.language_model.layers.12.mlp.gate_proj.weight": {
+        "mse": 0.9685945264274507,
+        "dot": 0.3379632013494318,
+        "ll": -11.980460759943181,
+        "Q": 0.008252390660345554
+      },
+      "model.language_model.layers.13.mlp.gate_proj.weight": {
+        "mse": 0.9680948211193107,
+        "dot": 0.34806269975142046,
+        "ll": -11.66086825284091,
+        "Q": 0.008593754842877388
+      },
+      "model.language_model.layers.14.mlp.gate_proj.weight": {
+        "mse": 0.9688219279628641,
+        "dot": 0.3545126065340909,
+        "ll": -11.460903764204545,
+        "Q": 0.009188391268253326
+      },
+      "model.language_model.layers.15.mlp.gate_proj.weight": {
+        "mse": 0.967977993020661,
+        "dot": 0.3649989346590909,
+        "ll": -11.138196022727273,
+        "Q": 0.009414696134626865
+      },
+      "model.language_model.layers.16.mlp.gate_proj.weight": {
+        "mse": 0.967409169015982,
+        "dot": 0.3860612127130682,
+        "ll": -10.526157670454545,
+        "Q": 0.010276015847921371
+      },
+      "model.language_model.layers.17.mlp.gate_proj.weight": {
+        "mse": 0.967026925357929,
+        "dot": 0.39694895241477274,
+        "ll": -10.219838423295455,
+        "Q": 0.010682723484933376
+      },
+      "model.language_model.layers.18.mlp.gate_proj.weight": {
+        "mse": 0.9654317366276054,
+        "dot": 0.41189124644886366,
+        "ll": -9.813842329545455,
+        "Q": 0.010851191356778145
+      },
+      "model.language_model.layers.19.mlp.gate_proj.weight": {
+        "mse": 0.9627344485368285,
+        "dot": 0.4185345791903409,
+        "ll": -9.632249644886363,
+        "Q": 0.010265527293086052
+      },
+      "model.language_model.layers.20.mlp.gate_proj.weight": {
+        "mse": 0.9619673788630745,
+        "dot": 0.4322106267755682,
+        "ll": -9.279222301136363,
+        "Q": 0.010678146965801716
+      },
+      "model.language_model.layers.21.mlp.gate_proj.weight": {
+        "mse": 0.960853594918257,
+        "dot": 0.43738414417613636,
+        "ll": -9.145142045454545,
+        "Q": 0.010580233298242092
+      },
+      "model.language_model.layers.22.mlp.gate_proj.weight": {
+        "mse": 0.959750293087402,
+        "dot": 0.4477460049715909,
+        "ll": -8.887546164772727,
+        "Q": 0.010725112631917
+      },
+      "model.language_model.layers.23.mlp.gate_proj.weight": {
+        "mse": 0.9579691657751664,
+        "dot": 0.45410169566761366,
+        "ll": -8.729888139204546,
+        "Q": 0.010497871786355972
+      },
+      "model.language_model.layers.24.mlp.gate_proj.weight": {
+        "mse": 0.9560775407967248,
+        "dot": 0.4621753373579545,
+        "ll": -8.53443359375,
+        "Q": 0.010315255261957645
+      },
+      "model.language_model.layers.25.mlp.gate_proj.weight": {
+        "mse": 0.955285990524053,
+        "dot": 0.46887357954545456,
+        "ll": -8.377278053977273,
+        "Q": 0.010391014628112316
+      },
+      "model.language_model.layers.26.mlp.gate_proj.weight": {
+        "mse": 0.953994323396024,
+        "dot": 0.47238911576704545,
+        "ll": -8.294982244318183,
+        "Q": 0.010200882330536842
+      },
+      "model.language_model.layers.27.mlp.gate_proj.weight": {
+        "mse": 0.9532337975964246,
+        "dot": 0.4783917791193182,
+        "ll": -8.158333629261364,
+        "Q": 0.010257530957460403
+      },
+      "model.language_model.layers.28.mlp.gate_proj.weight": {
+        "mse": 0.9528441062405086,
+        "dot": 0.48179603160511364,
+        "ll": -8.082199041193181,
+        "Q": 0.010302891954779625
+      },
+      "model.language_model.layers.29.mlp.gate_proj.weight": {
+        "mse": 0.9530307643992804,
+        "dot": 0.4791390713778409,
+        "ll": -8.141958451704545,
+        "Q": 0.01024193037301302
+      },
+      "model.language_model.layers.30.mlp.gate_proj.weight": {
+        "mse": 0.9541214364788055,
+        "dot": 0.47738645241477273,
+        "ll": -8.185284090909091,
+        "Q": 0.010438770055770874
+      },
+      "model.language_model.layers.31.mlp.gate_proj.weight": {
+        "mse": 0.9630095610057152,
+        "dot": 0.42272589666193183,
+        "ll": -9.522731711647728,
+        "Q": 0.010567798279225826
+      }
+    },
+    "bimodal": {
+      "model.vision_tower.vision_model.encoder.layers.0.self_attn.out_proj.weight": {
+        "mse": 0.05938049537695331,
+        "dot": 4.664069602272727,
+        "ll": 17.058135653409092,
+        "Q": 0.00024284873506985605
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc1.weight": {
+        "mse": 0.0012263040726633065,
+        "dot": 33.58964772727273,
+        "ll": 38.7531415719697,
+        "Q": 0.00025792288943193853
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc2.weight": {
+        "mse": 0.0486516241273037,
+        "dot": 5.263270359848485,
+        "ll": 18.35018465909091,
+        "Q": 0.00029747089138254523
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.self_attn.out_proj.weight": {
+        "mse": 0.17731933065916494,
+        "dot": 2.76990625,
+        "ll": 11.424770359848484,
+        "Q": 0.0006002432783134282
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc1.weight": {
+        "mse": 0.0012242726397781005,
+        "dot": 35.24575757575757,
+        "ll": 39.3041571969697,
+        "Q": 0.0004415413422975689
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc2.weight": {
+        "mse": 0.09540833902162997,
+        "dot": 4.01731865530303,
+        "ll": 15.461316287878788,
+        "Q": 0.0006580640911124647
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.self_attn.out_proj.weight": {
+        "mse": 0.1581548162343315,
+        "dot": 2.926855823863636,
+        "ll": 12.016272490530303,
+        "Q": 0.000540815875865519
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc1.weight": {
+        "mse": 0.004492746896960163,
+        "dot": 18.63733712121212,
+        "ll": 32.32723958333333,
+        "Q": 0.0004908044938929379
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc2.weight": {
+        "mse": 0.2217798344830168,
+        "dot": 2.3652507102272726,
+        "ll": 9.665021898674242,
+        "Q": 0.0005144915776327252
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.self_attn.out_proj.weight": {
+        "mse": 0.10252447111571392,
+        "dot": 3.892510653409091,
+        "ll": 15.163781960227272,
+        "Q": 0.0006886474438942969
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc1.weight": {
+        "mse": 0.008466859118381317,
+        "dot": 14.727089015151515,
+        "ll": 29.79014678030303,
+        "Q": 0.0008373803575523198
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc2.weight": {
+        "mse": 0.17981802568630503,
+        "dot": 2.7695776515151516,
+        "ll": 11.413752367424243,
+        "Q": 0.0006187278777360916
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.self_attn.out_proj.weight": {
+        "mse": 0.30019484053000806,
+        "dot": 2.1115378787878787,
+        "ll": 8.517827888257576,
+        "Q": 0.000888418813701719
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc1.weight": {
+        "mse": 0.010174270239925768,
+        "dot": 13.3561875,
+        "ll": 28.72404356060606,
+        "Q": 0.0008120195125229657
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc2.weight": {
+        "mse": 0.26411771869710865,
+        "dot": 2.2019808238636362,
+        "ll": 8.923137428977272,
+        "Q": 0.0006894191610626876
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.self_attn.out_proj.weight": {
+        "mse": 0.207761689549755,
+        "dot": 2.78399384469697,
+        "ll": 11.569331202651515,
+        "Q": 0.0010314499959349632
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc1.weight": {
+        "mse": 0.0067727051384758605,
+        "dot": 16.596748106060605,
+        "ll": 31.137483428030304,
+        "Q": 0.0008606507326476276
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc2.weight": {
+        "mse": 0.16540959490679485,
+        "dot": 2.974435606060606,
+        "ll": 12.223199573863637,
+        "Q": 0.0007056642789393663
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.self_attn.out_proj.weight": {
+        "mse": 0.14628979603225536,
+        "dot": 3.567046875,
+        "ll": 14.297855113636365,
+        "Q": 0.0012029680656269193
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc1.weight": {
+        "mse": 0.010351221448395483,
+        "dot": 13.999407196969697,
+        "ll": 29.30723484848485,
+        "Q": 0.0010600630193948746
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc2.weight": {
+        "mse": 0.25525682001779243,
+        "dot": 2.4369095643939396,
+        "ll": 10.080843986742424,
+        "Q": 0.0010463400976732373
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.self_attn.out_proj.weight": {
+        "mse": 0.1834759390102641,
+        "dot": 3.1342504734848484,
+        "ll": 12.921666666666667,
+        "Q": 0.0012385450536385179
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc1.weight": {
+        "mse": 0.01048978304159211,
+        "dot": 14.43830587121212,
+        "ll": 29.680336174242424,
+        "Q": 0.001237505697645247
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc2.weight": {
+        "mse": 0.1683096602662535,
+        "dot": 3.1053544034090907,
+        "ll": 12.760840435606061,
+        "Q": 0.0009494268451817334
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.self_attn.out_proj.weight": {
+        "mse": 0.1434523796901749,
+        "dot": 3.713607244318182,
+        "ll": 14.807161458333333,
+        "Q": 0.0013510783901438117
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc1.weight": {
+        "mse": 0.010853838856531118,
+        "dot": 14.74488446969697,
+        "ll": 29.916969696969698,
+        "Q": 0.0014286410296335816
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc2.weight": {
+        "mse": 0.19106674205526997,
+        "dot": 3.046487689393939,
+        "ll": 12.542817234848485,
+        "Q": 0.001233353978022933
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.self_attn.out_proj.weight": {
+        "mse": 0.16504047605650318,
+        "dot": 3.6499746685606063,
+        "ll": 14.647594696969698,
+        "Q": 0.0016488597029820085
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc1.weight": {
+        "mse": 0.010172545690579739,
+        "dot": 15.802730113636363,
+        "ll": 30.661548295454544,
+        "Q": 0.0015978197334334254
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc2.weight": {
+        "mse": 0.23997218950226945,
+        "dot": 2.971356534090909,
+        "ll": 12.321429924242425,
+        "Q": 0.0018022096483036876
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.self_attn.out_proj.weight": {
+        "mse": 0.2268037758523505,
+        "dot": 3.4047980587121214,
+        "ll": 13.876205018939395,
+        "Q": 0.0023521773982793093
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc1.weight": {
+        "mse": 0.01055990914765665,
+        "dot": 16.338886363636362,
+        "ll": 31.003960700757577,
+        "Q": 0.0018608391983434558
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc2.weight": {
+        "mse": 0.2789449780674292,
+        "dot": 2.951157196969697,
+        "ll": 12.215073390151515,
+        "Q": 0.002316907048225403
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.self_attn.out_proj.weight": {
+        "mse": 0.2297702102875031,
+        "dot": 3.5052230113636362,
+        "ll": 14.171077178030304,
+        "Q": 0.002566993236541748
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc1.weight": {
+        "mse": 0.01203938924569284,
+        "dot": 16.214585227272728,
+        "ll": 30.90651278409091,
+        "Q": 0.002184170065447688
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc2.weight": {
+        "mse": 0.31106264469223494,
+        "dot": 2.8366969696969697,
+        "ll": 11.756537642045455,
+        "Q": 0.0025442023761570454
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.self_attn.out_proj.weight": {
+        "mse": 0.2397601154972358,
+        "dot": 3.4823295454545455,
+        "ll": 14.075153882575757,
+        "Q": 0.0026920961681753397
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc1.weight": {
+        "mse": 0.013941440461640031,
+        "dot": 15.969714015151515,
+        "ll": 30.724223484848483,
+        "Q": 0.0025386386550962925
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc2.weight": {
+        "mse": 0.25841580290945,
+        "dot": 3.092719933712121,
+        "ll": 12.6671875,
+        "Q": 0.002271777018904686
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.self_attn.out_proj.weight": {
+        "mse": 0.2759932189814562,
+        "dot": 3.5109706439393937,
+        "ll": 14.128806818181818,
+        "Q": 0.003401565132662654
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc1.weight": {
+        "mse": 0.015542252029298957,
+        "dot": 16.27266856060606,
+        "ll": 30.927874053030305,
+        "Q": 0.0030257452744990587
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc2.weight": {
+        "mse": 0.20942094263350566,
+        "dot": 3.4029008049242426,
+        "ll": 13.688697916666667,
+        "Q": 0.002040770137682557
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.self_attn.out_proj.weight": {
+        "mse": 0.2073519886501553,
+        "dot": 3.772017518939394,
+        "ll": 14.873384232954546,
+        "Q": 0.002599100349470973
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc1.weight": {
+        "mse": 0.013995150301157543,
+        "dot": 17.330835227272726,
+        "ll": 31.613567708333335,
+        "Q": 0.003083928255364299
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc2.weight": {
+        "mse": 0.32330071501010954,
+        "dot": 2.8488816287878787,
+        "ll": 11.743598484848485,
+        "Q": 0.0027294401079416275
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.self_attn.out_proj.weight": {
+        "mse": 0.24772891750250414,
+        "dot": 3.8495828598484847,
+        "ll": 15.106470170454546,
+        "Q": 0.0035182680003345013
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc1.weight": {
+        "mse": 0.012562189412345395,
+        "dot": 19.092329545454547,
+        "ll": 32.66939867424242,
+        "Q": 0.0033896679524332285
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc2.weight": {
+        "mse": 0.31673150734316036,
+        "dot": 2.9324053030303032,
+        "ll": 12.052097537878788,
+        "Q": 0.0028300699777901173
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.self_attn.out_proj.weight": {
+        "mse": 0.2395909175918391,
+        "dot": 4.030926136363636,
+        "ll": 15.591706912878788,
+        "Q": 0.0036764987744390965
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc1.weight": {
+        "mse": 0.008662027031429785,
+        "dot": 23.46449053030303,
+        "ll": 34.931363636363635,
+        "Q": 0.0034942745696753263
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc2.weight": {
+        "mse": 0.1766859372652836,
+        "dot": 3.7735572916666666,
+        "ll": 14.784454308712121,
+        "Q": 0.0020166656468063593
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.self_attn.out_proj.weight": {
+        "mse": 0.16775588096931074,
+        "dot": 4.762185606060606,
+        "ll": 17.405134943181817,
+        "Q": 0.0032546804286539555
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc1.weight": {
+        "mse": 0.0067589190638624825,
+        "dot": 27.284318181818183,
+        "ll": 36.58802556818182,
+        "Q": 0.003676092717796564
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc2.weight": {
+        "mse": 0.2093752374269898,
+        "dot": 3.617529356060606,
+        "ll": 14.327185132575758,
+        "Q": 0.002384931081905961
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.self_attn.out_proj.weight": {
+        "mse": 0.0586164392521118,
+        "dot": 6.923267992424242,
+        "ll": 21.473558238636365,
+        "Q": 0.0019437988521531224
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc1.weight": {
+        "mse": 0.004665520362209997,
+        "dot": 32.19240909090909,
+        "ll": 38.40123579545455,
+        "Q": 0.0035086863208562136
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc2.weight": {
+        "mse": 0.07767353907292146,
+        "dot": 5.5180634469696965,
+        "ll": 18.933823390151517,
+        "Q": 0.0015535681741312146
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.self_attn.out_proj.weight": {
+        "mse": 0.06938129799724572,
+        "dot": 6.998945075757576,
+        "ll": 21.599651988636364,
+        "Q": 0.002526238327845931
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc1.weight": {
+        "mse": 0.004053296996159091,
+        "dot": 33.24544696969697,
+        "ll": 38.750402462121215,
+        "Q": 0.003225514432415366
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc2.weight": {
+        "mse": 0.05777238767073988,
+        "dot": 6.114419507575757,
+        "ll": 20.05949337121212,
+        "Q": 0.0013013379648327827
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.self_attn.out_proj.weight": {
+        "mse": 0.06289079356911023,
+        "dot": 7.422227746212121,
+        "ll": 22.270288825757575,
+        "Q": 0.002557218074798584
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc1.weight": {
+        "mse": 0.00412971447274115,
+        "dot": 35.156753787878785,
+        "ll": 39.380833333333335,
+        "Q": 0.003701383015140891
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc2.weight": {
+        "mse": 0.006581261701055707,
+        "dot": 15.52834375,
+        "ll": 30.25572206439394,
+        "Q": 0.0005303661455400288
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight": {
+        "mse": 0.09918587400400385,
+        "dot": 7.44114393939394,
+        "ll": 22.331780303030303,
+        "Q": 0.004372064024209976
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc1.weight": {
+        "mse": 0.0019376322261920713,
+        "dot": 42.24877272727273,
+        "ll": 41.35898674242424,
+        "Q": 0.002392653375864029
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc2.weight": {
+        "mse": 0.01633308365334615,
+        "dot": 10.656104166666667,
+        "ll": 26.13828125,
+        "Q": 0.0008610484073869884
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight": {
+        "mse": 0.04199181433218312,
+        "dot": 10.42991287878788,
+        "ll": 26.033098958333333,
+        "Q": 0.0034429628867655993
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc1.weight": {
+        "mse": 0.0036446035498180532,
+        "dot": 35.55266666666667,
+        "ll": 39.482964015151516,
+        "Q": 0.003307116450741887
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc2.weight": {
+        "mse": 0.0722947403924427,
+        "dot": 6.465703125,
+        "ll": 20.712376893939393,
+        "Q": 0.002202723640948534
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.self_attn.out_proj.weight": {
+        "mse": 0.024606482048590256,
+        "dot": 14.970153409090909,
+        "ll": 29.96135890151515,
+        "Q": 0.004067993722856045
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc1.weight": {
+        "mse": 0.009998433930598486,
+        "dot": 21.338348484848485,
+        "ll": 33.86540246212121,
+        "Q": 0.0032872094307094812
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc2.weight": {
+        "mse": 0.176066571679885,
+        "dot": 4.227787878787879,
+        "ll": 16.06854166666667,
+        "Q": 0.0026699292939156294
+      },
+      "model.multi_modal_projector.linear_1.weight": {
+        "mse": 0.011155902183968378,
+        "dot": 15.13245359848485,
+        "ll": 30.03845880681818,
+        "Q": 0.0015789030585438013
+      },
+      "model.multi_modal_projector.linear_2.weight": {
+        "mse": 0.07119383647964425,
+        "dot": 6.958124526515151,
+        "ll": 21.53077414772727,
+        "Q": 0.00257831159979105
+      },
+      "model.language_model.layers.0.mlp.gate_proj.weight": {
+        "mse": 0.7784553865941473,
+        "dot": 1.2246349431818182,
+        "ll": 2.416804865056818,
+        "Q": 0.0037715472280979156
+      },
+      "model.language_model.layers.1.mlp.gate_proj.weight": {
+        "mse": 0.5259944245371532,
+        "dot": 2.207761837121212,
+        "ll": 8.900940459280303,
+        "Q": 0.003887834958732128
+      },
+      "model.language_model.layers.2.mlp.gate_proj.weight": {
+        "mse": 0.40168427012487223,
+        "dot": 2.856027462121212,
+        "ll": 11.734663825757575,
+        "Q": 0.003945070318877697
+      },
+      "model.language_model.layers.3.mlp.gate_proj.weight": {
+        "mse": 0.2956619372644357,
+        "dot": 3.637807765151515,
+        "ll": 14.397114109848484,
+        "Q": 0.004008753225207329
+      },
+      "model.language_model.layers.4.mlp.gate_proj.weight": {
+        "mse": 0.26092682528383065,
+        "dot": 3.9964502840909093,
+        "ll": 15.431903409090909,
+        "Q": 0.004071451723575592
+      },
+      "model.language_model.layers.5.mlp.gate_proj.weight": {
+        "mse": 0.2398044471867557,
+        "dot": 4.304522727272727,
+        "ll": 16.248243371212123,
+        "Q": 0.004220147151499987
+      },
+      "model.language_model.layers.6.mlp.gate_proj.weight": {
+        "mse": 0.20843008263946983,
+        "dot": 4.68261553030303,
+        "ll": 17.17110558712121,
+        "Q": 0.004169704392552376
+      },
+      "model.language_model.layers.7.mlp.gate_proj.weight": {
+        "mse": 0.17923686695810845,
+        "dot": 5.03175,
+        "ll": 17.95986505681818,
+        "Q": 0.003996324725449085
+      },
+      "model.language_model.layers.8.mlp.gate_proj.weight": {
+        "mse": 0.16437008066874415,
+        "dot": 5.115667613636363,
+        "ll": 18.138977272727274,
+        "Q": 0.003721903543919325
+      },
+      "model.language_model.layers.9.mlp.gate_proj.weight": {
+        "mse": 0.14690135556937836,
+        "dot": 5.196014204545454,
+        "ll": 18.30897608901515,
+        "Q": 0.003349798731505871
+      },
+      "model.language_model.layers.10.mlp.gate_proj.weight": {
+        "mse": 0.13117103413076872,
+        "dot": 5.272269412878788,
+        "ll": 18.46782433712121,
+        "Q": 0.0029967157170176506
+      },
+      "model.language_model.layers.11.mlp.gate_proj.weight": {
+        "mse": 0.12135151603176321,
+        "dot": 5.344594223484848,
+        "ll": 18.61953125,
+        "Q": 0.002796157728880644
+      },
+      "model.language_model.layers.12.mlp.gate_proj.weight": {
+        "mse": 0.11044077896340436,
+        "dot": 5.4762078598484845,
+        "ll": 18.8840234375,
+        "Q": 0.002613636665046215
+      },
+      "model.language_model.layers.13.mlp.gate_proj.weight": {
+        "mse": 0.10435040485719162,
+        "dot": 5.5588390151515155,
+        "ll": 19.04953006628788,
+        "Q": 0.002510790014639497
+      },
+      "model.language_model.layers.14.mlp.gate_proj.weight": {
+        "mse": 0.10044004590117454,
+        "dot": 5.764253787878788,
+        "ll": 19.447755681818183,
+        "Q": 0.0026039874646812677
+      },
+      "model.language_model.layers.15.mlp.gate_proj.weight": {
+        "mse": 0.0988792143797771,
+        "dot": 5.9298953598484845,
+        "ll": 19.75941524621212,
+        "Q": 0.0027289234567433596
+      },
+      "model.language_model.layers.16.mlp.gate_proj.weight": {
+        "mse": 0.09605862073482771,
+        "dot": 6.449460227272727,
+        "ll": 20.681498579545455,
+        "Q": 0.0031857250723987818
+      },
+      "model.language_model.layers.17.mlp.gate_proj.weight": {
+        "mse": 0.09363533070655483,
+        "dot": 6.73445928030303,
+        "ll": 21.156931818181818,
+        "Q": 0.003386354772374034
+      },
+      "model.language_model.layers.18.mlp.gate_proj.weight": {
+        "mse": 0.08519959188412655,
+        "dot": 7.14839678030303,
+        "ll": 21.811027462121213,
+        "Q": 0.0034438965376466513
+      },
+      "model.language_model.layers.19.mlp.gate_proj.weight": {
+        "mse": 0.08920476040708451,
+        "dot": 7.243484848484848,
+        "ll": 21.95955018939394,
+        "Q": 0.0037270940374583006
+      },
+      "model.language_model.layers.20.mlp.gate_proj.weight": {
+        "mse": 0.08958267069601417,
+        "dot": 7.815853693181818,
+        "ll": 22.793125,
+        "Q": 0.004366492852568626
+      },
+      "model.language_model.layers.21.mlp.gate_proj.weight": {
+        "mse": 0.07382611432917696,
+        "dot": 8.396522727272727,
+        "ll": 23.574150094696968,
+        "Q": 0.004075091332197189
+      },
+      "model.language_model.layers.22.mlp.gate_proj.weight": {
+        "mse": 0.07680219568777223,
+        "dot": 8.580715909090909,
+        "ll": 23.81360321969697,
+        "Q": 0.004434626083821058
+      },
+      "model.language_model.layers.23.mlp.gate_proj.weight": {
+        "mse": 0.0788235048261145,
+        "dot": 8.710288825757576,
+        "ll": 23.979337121212122,
+        "Q": 0.004698023200035095
+      },
+      "model.language_model.layers.24.mlp.gate_proj.weight": {
+        "mse": 0.07107101509775132,
+        "dot": 9.166310606060605,
+        "ll": 24.536714015151514,
+        "Q": 0.004648776259273291
+      },
+      "model.language_model.layers.25.mlp.gate_proj.weight": {
+        "mse": 0.06476240497724617,
+        "dot": 9.49422159090909,
+        "ll": 24.922466856060606,
+        "Q": 0.004518937319517136
+      },
+      "model.language_model.layers.26.mlp.gate_proj.weight": {
+        "mse": 0.06408278663708256,
+        "dot": 9.562,
+        "ll": 25.002395833333335,
+        "Q": 0.004532801918685436
+      },
+      "model.language_model.layers.27.mlp.gate_proj.weight": {
+        "mse": 0.06306752523706047,
+        "dot": 9.65311268939394,
+        "ll": 25.108517992424243,
+        "Q": 0.004540649708360434
+      },
+      "model.language_model.layers.28.mlp.gate_proj.weight": {
+        "mse": 0.06310852658078711,
+        "dot": 9.66723484848485,
+        "ll": 25.128264678030302,
+        "Q": 0.004557912703603506
+      },
+      "model.language_model.layers.29.mlp.gate_proj.weight": {
+        "mse": 0.06032422105702927,
+        "dot": 9.87746212121212,
+        "ll": 25.367760416666666,
+        "Q": 0.004538627807050943
+      },
+      "model.language_model.layers.30.mlp.gate_proj.weight": {
+        "mse": 0.06261094574965187,
+        "dot": 9.713573863636364,
+        "ll": 25.18575047348485,
+        "Q": 0.004567749332636595
+      },
+      "model.language_model.layers.31.mlp.gate_proj.weight": {
+        "mse": 0.07904300147754847,
+        "dot": 8.691532196969696,
+        "ll": 23.964036458333332,
+        "Q": 0.004706664010882378
+      }
+    },
+    "bimodal_text_partial": {
+      "model.vision_tower.vision_model.encoder.layers.0.self_attn.out_proj.weight": {
+        "mse": 0.05934440868191331,
+        "dot": 3.87475916838843,
+        "ll": 9.798064630681818,
+        "Q": -2.5510606064926833e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc1.weight": {
+        "mse": 0.0012261843954115377,
+        "dot": 27.723248966942148,
+        "ll": 24.222173295454546,
+        "Q": -3.067112265853211e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc2.weight": {
+        "mse": 0.04862327055597433,
+        "dot": 4.299307205578512,
+        "ll": 10.529995265151515,
+        "Q": -2.292039425810799e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.self_attn.out_proj.weight": {
+        "mse": 0.17711053243995695,
+        "dot": 2.09991541838843,
+        "ll": 5.288802083333334,
+        "Q": -2.305966518179048e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc1.weight": {
+        "mse": 0.00122413817579204,
+        "dot": 27.698094008264462,
+        "ll": 24.183366477272727,
+        "Q": -2.700197001104243e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc2.weight": {
+        "mse": 0.09531598390008372,
+        "dot": 3.012053848140496,
+        "ll": 7.853418560606061,
+        "Q": -7.323681984416908e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.self_attn.out_proj.weight": {
+        "mse": 0.1579814433093757,
+        "dot": 2.2485511363636363,
+        "ll": 5.818129142992424,
+        "Q": -2.5589628421585076e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc1.weight": {
+        "mse": 0.004491789236004471,
+        "dot": 14.558964359504133,
+        "ll": 19.508703835227273,
+        "Q": -1.7834454411058687e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc2.weight": {
+        "mse": 0.22151759078156452,
+        "dot": 1.8428568892045454,
+        "ll": 4.321046993371212,
+        "Q": -9.272596798837185e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.self_attn.out_proj.weight": {
+        "mse": 0.10241898351862484,
+        "dot": 2.866370415805785,
+        "ll": 7.560714962121212,
+        "Q": -3.456058038864285e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc1.weight": {
+        "mse": 0.008463862981919302,
+        "dot": 10.496571539256198,
+        "ll": 17.01160037878788,
+        "Q": -2.5715373340062797e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc2.weight": {
+        "mse": 0.17960379721880082,
+        "dot": 2.102864959969008,
+        "ll": 5.257720762310606,
+        "Q": -9.265363587473985e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.self_attn.out_proj.weight": {
+        "mse": 0.29971227848784177,
+        "dot": 1.4911218362603307,
+        "ll": 2.7536937736742426,
+        "Q": -1.943597999343183e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc1.weight": {
+        "mse": 0.010170401084950379,
+        "dot": 9.62053589876033,
+        "ll": 16.378178267045456,
+        "Q": -1.6833464542287402e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc2.weight": {
+        "mse": 0.2637503882238768,
+        "dot": 1.6347661092458678,
+        "ll": 3.4166743607954544,
+        "Q": -1.4847048987576272e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.self_attn.out_proj.weight": {
+        "mse": 0.20743517626013672,
+        "dot": 1.9104374354338842,
+        "ll": 4.5778302556818184,
+        "Q": -1.0083466804644559e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc1.weight": {
+        "mse": 0.006770535401864687,
+        "dot": 11.807461260330578,
+        "ll": 17.913702651515152,
+        "Q": -1.7430149455321953e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc2.weight": {
+        "mse": 0.16520677631127018,
+        "dot": 2.2048169550619834,
+        "ll": 5.660936316287879,
+        "Q": -8.934510333347134e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.self_attn.out_proj.weight": {
+        "mse": 0.14606676696739937,
+        "dot": 2.3344616800103304,
+        "ll": 5.966959043560606,
+        "Q": -2.4203771317843348e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc1.weight": {
+        "mse": 0.010346729750731845,
+        "dot": 9.474989669421488,
+        "ll": 16.266119791666668,
+        "Q": -2.258765380247496e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc2.weight": {
+        "mse": 0.25482931561719513,
+        "dot": 1.662937919679752,
+        "ll": 3.509913884943182,
+        "Q": -6.947493602638133e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.self_attn.out_proj.weight": {
+        "mse": 0.18317198567885806,
+        "dot": 2.0579148372933886,
+        "ll": 5.112250236742424,
+        "Q": -2.564462874943274e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc1.weight": {
+        "mse": 0.010484834818175644,
+        "dot": 9.386818827479338,
+        "ll": 16.197866950757575,
+        "Q": -2.5323703084723093e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc2.weight": {
+        "mse": 0.16807403441172622,
+        "dot": 2.179259103822314,
+        "ll": 5.566241714015152,
+        "Q": -2.0375000531203113e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.self_attn.out_proj.weight": {
+        "mse": 0.1432235809378245,
+        "dot": 2.3773774857954546,
+        "ll": 6.126323982007576,
+        "Q": -6.15115686741774e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc1.weight": {
+        "mse": 0.01084821626247532,
+        "dot": 9.18228951446281,
+        "ll": 16.02261482007576,
+        "Q": -3.0352315661730245e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc2.weight": {
+        "mse": 0.19074869484867593,
+        "dot": 2.0096713584710746,
+        "ll": 4.8932043087121215,
+        "Q": 1.5795649233041331e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.self_attn.out_proj.weight": {
+        "mse": 0.16472561897822063,
+        "dot": 2.190380940082645,
+        "ll": 5.541733546401515,
+        "Q": -1.5101568351383321e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc1.weight": {
+        "mse": 0.010167088472487885,
+        "dot": 9.499764979338844,
+        "ll": 16.305123106060606,
+        "Q": -3.408017073525116e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc2.weight": {
+        "mse": 0.23942622245228207,
+        "dot": 1.7325845816115701,
+        "ll": 3.785174005681818,
+        "Q": -9.887635314953513e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.self_attn.out_proj.weight": {
+        "mse": 0.22619534008814185,
+        "dot": 1.793404732696281,
+        "ll": 4.069395419034091,
+        "Q": -1.1363380508555565e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc1.weight": {
+        "mse": 0.010553597681609572,
+        "dot": 9.358345816115703,
+        "ll": 16.23085108901515,
+        "Q": -2.9412753065116704e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc2.weight": {
+        "mse": 0.27816125525062607,
+        "dot": 1.570612409607438,
+        "ll": 3.1317335464015152,
+        "Q": -3.2832213037181646e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.self_attn.out_proj.weight": {
+        "mse": 0.22911201820658497,
+        "dot": 1.7857751162190083,
+        "ll": 4.0565423768939395,
+        "Q": -5.358940143196378e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc1.weight": {
+        "mse": 0.012030919919464651,
+        "dot": 8.77579222623967,
+        "ll": 15.766979166666667,
+        "Q": -2.2505835659103468e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc2.weight": {
+        "mse": 0.3101040303652205,
+        "dot": 1.4510745415805786,
+        "ll": 2.548434540719697,
+        "Q": -5.462099579744972e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.self_attn.out_proj.weight": {
+        "mse": 0.23903564712643444,
+        "dot": 1.7235101368801653,
+        "ll": 3.7966977391098484,
+        "Q": -2.4407610908383504e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc1.weight": {
+        "mse": 0.01392979033684561,
+        "dot": 8.101669034090909,
+        "ll": 15.151362452651515,
+        "Q": -2.6802248612511903e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc2.weight": {
+        "mse": 0.2577097019072761,
+        "dot": 1.6506637396694215,
+        "ll": 3.525684185606061,
+        "Q": -1.4706377442053054e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.self_attn.out_proj.weight": {
+        "mse": 0.2749622232958855,
+        "dot": 1.5499556107954546,
+        "ll": 2.9476402698863637,
+        "Q": -2.4742312234593555e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc1.weight": {
+        "mse": 0.015526782817834123,
+        "dot": 7.590014850206612,
+        "ll": 14.606638257575758,
+        "Q": -3.367237877682783e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc2.weight": {
+        "mse": 0.20892083077120022,
+        "dot": 1.887345686983471,
+        "ll": 4.486483487215909,
+        "Q": -2.1894113160669804e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.self_attn.out_proj.weight": {
+        "mse": 0.2067676852926167,
+        "dot": 1.8964323992768595,
+        "ll": 4.459473544034091,
+        "Q": -1.7432983440812677e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc1.weight": {
+        "mse": 0.013981733672252129,
+        "dot": 8.03008006198347,
+        "ll": 15.024900568181819,
+        "Q": -2.530619894969277e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc2.weight": {
+        "mse": 0.3222328054701546,
+        "dot": 1.397284026342975,
+        "ll": 2.2465064216382578,
+        "Q": -2.442609729769174e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.self_attn.out_proj.weight": {
+        "mse": 0.24680503615249305,
+        "dot": 1.6687286931818182,
+        "ll": 3.4636606297348487,
+        "Q": -2.3186627004179172e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc1.weight": {
+        "mse": 0.012549968833810002,
+        "dot": 8.418136621900826,
+        "ll": 15.313772490530303,
+        "Q": -2.976190808112733e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc2.weight": {
+        "mse": 0.31566305283503426,
+        "dot": 1.413151472107438,
+        "ll": 2.2935142933238635,
+        "Q": -2.2818809156888165e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.self_attn.out_proj.weight": {
+        "mse": 0.23867484855004728,
+        "dot": 1.7114666193181818,
+        "ll": 3.640631806344697,
+        "Q": -2.4941167794167995e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc1.weight": {
+        "mse": 0.008654836303800127,
+        "dot": 10.239997417355372,
+        "ll": 16.793671875,
+        "Q": -2.1485204342752695e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc2.weight": {
+        "mse": 0.17628952493290428,
+        "dot": 2.1011647727272726,
+        "ll": 5.302053148674243,
+        "Q": -2.2566460756934248e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.self_attn.out_proj.weight": {
+        "mse": 0.16723680155087534,
+        "dot": 2.150294098657025,
+        "ll": 5.413384232954545,
+        "Q": -2.538226908654906e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc1.weight": {
+        "mse": 0.0067537514772800815,
+        "dot": 11.561242252066116,
+        "ll": 17.67458806818182,
+        "Q": -2.6339503165218048e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc2.weight": {
+        "mse": 0.2088168698260085,
+        "dot": 1.8785797068698347,
+        "ll": 4.419790778882576,
+        "Q": -2.5128891138592735e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.self_attn.out_proj.weight": {
+        "mse": 0.058535315310266046,
+        "dot": 3.9410914901859506,
+        "ll": 9.928375946969696,
+        "Q": -3.29486124428513e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc1.weight": {
+        "mse": 0.004662651779325718,
+        "dot": 14.053207644628099,
+        "ll": 19.14698153409091,
+        "Q": -1.482391235185787e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc2.weight": {
+        "mse": 0.07756718988114845,
+        "dot": 3.3724296229338844,
+        "ll": 8.791447679924243,
+        "Q": -1.755422999849543e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.self_attn.out_proj.weight": {
+        "mse": 0.06925815395384538,
+        "dot": 3.5977459969008265,
+        "ll": 9.252782315340909,
+        "Q": 2.4493649561918573e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc1.weight": {
+        "mse": 0.004051106648893623,
+        "dot": 15.151226756198348,
+        "ll": 19.728166429924244,
+        "Q": -1.4322185961646028e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc2.weight": {
+        "mse": 0.05770973726333568,
+        "dot": 3.929220041322314,
+        "ll": 9.834128787878788,
+        "Q": -2.2566755433217622e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.self_attn.out_proj.weight": {
+        "mse": 0.06278257971657142,
+        "dot": 3.7750739282024792,
+        "ll": 9.603171756628788,
+        "Q": -1.3234028301667422e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc1.weight": {
+        "mse": 0.004127227116265051,
+        "dot": 14.931287448347108,
+        "ll": 19.593671875,
+        "Q": -1.645458360144403e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc2.weight": {
+        "mse": 0.006579538514686448,
+        "dot": 12.043964359504132,
+        "ll": 18.096863162878787,
+        "Q": -1.5233207705023233e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight": {
+        "mse": 0.09887699527753945,
+        "dot": 2.881089876033058,
+        "ll": 7.458522135416667,
+        "Q": -1.6887679521460086e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc1.weight": {
+        "mse": 0.0019370444017536967,
+        "dot": 22.205862603305786,
+        "ll": 22.56432765151515,
+        "Q": -4.570225428324193e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc2.weight": {
+        "mse": 0.01632511632573285,
+        "dot": 7.626935046487604,
+        "ll": 14.741541193181819,
+        "Q": -1.2401474123180378e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight": {
+        "mse": 0.041918284737765266,
+        "dot": 4.644828254132231,
+        "ll": 10.999650804924242,
+        "Q": 1.6723779481253587e-05
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc1.weight": {
+        "mse": 0.0036427053846406965,
+        "dot": 16.14030604338843,
+        "ll": 20.24778172348485,
+        "Q": 2.397165872025653e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc2.weight": {
+        "mse": 0.07217579413775416,
+        "dot": 3.5076452737603305,
+        "ll": 9.06375946969697,
+        "Q": -6.205788849911187e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.self_attn.out_proj.weight": {
+        "mse": 0.024568506605485325,
+        "dot": 6.1026678719008265,
+        "ll": 13.048934659090909,
+        "Q": 7.361535608652048e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc1.weight": {
+        "mse": 0.009989903545206959,
+        "dot": 9.702106146694215,
+        "ll": 16.496638257575757,
+        "Q": -3.617818265411188e-06
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc2.weight": {
+        "mse": 0.17559001756442733,
+        "dot": 2.1161686466942147,
+        "ll": 5.36145478219697,
+        "Q": -4.912839358439669e-06
+      },
+      "model.multi_modal_projector.linear_1.weight": {
+        "mse": 0.011149708174218273,
+        "dot": 9.25470945247934,
+        "ll": 16.192954545454544,
+        "Q": -1.0792933608172461e-05
+      },
+      "model.multi_modal_projector.linear_2.weight": {
+        "mse": 0.0710639924686438,
+        "dot": 3.533827479338843,
+        "ll": 9.121060606060606,
+        "Q": -1.1250382158323191e-05
+      },
+      "model.language_model.layers.0.mlp.gate_proj.weight": {
+        "mse": 0.775850023929095,
+        "dot": 0.5178300135588843,
+        "ll": -5.054962121212121,
+        "Q": -7.117234417819418e-06
+      },
+      "model.language_model.layers.1.mlp.gate_proj.weight": {
+        "mse": 0.5236555876924387,
+        "dot": 0.918784946410124,
+        "ll": -0.8577081853693181,
+        "Q": -6.006605417496758e-06
+      },
+      "model.language_model.layers.2.mlp.gate_proj.weight": {
+        "mse": 0.39987518391828875,
+        "dot": 1.1793703189566116,
+        "ll": 0.9660045276988637,
+        "Q": -5.714366125175729e-06
+      },
+      "model.language_model.layers.3.mlp.gate_proj.weight": {
+        "mse": 0.29438885260960945,
+        "dot": 1.4888633135330578,
+        "ll": 2.669604344223485,
+        "Q": -5.926870926487027e-06
+      },
+      "model.language_model.layers.4.mlp.gate_proj.weight": {
+        "mse": 0.2598283287379348,
+        "dot": 1.6233367768595042,
+        "ll": 3.300513731060606,
+        "Q": -3.351726718392456e-06
+      },
+      "model.language_model.layers.5.mlp.gate_proj.weight": {
+        "mse": 0.23879268700584272,
+        "dot": 1.7137559723657025,
+        "ll": 3.6850775331439394,
+        "Q": -3.7275349313858896e-06
+      },
+      "model.language_model.layers.6.mlp.gate_proj.weight": {
+        "mse": 0.2075976417746065,
+        "dot": 1.8762793775826447,
+        "ll": 4.355778882575757,
+        "Q": -4.8691836127545685e-06
+      },
+      "model.language_model.layers.7.mlp.gate_proj.weight": {
+        "mse": 0.1785800382084194,
+        "dot": 2.063853951446281,
+        "ll": 5.064977509469697,
+        "Q": -5.950197191850748e-06
+      },
+      "model.language_model.layers.8.mlp.gate_proj.weight": {
+        "mse": 0.16381779500981702,
+        "dot": 2.1806576058884297,
+        "ll": 5.47986387310606,
+        "Q": -5.6927970035758335e-06
+      },
+      "model.language_model.layers.9.mlp.gate_proj.weight": {
+        "mse": 0.1464644835053276,
+        "dot": 2.336558626033058,
+        "ll": 6.004620620265151,
+        "Q": -7.691930477449205e-06
+      },
+      "model.language_model.layers.10.mlp.gate_proj.weight": {
+        "mse": 0.1308271977828487,
+        "dot": 2.5009533186983472,
+        "ll": 6.5201793323863635,
+        "Q": -1.034863726090407e-05
+      },
+      "model.language_model.layers.11.mlp.gate_proj.weight": {
+        "mse": 0.12105818776617017,
+        "dot": 2.614967878357438,
+        "ll": 6.850455729166667,
+        "Q": -1.3273892363940831e-05
+      },
+      "model.language_model.layers.12.mlp.gate_proj.weight": {
+        "mse": 0.1101959432966576,
+        "dot": 2.7605752840909092,
+        "ll": 7.25443300189394,
+        "Q": -1.450104628020199e-05
+      },
+      "model.language_model.layers.13.mlp.gate_proj.weight": {
+        "mse": 0.10413065349488684,
+        "dot": 2.8494595816115704,
+        "ll": 7.490569365530303,
+        "Q": -1.6640284229652025e-05
+      },
+      "model.language_model.layers.14.mlp.gate_proj.weight": {
+        "mse": 0.10022625500509506,
+        "dot": 2.901391722623967,
+        "ll": 7.622120028409091,
+        "Q": -2.036354453593958e-05
+      },
+      "model.language_model.layers.15.mlp.gate_proj.weight": {
+        "mse": 0.09866334732711336,
+        "dot": 2.9273004907024793,
+        "ll": 7.679108072916667,
+        "Q": -1.7022108295350336e-05
+      },
+      "model.language_model.layers.16.mlp.gate_proj.weight": {
+        "mse": 0.09582733941813397,
+        "dot": 2.961432076446281,
+        "ll": 7.73627959280303,
+        "Q": -1.6184549167519435e-05
+      },
+      "model.language_model.layers.17.mlp.gate_proj.weight": {
+        "mse": 0.09340190326544483,
+        "dot": 2.998197959710744,
+        "ll": 7.826955492424243,
+        "Q": -1.688182237558067e-05
+      },
+      "model.language_model.layers.18.mlp.gate_proj.weight": {
+        "mse": 0.08499325655557714,
+        "dot": 3.1566813016528927,
+        "ll": 8.206465435606061,
+        "Q": -1.559730117151048e-05
+      },
+      "model.language_model.layers.19.mlp.gate_proj.weight": {
+        "mse": 0.08897076641847729,
+        "dot": 3.0637286931818184,
+        "ll": 7.976102035984849,
+        "Q": -1.871044878498651e-05
+      },
+      "model.language_model.layers.20.mlp.gate_proj.weight": {
+        "mse": 0.0893178408847081,
+        "dot": 3.031224173553719,
+        "ll": 7.834486268939394,
+        "Q": -1.4173328963806853e-05
+      },
+      "model.language_model.layers.21.mlp.gate_proj.weight": {
+        "mse": 0.07363569133284706,
+        "dot": 3.388827479338843,
+        "ll": 8.705187026515151,
+        "Q": -1.0903715519816615e-05
+      },
+      "model.language_model.layers.22.mlp.gate_proj.weight": {
+        "mse": 0.07658737094575589,
+        "dot": 3.3042051911157024,
+        "ll": 8.493246922348485,
+        "Q": -9.264049367629923e-06
+      },
+      "model.language_model.layers.23.mlp.gate_proj.weight": {
+        "mse": 0.07859065428854269,
+        "dot": 3.241008522727273,
+        "ll": 8.318459990530304,
+        "Q": -7.622830707987305e-06
+      },
+      "model.language_model.layers.24.mlp.gate_proj.weight": {
+        "mse": 0.07087217897128496,
+        "dot": 3.4384723657024794,
+        "ll": 8.759535392992424,
+        "Q": -3.1979675441107247e-06
+      },
+      "model.language_model.layers.25.mlp.gate_proj.weight": {
+        "mse": 0.06459240189688929,
+        "dot": 3.6233471074380166,
+        "ll": 9.15759824810606,
+        "Q": -2.1593928067886736e-06
+      },
+      "model.language_model.layers.26.mlp.gate_proj.weight": {
+        "mse": 0.063915019239556,
+        "dot": 3.6438775180785123,
+        "ll": 9.197004024621211,
+        "Q": -7.999285571713699e-07
+      },
+      "model.language_model.layers.27.mlp.gate_proj.weight": {
+        "mse": 0.06290337577978636,
+        "dot": 3.674165805785124,
+        "ll": 9.255999053030303,
+        "Q": -1.8792595710692694e-06
+      },
+      "model.language_model.layers.28.mlp.gate_proj.weight": {
+        "mse": 0.06294372560469619,
+        "dot": 3.668833290289256,
+        "ll": 9.241442353219696,
+        "Q": -3.265594614276779e-06
+      },
+      "model.language_model.layers.29.mlp.gate_proj.weight": {
+        "mse": 0.060170422880479045,
+        "dot": 3.7568236699380164,
+        "ll": 9.410308948863637,
+        "Q": -3.9770670809957664e-06
+      },
+      "model.language_model.layers.30.mlp.gate_proj.weight": {
+        "mse": 0.06244782991504137,
+        "dot": 3.6799764333677687,
+        "ll": 9.253106060606061,
+        "Q": -4.477258244151017e-06
+      },
+      "model.language_model.layers.31.mlp.gate_proj.weight": {
+        "mse": 0.07880949394293163,
+        "dot": 3.2384523502066114,
+        "ll": 8.287129498106061,
+        "Q": -2.894296585509437e-06
+      }
+    },
+    "bimodal_image_partial": {
+      "model.vision_tower.vision_model.encoder.layers.0.self_attn.out_proj.weight": {
+        "mse": 0.05935687846545315,
+        "dot": 4.671435304752066,
+        "ll": 11.253366477272728,
+        "Q": 0.00040593004086986184
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc1.weight": {
+        "mse": 0.0012262240405025153,
+        "dot": 33.62743285123967,
+        "ll": 25.743797348484847,
+        "Q": 0.0004155416681896895
+      },
+      "model.vision_tower.vision_model.encoder.layers.0.mlp.fc2.weight": {
+        "mse": 0.04863349550744412,
+        "dot": 5.271973786157025,
+        "ll": 12.113158143939394,
+        "Q": 0.0004497019690461457
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.self_attn.out_proj.weight": {
+        "mse": 0.17720542873465484,
+        "dot": 2.7799341425619835,
+        "ll": 7.435368726325757,
+        "Q": 0.0006752680637873709
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc1.weight": {
+        "mse": 0.0012241888478667403,
+        "dot": 35.30022210743802,
+        "ll": 26.092563920454545,
+        "Q": 0.0005522988503798842
+      },
+      "model.vision_tower.vision_model.encoder.layers.1.mlp.fc2.weight": {
+        "mse": 0.09535716559206278,
+        "dot": 4.031167678202479,
+        "ll": 10.172265625,
+        "Q": 0.0007182043045759201
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.self_attn.out_proj.weight": {
+        "mse": 0.15805768197361073,
+        "dot": 2.935343491735537,
+        "ll": 7.829839015151515,
+        "Q": 0.000629845482762903
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc1.weight": {
+        "mse": 0.004492158703108518,
+        "dot": 18.680798037190083,
+        "ll": 21.425620265151515,
+        "Q": 0.0005911405896767974
+      },
+      "model.vision_tower.vision_model.encoder.layers.2.mlp.fc2.weight": {
+        "mse": 0.22163318076416266,
+        "dot": 2.372493704803719,
+        "ll": 6.300386482007576,
+        "Q": 0.0006122510530985892
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.self_attn.out_proj.weight": {
+        "mse": 0.10246739432624875,
+        "dot": 3.9041018853305784,
+        "ll": 9.94690459280303,
+        "Q": 0.0007358271977864206
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc1.weight": {
+        "mse": 0.008465225742367076,
+        "dot": 14.77384297520661,
+        "ll": 19.706194365530305,
+        "Q": 0.0008490451727993786
+      },
+      "model.vision_tower.vision_model.encoder.layers.3.mlp.fc2.weight": {
+        "mse": 0.17970073812490858,
+        "dot": 2.778504325929752,
+        "ll": 7.456696259469697,
+        "Q": 0.0006887268391437829
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.self_attn.out_proj.weight": {
+        "mse": 0.2999635120907143,
+        "dot": 2.1197012202995866,
+        "ll": 5.46196259469697,
+        "Q": 0.0008878326043486595
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc1.weight": {
+        "mse": 0.010172138327484462,
+        "dot": 13.396720041322315,
+        "ll": 18.998199573863637,
+        "Q": 0.000830580189358443
+      },
+      "model.vision_tower.vision_model.encoder.layers.4.mlp.fc2.weight": {
+        "mse": 0.26392803806882864,
+        "dot": 2.208792936466942,
+        "ll": 5.78265625,
+        "Q": 0.0007395969587378204
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.self_attn.out_proj.weight": {
+        "mse": 0.2076050298151979,
+        "dot": 2.7975994318181816,
+        "ll": 7.464978693181818,
+        "Q": 0.0009946746286004782
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc1.weight": {
+        "mse": 0.006771523890452085,
+        "dot": 16.655368026859506,
+        "ll": 20.58745975378788,
+        "Q": 0.0008663462940603495
+      },
+      "model.vision_tower.vision_model.encoder.layers.5.mlp.fc2.weight": {
+        "mse": 0.16530166707693505,
+        "dot": 2.986452737603306,
+        "ll": 7.959992897727273,
+        "Q": 0.0007514707394875586
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.self_attn.out_proj.weight": {
+        "mse": 0.14618535461355284,
+        "dot": 3.583717071280992,
+        "ll": 9.281574337121212,
+        "Q": 0.0011181907029822469
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc1.weight": {
+        "mse": 0.010348910968825516,
+        "dot": 14.056953770661156,
+        "ll": 19.323416193181817,
+        "Q": 0.0010132454335689545
+      },
+      "model.vision_tower.vision_model.encoder.layers.6.mlp.fc2.weight": {
+        "mse": 0.25505652126904105,
+        "dot": 2.449237151342975,
+        "ll": 6.457066761363636,
+        "Q": 0.0010037175379693508
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.self_attn.out_proj.weight": {
+        "mse": 0.18333491856568176,
+        "dot": 3.149252001549587,
+        "ll": 8.282423650568182,
+        "Q": 0.0011459875386208296
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc1.weight": {
+        "mse": 0.010487331421740234,
+        "dot": 14.494860537190082,
+        "ll": 19.53962831439394,
+        "Q": 0.0011433487525209785
+      },
+      "model.vision_tower.vision_model.encoder.layers.7.mlp.fc2.weight": {
+        "mse": 0.16819181877085151,
+        "dot": 3.1165134297520662,
+        "ll": 8.224705255681819,
+        "Q": 0.0009296839125454426
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.self_attn.out_proj.weight": {
+        "mse": 0.143347569077994,
+        "dot": 3.7357224948347105,
+        "ll": 9.53610381155303,
+        "Q": 0.0012321192771196365
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc1.weight": {
+        "mse": 0.01085115753848803,
+        "dot": 14.804128357438017,
+        "ll": 19.684753787878787,
+        "Q": 0.0012847837060689926
+      },
+      "model.vision_tower.vision_model.encoder.layers.8.mlp.fc2.weight": {
+        "mse": 0.19091788340305535,
+        "dot": 3.0546745867768594,
+        "ll": 8.031783854166667,
+        "Q": 0.0011375577887520194
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.self_attn.out_proj.weight": {
+        "mse": 0.16490422487500192,
+        "dot": 3.6693840392561983,
+        "ll": 9.459290956439395,
+        "Q": 0.0014508742606267333
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc1.weight": {
+        "mse": 0.010170008886498397,
+        "dot": 15.8516361053719,
+        "ll": 20.22238162878788,
+        "Q": 0.0014066569274291396
+      },
+      "model.vision_tower.vision_model.encoder.layers.9.mlp.fc2.weight": {
+        "mse": 0.23974557487410697,
+        "dot": 2.984106404958678,
+        "ll": 7.9557321259469695,
+        "Q": 0.0015610653208568692
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.self_attn.out_proj.weight": {
+        "mse": 0.22656603772769546,
+        "dot": 3.420393853305785,
+        "ll": 8.95390565814394,
+        "Q": 0.0019695735536515713
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc1.weight": {
+        "mse": 0.01055707855532205,
+        "dot": 16.3856895661157,
+        "ll": 20.476749526515153,
+        "Q": 0.0015997164882719517
+      },
+      "model.vision_tower.vision_model.encoder.layers.10.mlp.fc2.weight": {
+        "mse": 0.2786404368584684,
+        "dot": 2.9611608987603306,
+        "ll": 7.91928740530303,
+        "Q": 0.001939089735969901
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.self_attn.out_proj.weight": {
+        "mse": 0.22951782587842073,
+        "dot": 3.521609956095041,
+        "ll": 9.179276751893939,
+        "Q": 0.002126870444044471
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc1.weight": {
+        "mse": 0.012035737707748061,
+        "dot": 16.25935950413223,
+        "ll": 20.424318181818183,
+        "Q": 0.0018371406476944685
+      },
+      "model.vision_tower.vision_model.encoder.layers.11.mlp.fc2.weight": {
+        "mse": 0.3107018203925478,
+        "dot": 2.846594137396694,
+        "ll": 7.640211884469697,
+        "Q": 0.002106870524585247
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.self_attn.out_proj.weight": {
+        "mse": 0.23948733098781422,
+        "dot": 3.4981743930785125,
+        "ll": 9.141942471590909,
+        "Q": 0.0022184059489518404
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc1.weight": {
+        "mse": 0.013936621292263512,
+        "dot": 16.016947314049588,
+        "ll": 20.32002840909091,
+        "Q": 0.0020991582423448563
+      },
+      "model.vision_tower.vision_model.encoder.layers.12.mlp.fc2.weight": {
+        "mse": 0.2581392280165512,
+        "dot": 3.102950671487603,
+        "ll": 8.286106770833333,
+        "Q": 0.001903732307255268
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.self_attn.out_proj.weight": {
+        "mse": 0.2756277074483745,
+        "dot": 3.525083935950413,
+        "ll": 9.21131865530303,
+        "Q": 0.0027404245920479298
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc1.weight": {
+        "mse": 0.015536144067771497,
+        "dot": 16.318215392561985,
+        "ll": 20.458160511363637,
+        "Q": 0.0024572687689214945
+      },
+      "model.vision_tower.vision_model.encoder.layers.13.mlp.fc2.weight": {
+        "mse": 0.20921701244995417,
+        "dot": 3.4115495867768595,
+        "ll": 8.985287050189394,
+        "Q": 0.0017307244706898928
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.self_attn.out_proj.weight": {
+        "mse": 0.2071268496793248,
+        "dot": 3.7827763429752066,
+        "ll": 9.735932173295454,
+        "Q": 0.002143779071047902
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc1.weight": {
+        "mse": 0.013989865374015857,
+        "dot": 17.380791580578514,
+        "ll": 20.922836174242423,
+        "Q": 0.002500701928511262
+      },
+      "model.vision_tower.vision_model.encoder.layers.14.mlp.fc2.weight": {
+        "mse": 0.32290777624744305,
+        "dot": 2.8563913997933885,
+        "ll": 7.683293678977273,
+        "Q": 0.002237665466964245
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.self_attn.out_proj.weight": {
+        "mse": 0.2474009301577158,
+        "dot": 3.8639059271694216,
+        "ll": 9.892159682765152,
+        "Q": 0.0028210042510181665
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc1.weight": {
+        "mse": 0.01255748841034414,
+        "dot": 19.14957515495868,
+        "ll": 21.636214488636362,
+        "Q": 0.0027252142317593098
+      },
+      "model.vision_tower.vision_model.encoder.layers.15.mlp.fc2.weight": {
+        "mse": 0.31634114701179594,
+        "dot": 2.9405710872933883,
+        "ll": 7.897404119318182,
+        "Q": 0.0023114534560590982
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.self_attn.out_proj.weight": {
+        "mse": 0.23926722677608955,
+        "dot": 4.044760136880165,
+        "ll": 10.232069128787879,
+        "Q": 0.002939120400696993
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc1.weight": {
+        "mse": 0.008659263605842836,
+        "dot": 23.528396177685952,
+        "ll": 23.14767518939394,
+        "Q": 0.002801768248900771
+      },
+      "model.vision_tower.vision_model.encoder.layers.16.mlp.fc2.weight": {
+        "mse": 0.1765220026261742,
+        "dot": 3.7816044679752068,
+        "ll": 9.745667021780303,
+        "Q": 0.0017113174544647336
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.self_attn.out_proj.weight": {
+        "mse": 0.16756401867855825,
+        "dot": 4.776739733987603,
+        "ll": 11.455827414772727,
+        "Q": 0.0026290523819625378
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc1.weight": {
+        "mse": 0.006756955996272622,
+        "dot": 27.354767561983472,
+        "ll": 24.253754734848485,
+        "Q": 0.002936038188636303
+      },
+      "model.vision_tower.vision_model.encoder.layers.17.mlp.fc2.weight": {
+        "mse": 0.2091560318067662,
+        "dot": 3.625229532541322,
+        "ll": 9.436026278409091,
+        "Q": 0.0019832050893455744
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.self_attn.out_proj.weight": {
+        "mse": 0.05858102624060984,
+        "dot": 6.939456998966942,
+        "ll": 14.198198390151514,
+        "Q": 0.001659995410591364
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc1.weight": {
+        "mse": 0.004664412940614285,
+        "dot": 32.27534090909091,
+        "ll": 25.46712831439394,
+        "Q": 0.0028132142033427954
+      },
+      "model.vision_tower.vision_model.encoder.layers.18.mlp.fc2.weight": {
+        "mse": 0.07762484164310514,
+        "dot": 5.526219008264463,
+        "ll": 12.530570549242425,
+        "Q": 0.0013691219501197338
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.self_attn.out_proj.weight": {
+        "mse": 0.06933112512458532,
+        "dot": 7.015912964876033,
+        "ll": 14.277791193181818,
+        "Q": 0.002089809626340866
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc1.weight": {
+        "mse": 0.004052433302671307,
+        "dot": 33.328651859504134,
+        "ll": 25.703468276515153,
+        "Q": 0.0026045709382742643
+      },
+      "model.vision_tower.vision_model.encoder.layers.19.mlp.fc2.weight": {
+        "mse": 0.057742260096784105,
+        "dot": 6.124124483471074,
+        "ll": 13.282495265151516,
+        "Q": 0.0011848662979900837
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.self_attn.out_proj.weight": {
+        "mse": 0.06284692916258955,
+        "dot": 7.443307722107438,
+        "ll": 14.708255208333334,
+        "Q": 0.0021151273977011442
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc1.weight": {
+        "mse": 0.004128766406296168,
+        "dot": 35.25129132231405,
+        "ll": 26.112855113636364,
+        "Q": 0.00295650796033442
+      },
+      "model.vision_tower.vision_model.encoder.layers.20.mlp.fc2.weight": {
+        "mse": 0.006580213013511848,
+        "dot": 15.546206095041322,
+        "ll": 20.112689393939394,
+        "Q": 0.0006142618367448449
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.self_attn.out_proj.weight": {
+        "mse": 0.09907683335785272,
+        "dot": 7.469245222107438,
+        "ll": 14.727191051136364,
+        "Q": 0.003457213519141078
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc1.weight": {
+        "mse": 0.0019373801922977548,
+        "dot": 42.343122417355374,
+        "ll": 27.460710227272727,
+        "Q": 0.0019894163124263287
+      },
+      "model.vision_tower.vision_model.encoder.layers.21.mlp.fc2.weight": {
+        "mse": 0.016328724206923773,
+        "dot": 10.671905991735537,
+        "ll": 17.355101799242423,
+        "Q": 0.0008589440840296447
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.self_attn.out_proj.weight": {
+        "mse": 0.041963807048832326,
+        "dot": 10.465832257231405,
+        "ll": 17.196107954545454,
+        "Q": 0.002765474608168006
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc1.weight": {
+        "mse": 0.003643856607659349,
+        "dot": 35.64777376033058,
+        "ll": 26.19519412878788,
+        "Q": 0.0026612801011651754
+      },
+      "model.vision_tower.vision_model.encoder.layers.22.mlp.fc2.weight": {
+        "mse": 0.07224476640622772,
+        "dot": 6.4829971590909095,
+        "ll": 13.696472537878789,
+        "Q": 0.001849365420639515
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.self_attn.out_proj.weight": {
+        "mse": 0.02459242620367742,
+        "dot": 15.007685950413222,
+        "ll": 19.848676609848486,
+        "Q": 0.003220663173124194
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc1.weight": {
+        "mse": 0.009995092893770492,
+        "dot": 21.391295196280993,
+        "ll": 22.450187026515152,
+        "Q": 0.0026458040811121464
+      },
+      "model.vision_tower.vision_model.encoder.layers.23.mlp.fc2.weight": {
+        "mse": 0.1758815665659705,
+        "dot": 4.239619059917356,
+        "ll": 10.579152462121213,
+        "Q": 0.002191597130149603
+      },
+      "model.multi_modal_projector.linear_1.weight": {
+        "mse": 0.01115297371505357,
+        "dot": 15.160340909090909,
+        "ll": 19.92972537878788,
+        "Q": 0.0013860019389539957
+      },
+      "model.multi_modal_projector.linear_2.weight": {
+        "mse": 0.07114133228253973,
+        "dot": 6.974581611570248,
+        "ll": 14.233143939393939,
+        "Q": 0.0021234292071312666
+      },
+      "model.language_model.layers.0.mlp.gate_proj.weight": {
+        "mse": 0.7777489794986489,
+        "dot": 1.2256978790030992,
+        "ll": 1.4815679746685606,
+        "Q": 0.0029943957924842834
+      },
+      "model.language_model.layers.1.mlp.gate_proj.weight": {
+        "mse": 0.5252347684973896,
+        "dot": 2.2102642368285124,
+        "ll": 5.805191761363637,
+        "Q": 0.0030813952907919884
+      },
+      "model.language_model.layers.2.mlp.gate_proj.weight": {
+        "mse": 0.40107235570569655,
+        "dot": 2.858439436983471,
+        "ll": 7.691041074810606,
+        "Q": 0.0031220566015690565
+      },
+      "model.language_model.layers.3.mlp.gate_proj.weight": {
+        "mse": 0.2952201521786886,
+        "dot": 3.6403305785123967,
+        "ll": 9.464191524621212,
+        "Q": 0.0031681309919804335
+      },
+      "model.language_model.layers.4.mlp.gate_proj.weight": {
+        "mse": 0.26054270453791,
+        "dot": 3.997014139979339,
+        "ll": 10.149817708333334,
+        "Q": 0.003211293136700988
+      },
+      "model.language_model.layers.5.mlp.gate_proj.weight": {
+        "mse": 0.23945100387723803,
+        "dot": 4.30348527892562,
+        "ll": 10.691891571969697,
+        "Q": 0.0033189181704074144
+      },
+      "model.language_model.layers.6.mlp.gate_proj.weight": {
+        "mse": 0.20813617490905248,
+        "dot": 4.679690082644628,
+        "ll": 11.307303503787878,
+        "Q": 0.0032801064662635326
+      },
+      "model.language_model.layers.7.mlp.gate_proj.weight": {
+        "mse": 0.17900129807078413,
+        "dot": 5.0280836776859505,
+        "ll": 11.834498106060606,
+        "Q": 0.003152039833366871
+      },
+      "model.language_model.layers.8.mlp.gate_proj.weight": {
+        "mse": 0.1641681439032629,
+        "dot": 5.110802556818181,
+        "ll": 11.954897017045454,
+        "Q": 0.0029496322385966778
+      },
+      "model.language_model.layers.9.mlp.gate_proj.weight": {
+        "mse": 0.14673710283447267,
+        "dot": 5.1898382618801655,
+        "ll": 12.067971117424243,
+        "Q": 0.0026755421422421932
+      },
+      "model.language_model.layers.10.mlp.gate_proj.weight": {
+        "mse": 0.13103790557494321,
+        "dot": 5.265576575413223,
+        "ll": 12.174751420454545,
+        "Q": 0.0024163357447832823
+      },
+      "model.language_model.layers.11.mlp.gate_proj.weight": {
+        "mse": 0.12123585474650218,
+        "dot": 5.3378615702479335,
+        "ll": 12.275,
+        "Q": 0.002269505988806486
+      },
+      "model.language_model.layers.12.mlp.gate_proj.weight": {
+        "mse": 0.11034231946842533,
+        "dot": 5.468483987603306,
+        "ll": 12.452620738636364,
+        "Q": 0.0021350036840885878
+      },
+      "model.language_model.layers.13.mlp.gate_proj.weight": {
+        "mse": 0.10426102881919942,
+        "dot": 5.550566890495868,
+        "ll": 12.561946022727273,
+        "Q": 0.002059342572465539
+      },
+      "model.language_model.layers.14.mlp.gate_proj.weight": {
+        "mse": 0.10035386889480452,
+        "dot": 5.755370609504133,
+        "ll": 12.827888257575758,
+        "Q": 0.0021277079358696938
+      },
+      "model.language_model.layers.15.mlp.gate_proj.weight": {
+        "mse": 0.09879305029723388,
+        "dot": 5.9204836002066115,
+        "ll": 13.035286458333333,
+        "Q": 0.0022193470504134893
+      },
+      "model.language_model.layers.16.mlp.gate_proj.weight": {
+        "mse": 0.09596956141199478,
+        "dot": 6.439916709710744,
+        "ll": 13.652147253787879,
+        "Q": 0.002555706538259983
+      },
+      "model.language_model.layers.17.mlp.gate_proj.weight": {
+        "mse": 0.09354668341493355,
+        "dot": 6.725295712809918,
+        "ll": 13.970130208333334,
+        "Q": 0.0027037598192691803
+      },
+      "model.language_model.layers.18.mlp.gate_proj.weight": {
+        "mse": 0.08512134737367114,
+        "dot": 7.139220041322314,
+        "ll": 14.408256392045455,
+        "Q": 0.0027465238235890865
+      },
+      "model.language_model.layers.19.mlp.gate_proj.weight": {
+        "mse": 0.08911780111453345,
+        "dot": 7.235194989669422,
+        "ll": 14.505729166666667,
+        "Q": 0.0029552665073424578
+      },
+      "model.language_model.layers.20.mlp.gate_proj.weight": {
+        "mse": 0.08948758777212795,
+        "dot": 7.808380681818182,
+        "ll": 15.064860321969697,
+        "Q": 0.0034264670684933662
+      },
+      "model.language_model.layers.21.mlp.gate_proj.weight": {
+        "mse": 0.07375643598718384,
+        "dot": 8.389475723140496,
+        "ll": 15.59171046401515,
+        "Q": 0.003213138086721301
+      },
+      "model.language_model.layers.22.mlp.gate_proj.weight": {
+        "mse": 0.07672503761522648,
+        "dot": 8.573946926652892,
+        "ll": 15.751051136363637,
+        "Q": 0.003477944992482662
+      },
+      "model.language_model.layers.23.mlp.gate_proj.weight": {
+        "mse": 0.07874093324634536,
+        "dot": 8.703411673553719,
+        "ll": 15.860828598484849,
+        "Q": 0.0036719213239848614
+      },
+      "model.language_model.layers.24.mlp.gate_proj.weight": {
+        "mse": 0.07100017814776298,
+        "dot": 9.160142691115702,
+        "ll": 16.236103219696968,
+        "Q": 0.003636573674157262
+      },
+      "model.language_model.layers.25.mlp.gate_proj.weight": {
+        "mse": 0.06470137650608766,
+        "dot": 9.488434271694215,
+        "ll": 16.494446022727274,
+        "Q": 0.0035416646860539913
+      },
+      "model.language_model.layers.26.mlp.gate_proj.weight": {
+        "mse": 0.06402259000200206,
+        "dot": 9.556995092975207,
+        "ll": 16.546967329545456,
+        "Q": 0.0035524629056453705
+      },
+      "model.language_model.layers.27.mlp.gate_proj.weight": {
+        "mse": 0.06300864072180735,
+        "dot": 9.648028150826446,
+        "ll": 16.616441761363635,
+        "Q": 0.003558110212907195
+      },
+      "model.language_model.layers.28.mlp.gate_proj.weight": {
+        "mse": 0.06304947452658147,
+        "dot": 9.662577479338843,
+        "ll": 16.627173295454547,
+        "Q": 0.003571262350305915
+      },
+      "model.language_model.layers.29.mlp.gate_proj.weight": {
+        "mse": 0.06026906736857654,
+        "dot": 9.875041322314049,
+        "ll": 16.786413352272728,
+        "Q": 0.0035590531770139933
+      },
+      "model.language_model.layers.30.mlp.gate_proj.weight": {
+        "mse": 0.06255257077502775,
+        "dot": 9.711324896694215,
+        "ll": 16.66377840909091,
+        "Q": 0.003580624470487237
+      },
+      "model.language_model.layers.31.mlp.gate_proj.weight": {
+        "mse": 0.07896031449304337,
+        "dot": 8.68997159090909,
+        "ll": 15.848850615530303,
+        "Q": 0.0036828522570431232
+      }
+    }
+  }
+}
