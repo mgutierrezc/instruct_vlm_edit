@@ -55,9 +55,9 @@ class AutoLayer:
         self._all_acts = {}
         self._cache = {}
         self._samples = None
-        self.n_samples = 20
+        self.n_samples = 100
         self.n_aug = 10
-        self.percentile_threshold = 0.0    # Filter out similarities below this percentile (0-1)
+        self.percentile_threshold = 0.75    # Filter out similarities below this percentile (0-1)
         self.threshold_mask = True         # True: exclude from calc, False: zero them
         self.blank_image_for_lang = True   # Use <blank, text> for language robustness
         self.blank_text_for_vision = True  # Use <image, ""> for vision robustness
@@ -65,7 +65,10 @@ class AutoLayer:
         self.weighted_contrastive = False  # Use weighted target [1, 0.5, 0] for contrastive
         self.verbalize_mode = "none"       # "none": <I,T>, "replace": <blank, verb(I)+T>, "augment": <I, verb(I)+T>
         self._verb_cache = {}              # Cache image descriptions
-
+        self.standardize_embeddings = "none"  # "none", "zscore", or "norm"
+        self.use_percentile_sim = True        # Convert L2 dist to percentile-based similarity
+        self.compute_concat = False           # Compute __concat__ pseudo-layer scores
+    
     def _verbalize(self, image):
         """Generate text description of image using VLM."""
         img_id = id(image)
@@ -150,11 +153,8 @@ class AutoLayer:
         elif act.dim() == 2:
             if act.shape[0] == 1:
                 return act
-            elif act.shape[0] % 1 == 0:
-                patches = act.shape[0]
-                return act.view(1, patches, -1).mean(dim=1)
-            else:
-                return act.mean(dim=0, keepdim=True)
+            # Multiple tokens/patches: mean pool
+            return act.mean(dim=0, keepdim=True)
         elif act.dim() == 1:
             return act.unsqueeze(0)
         elif act.dim() >= 4:
@@ -354,70 +354,61 @@ class AutoLayer:
         """Compute metrics with custom target matrix (all higher = better).
         
         Args:
-            percentile_threshold: If > 0, filter out similarities below this percentile.
-                                  E.g., 0.25 filters out bottom 25% of similarities.
-            use_mask: If True, exclude filtered pairs from calculation (default).
-                      If False, zero them but keep in calculation.
+            percentile_threshold: If > 0, keep only top (1-threshold) pairs.
+            use_mask: If True, exclude filtered pairs; if False, zero them.
         """
         N = len(embs)
-        
-        # Pairwise L2 distance -> similarity (0-1)
         l2_dist = torch.cdist(embs, embs, p=2)
-        sim = 1 / (1 + l2_dist)
         
-        # Upper triangle indices
+        # Distance -> similarity
+        if self.use_percentile_sim:
+            dist_flat = l2_dist.flatten()
+            ranks = dist_flat.argsort().argsort().float()
+            sim = (1.0 - ranks / (len(dist_flat) - 1)).view(N, N)
+            sim = (sim * 1000).round() / 1000
+        else:
+            sim = 1 / (1 + l2_dist)
+        
+        # Threshold mask (keep top pairs)
         triu_idx = torch.triu_indices(N, N, offset=1, device=embs.device)
-        
-        # Apply percentile threshold filter
         mask = None
         if percentile_threshold > 0:
-            sim_triu = sim[triu_idx[0], triu_idx[1]]
-            thresh_val = torch.quantile(sim_triu, percentile_threshold)
+            thresh_val = torch.quantile(sim[triu_idx[0], triu_idx[1]], percentile_threshold)
             mask = sim >= thresh_val
-            mask.fill_diagonal_(True)  # Keep diagonal
-            if not use_mask:
-                # Zero mode: set below-threshold to 0
-                sim = sim * mask.float()
+            mask.fill_diagonal_(True)
         
-        # Get upper triangle values
-        sim_triu = sim[triu_idx[0], triu_idx[1]]
+        # Apply mask: zero out filtered pairs for all metrics
+        sim_masked = sim * mask.float() if mask is not None else sim
+        
+        # Upper triangle
+        sim_triu = sim_masked[triu_idx[0], triu_idx[1]]
         target_triu = target[triu_idx[0], triu_idx[1]]
-        mask_triu = mask[triu_idx[0], triu_idx[1]] if mask is not None else None
         
-        # Compute scores
-        if use_mask and mask_triu is not None:
-            # Mask mode: exclude filtered pairs
-            sim_masked = sim_triu[mask_triu]
-            target_masked = target_triu[mask_triu]
-            n_pairs = mask_triu.sum().item()
-            mse_raw = ((sim_masked - target_masked) ** 2).sum().item() / max(n_pairs, 1)
-            n_in_block = target_masked.sum().item()
-            dot = (sim_masked * target_masked).sum().item() / max(n_in_block, 1)
+        # MSE and dot
+        if use_mask and mask is not None:
+            mask_triu = mask[triu_idx[0], triu_idx[1]]
+            s, t = sim_triu[mask_triu], target_triu[mask_triu]
+            mse_raw = ((s - t) ** 2).sum().item() / max(len(s), 1)
+            dot = (s * t).sum().item() / max(t.sum().item(), 1)
         else:
-            # Zero mode or no threshold
             mse_raw = ((sim_triu - target_triu) ** 2).mean().item()
-            n_in_block = target_triu.sum().item()
-            dot = (sim_triu * target_triu).sum().item() / max(n_in_block, 1)
+            dot = (sim_triu * target_triu).sum().item() / max(target_triu.sum().item(), 1)
         
-        mse = 1 / (1 + mse_raw)
+        # LL
+        ll = (target * torch.log(sim_masked + 1e-16)).sum().item() / N
         
-        # Log-likelihood (use full matrix)
-        log_probs = torch.log(sim + 1e-16)
-        ll = (torch.sum(target * log_probs) / N).item()
-        
-        # Weighted modularity Q (remove self-connections)
-        sim_no_diag = sim.clone()
+        # Q (modularity)
+        sim_no_diag = sim_masked.clone()
         sim_no_diag.fill_diagonal_(0.0)
-        k = sim_no_diag.sum(dim=1)
         m = sim_no_diag.sum() / 2
         if m > 0:
-            null_model = torch.outer(k, k) / (2 * m)
-            Q = ((sim_no_diag - null_model) * target).sum() / (2 * m)
+            k = sim_no_diag.sum(dim=1)
+            Q = ((sim_no_diag - torch.outer(k, k) / (2 * m)) * target).sum() / (2 * m)
             modularity = Q.item()
         else:
             modularity = 0.0
         
-        return {"mse": mse, "dot": dot, "ll": ll, "Q": modularity}
+        return {"mse": 1 / (1 + mse_raw), "dot": dot, "ll": ll, "Q": modularity}
 
     def _compute_metrics(self, embs, n_samples, n_aug, percentile_threshold=0.0, use_mask=True):
         """Compute metrics with standard target (1 cluster per sample)."""
@@ -438,6 +429,25 @@ class AutoLayer:
         """Append only if shape matches existing entries."""
         if len(lst) == 0 or lst[0].shape == emb.shape:
             lst.append(emb)
+
+    def _standardize(self, embs):
+        """Standardize embeddings to make layers comparable.
+        
+        Options (self.standardize_embeddings):
+          "none": No standardization
+          "zscore": Z-score per dimension (mean=0, std=1)
+          "norm": Scale by mean L2 norm (preserves direction ratios)
+        """
+        mode = self.standardize_embeddings
+        if not mode or mode == "none":
+            return embs
+        if mode == "norm":
+            scale = embs.norm(dim=-1).mean() + 1e-8
+            return embs / scale
+        # Default: zscore
+        mean = embs.mean(dim=0, keepdim=True)
+        std = embs.std(dim=0, keepdim=True) + 1e-8
+        return (embs - mean) / std
 
     def _encode_bimodal_contrastive(self, samples, layers, all_embs, n_aug, pbar):
         """Encode contrastive 'bimodal' robustness: 3 sub-clusters per sample.
@@ -586,11 +596,12 @@ class AutoLayer:
         def encode_concat(img, text):
             """Encode as concat(vis(<img,"">), lang(<blank,text>))."""
             blank = Image.new("RGB", img.size, (128, 128, 128))
-            vis = self._encode_all(img, "").get(vis_layer)  # image-only
-            lang = self._encode_all(blank, text).get(lang_layer)  # text-only
-            if vis is None or lang is None:
+            v = self._encode_all(img, "").get(vis_layer)  # image-only
+            vl = self._encode_all(img, text).get(vis_layer)  # image-text entangled
+            l = self._encode_all(blank, text).get(lang_layer)  # text-only
+            if v is None or vl is None or l is None:
                 return None
-            return torch.cat([vis, lang], dim=-1)
+            return torch.cat([v, l, vl], dim=-1)
         
         vis_embs, lang_embs, bimodal_embs = [], [], []
         
@@ -636,9 +647,14 @@ class AutoLayer:
                 print("[Concat] No embeddings collected, skipping")
             return None
         
-        vis_tensor = torch.cat(vis_embs, dim=0).to(self.device)
-        lang_tensor = torch.cat(lang_embs, dim=0).to(self.device)
-        bimodal_tensor = torch.cat(bimodal_embs, dim=0).to(self.device)
+        vis_tensor = torch.cat(vis_embs, dim=0)
+        lang_tensor = torch.cat(lang_embs, dim=0)
+        bimodal_tensor = torch.cat(bimodal_embs, dim=0)
+        
+        # Z-score standardize (same as regular layers)
+        vis_tensor = self._standardize(vis_tensor).to(self.device)
+        lang_tensor = self._standardize(lang_tensor).to(self.device)
+        bimodal_tensor = self._standardize(bimodal_tensor).to(self.device)
         
         result = {
             "vision": self._compute_metrics(vis_tensor, n_samples, n_aug, self.percentile_threshold, self.threshold_mask),
@@ -779,6 +795,11 @@ class AutoLayer:
             lang_embs = torch.cat(lang_list, dim=0)
             bimodal_embs = torch.cat(bimodal_list, dim=0)
             
+            # Z-score standardize per layer (makes layers comparable)
+            vis_embs = self._standardize(vis_embs)
+            lang_embs = self._standardize(lang_embs)
+            bimodal_embs = self._standardize(bimodal_embs)
+            
             self._cache[layer] = {
                 "vision": (vis_embs, n_samples, n_aug),
                 "language": (lang_embs, n_samples, n_aug),
@@ -814,6 +835,8 @@ class AutoLayer:
             result["bimodal_image_partial"] = bimodal_image_partial_scores
         
         # Add __concat__ pseudo-layer using config's inner_params_vision and inner_params_lang
+        if not self.compute_concat:
+            return result
         concat_scores = self._compute_concat_scores(n_samples, n_aug, verbose)
         if concat_scores:
             for mode in concat_scores:
@@ -974,7 +997,10 @@ class AutoLayer:
             return None
         
         print(f"[AutoLayer] Loading {len(files)} runs...")
-        all_scores = [json.load(open(f))["scores"] for f in files]
+        all_scores = []
+        for f in files:
+            with open(f) as fp:
+                all_scores.append(json.load(fp)["scores"])
         
         metrics = ["mse", "dot", "ll", "Q"]
         agg = {}

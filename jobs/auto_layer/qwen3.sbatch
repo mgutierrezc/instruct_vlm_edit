@@ -3,8 +3,8 @@
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1  
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=48G
-#SBATCH -t 5:00:00
+#SBATCH --mem=64G
+#SBATCH -t 8:00:00
 #SBATCH -A cama
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
@@ -24,5 +24,4 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
-python -m revlm.run.auto_layer --model_name qwen3 --n_runs 10 --n_samples 10 --n_aug 3
-
+python -m revlm.run.auto_layer --model_name qwen3
