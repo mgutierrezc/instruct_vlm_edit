@@ -50,8 +50,8 @@ class AutoLayer:
         self.n_aug = 10
         self.percentile_threshold = 0.0    # Filter out similarities below this percentile (0-1)
         self.threshold_mask = True         # True: exclude from calc, False: zero them
-        self.blank_image_for_lang = True   # Use <blank, text> for language robustness
-        self.blank_text_for_vision = True  # Use <image, ""> for vision robustness
+        self.blank_image_for_lang = False   # Use <blank, text> for language robustness
+        self.blank_text_for_vision = False  # Use <image, ""> for vision robustness
         self.contrastive_bimodal = True       # Use contrastive target for "bimodal" robustness
         self.weighted_contrastive = False  # Use weighted target [1, 0.5, 0] for contrastive
         self.verbalize_mode = "none"       # "none": <I,T>, "replace": <blank, verb(I)+T>, "augment": <I, verb(I)+T>

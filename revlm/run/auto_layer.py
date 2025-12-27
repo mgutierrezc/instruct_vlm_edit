@@ -26,9 +26,6 @@ def run_auto_layer(config, n_runs=10):
     # Initialize AutoLayer (uses class defaults: n_samples=100, n_aug=10)
     auto = AutoLayer(config, model)
     layers = auto.get_candidate_layers()
-    if config.model.name == "Salesforce/instructblip-vicuna-7b":
-        auto.blank_image_for_lang = False
-        auto.blank_text_for_vision = False
     
     # Run k times
     for run_id in range(n_runs):
