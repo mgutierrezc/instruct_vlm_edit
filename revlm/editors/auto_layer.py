@@ -29,15 +29,6 @@ EXCLUDE_PATTERNS = [
     "qformer", "intermediate", "up_proj", "down_proj"
 ]
 
-# Robustness type to scores key mapping
-_MODE_KEY_MAP = {
-    "vision_robustness": "vision",
-    "language_robustness": "language",
-    "bimodal_robustness": "bimodal",
-    "bimodal_text_partial": "bimodal_text_partial",
-    "bimodal_image_partial": "bimodal_image_partial",
-}
-
 # All robustness modes in order
 _ALL_MODES = ["vision", "language", "bimodal", "bimodal_text_partial", "bimodal_image_partial"]
 
@@ -57,7 +48,7 @@ class AutoLayer:
         self._samples = None
         self.n_samples = 100
         self.n_aug = 10
-        self.percentile_threshold = 0.75    # Filter out similarities below this percentile (0-1)
+        self.percentile_threshold = 0.0    # Filter out similarities below this percentile (0-1)
         self.threshold_mask = True         # True: exclude from calc, False: zero them
         self.blank_image_for_lang = True   # Use <blank, text> for language robustness
         self.blank_text_for_vision = True  # Use <image, ""> for vision robustness
@@ -66,7 +57,7 @@ class AutoLayer:
         self.verbalize_mode = "none"       # "none": <I,T>, "replace": <blank, verb(I)+T>, "augment": <I, verb(I)+T>
         self._verb_cache = {}              # Cache image descriptions
         self.standardize_embeddings = "none"  # "none", "zscore", or "norm"
-        self.use_percentile_sim = True        # Convert L2 dist to percentile-based similarity
+        self.use_percentile_sim = False        # Convert L2 dist to percentile-based similarity
         self.compute_concat = False           # Compute __concat__ pseudo-layer scores
     
     def _verbalize(self, image):
@@ -367,7 +358,10 @@ class AutoLayer:
             sim = (1.0 - ranks / (len(dist_flat) - 1)).view(N, N)
             sim = (sim * 1000).round() / 1000
         else:
-            sim = 1 / (1 + l2_dist)
+            # sim = 1 / (1 + l2_dist)
+            # Linear transform: l2_max - l2 (preserves relative structure)
+            l2_max = l2_dist.max()
+            sim = l2_max - l2_dist
         
         # Threshold mask (keep top pairs)
         triu_idx = torch.triu_indices(N, N, offset=1, device=embs.device)
@@ -593,14 +587,16 @@ class AutoLayer:
             img = s["image"]
             return Image.open(img).convert("RGB") if isinstance(img, str) else img
         
-        def encode_concat(img, text):
-            """Encode as concat(vis(<img,"">), lang(<blank,text>))."""
+        def encode_concat(img, text, scale_lang=1.0):
+            """Encode as concat(vis(<img,"">), lang(<blank,text>), vis(<img,text>))."""
             blank = Image.new("RGB", img.size, (128, 128, 128))
             v = self._encode_all(img, "").get(vis_layer)  # image-only
             vl = self._encode_all(img, text).get(vis_layer)  # image-text entangled
             l = self._encode_all(blank, text).get(lang_layer)  # text-only
             if v is None or vl is None or l is None:
                 return None
+            # Scale up language component for more text weight
+            l = l * scale_lang
             return torch.cat([v, l, vl], dim=-1)
         
         vis_embs, lang_embs, bimodal_embs = [], [], []
@@ -694,11 +690,13 @@ class AutoLayer:
         all_embs = {l: {"vis": [], "lang": [], "bimodal": []} for l in layers}
         
         # Forward count: vision + language + bimodal
-        n_forwards = n_samples * (1 + n_aug) * 2  # vis + lang base
-        if self.blank_image_for_lang:
-            n_forwards += n_samples
+        # Vision: (1 anchor if blank_text) + n_aug augs
+        # Language: (1 anchor if blank_image) + n_aug augs
+        n_forwards = n_samples * n_aug * 2  # base: augs only
         if self.blank_text_for_vision:
-            n_forwards += n_samples
+            n_forwards += n_samples  # vision anchors
+        if self.blank_image_for_lang:
+            n_forwards += n_samples  # language anchors
         # Bimodal: contrastive = 3 sub-clusters, standard = 1 cluster
         if self.contrastive_bimodal:
             n_forwards += n_samples * 3 * (1 + n_aug)
@@ -894,11 +892,11 @@ class AutoLayer:
         vis_layers, merger_layers, lang_layers = self._classify_layers(layers)
         
         # Forward count
-        n_forwards = n_samples * (1 + n_aug) * 2
-        if self.blank_image_for_lang:
-            n_forwards += n_samples
+        n_forwards = n_samples * n_aug * 2  # base: augs only
         if self.blank_text_for_vision:
-            n_forwards += n_samples
+            n_forwards += n_samples  # vision anchors
+        if self.blank_image_for_lang:
+            n_forwards += n_samples  # language anchors
         n_forwards += n_samples * (3 if self.contrastive_bimodal else 1) * (1 + n_aug)
         
         if verbose:
@@ -1068,6 +1066,10 @@ class AutoLayer:
             vals = np.array([mode_scores[l][metric] for l in real_layers])
             stds = None
         
+        # Clamp negative Q to 0 for plotting
+        if metric == "Q":
+            vals = np.maximum(vals, 0)
+        
         if normalize:
             vmin, vmax = vals.min(), vals.max()
             if vmax - vmin > 1e-8:
@@ -1102,6 +1104,8 @@ class AutoLayer:
         # Plot __concat__ as red horizontal line (only meaningful for bimodal modes)
         if "__concat__" in mode_scores and mode in ["bimodal", "bimodal_text_partial", "bimodal_image_partial"]:
             concat_val = mode_scores["__concat__"][metric]["mean"] if is_agg else mode_scores["__concat__"][metric]
+            if metric == "Q":
+                concat_val = max(concat_val, 0)
             ax.axhline(y=concat_val, color='red', linestyle='--', lw=1.5, label='concat', zorder=3)
         
         # Mark best overall (red star) and best per group (triangles)
@@ -1253,9 +1257,9 @@ class AutoLayer:
         
         all_embs = np.stack(all_embs)
         
-        # Build graph
+        # Build graph (l2_max - l2 similarity)
         dists = np.linalg.norm(all_embs[:, None] - all_embs[None, :], axis=-1)
-        sims = 1 / (1 + dists)
+        sims = dists.max() - dists
         
         G = nx.Graph()
         for i in range(len(all_embs)):
