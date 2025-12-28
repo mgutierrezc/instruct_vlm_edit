@@ -102,7 +102,7 @@ def get_bg_cache() -> BackgroundCache:
     return _bg_cache
 
 
-def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_prob: float = 0.2) -> PILImage.Image:
+def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_prob: float = 0.1) -> PILImage.Image:
     """Create a mosaic background from cached images and noise.
     
     Args:
@@ -135,14 +135,13 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
     return canvas
 
 
-def pad_with_mosaic(img, pad_ratio: float = 0.4, max_size: int = None, noise_prob: float = 0.2, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, pad_ratio: float = 0.4, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
         img: Input PIL Image or path
         pad_ratio: Fraction to expand canvas (0.k = k0% larger each dimension)
         max_size: If result exceeds this, resize to original size. None = no resize (keep padded size)
-        noise_prob: Probability of mosaic tiles being noise vs cached images
         n_tiles: Approximate number of tiles per row/column (controls tile size)
     
     Returns:
@@ -165,7 +164,7 @@ def pad_with_mosaic(img, pad_ratio: float = 0.4, max_size: int = None, noise_pro
     tile_size = max(tile_size, 32)  # minimum 32px tiles
     
     # Create mosaic background
-    canvas = create_mosaic_background((new_w, new_h), tile_size=tile_size, noise_prob=noise_prob)
+    canvas = create_mosaic_background((new_w, new_h), tile_size=tile_size)
     
     # Random position for original image (anywhere that fits)
     max_x = new_w - orig_w
