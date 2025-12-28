@@ -57,7 +57,7 @@ class IKE_CHAIN(nn.Module):
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 5))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         
-        # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full only
+        # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
         self.query_kernels = getattr(cfg, "query_kernels", ["3x3"])
         
         # Patchifier and Augmenter

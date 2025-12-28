@@ -352,14 +352,14 @@ class ImagePatchifier:
 class Augmenter:
     """Online augmentation using small LLM for text, torchvision for images."""
 
-    def __init__(self, wrapper=None, mosaic_prob: float = 0.0):
+    def __init__(self, wrapper=None, mosaic_prob: float = 0.5):
         self.wrapper = wrapper
         self.mosaic_prob = mosaic_prob  # probability of applying mosaic padding
         self.img_aug = T.Compose([
-            T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
-            T.RandomHorizontalFlip(p=0.5),
-            T.RandomRotation(15),
-            T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            # T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
+            # T.RandomHorizontalFlip(p=0.5),
+            T.RandomRotation(10),
+            T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
         ])
         self.temp = 1.5
         self.n_chain = 3
