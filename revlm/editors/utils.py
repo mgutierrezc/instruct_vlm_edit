@@ -8,6 +8,15 @@ from torchvision import transforms as T
 from typing import List, Dict, Tuple
 
 
+def set_seed(seed: int):
+    """Set random seed for reproducibility (random, numpy, torch)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
 # ============================================================================
 # Background Cache & Mosaic Padding
 # ============================================================================
@@ -352,9 +361,12 @@ class ImagePatchifier:
 class Augmenter:
     """Online augmentation using small LLM for text, torchvision for images."""
 
-    def __init__(self, wrapper=None, mosaic_prob: float = 0.5):
+    def __init__(self, wrapper=None, mosaic_prob: float = 0.5, seed: int = None):
         self.wrapper = wrapper
         self.mosaic_prob = mosaic_prob  # probability of applying mosaic padding
+        self.seed = seed
+        if seed is not None:
+            set_seed(seed)
         self.img_aug = T.Compose([
             # T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
             # T.RandomHorizontalFlip(p=0.5),

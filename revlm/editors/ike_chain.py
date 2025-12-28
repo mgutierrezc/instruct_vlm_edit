@@ -60,9 +60,12 @@ class IKE_CHAIN(nn.Module):
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
         self.query_kernels = getattr(cfg, "query_kernels", ["3x3"])
         
+        # Seed for reproducibility
+        self.seed = getattr(cfg, "seed", None)
+        
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
-        self.augmenter = Augmenter(self.wrapper)
+        self.augmenter = Augmenter(self.wrapper, seed=self.seed)
         
         # Prompt for patch selection
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
@@ -291,40 +294,36 @@ class IKE_CHAIN(nn.Module):
         # Patchify query image with specified kernels
         query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
         
-        # Build query embeddings
+        # Build query embeddings [n_queries, hidden]
         q_embs = self._encode_vlm(query_patches, [question] * len(query_patches))
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         
-        # Check each query against all keys
-        radii = self.key_radii.cpu().numpy()
+        # Batch pairwise distances [n_queries, n_keys]
+        if self.distance == "cosine":
+            dist_matrix = 1 - (q_embs @ self.key_embs.t())
+        else:
+            dist_matrix = torch.cdist(q_embs.float(), self.key_embs.float(), p=2)
+        
+        # Check which keys have ANY query within radius
+        in_radius = dist_matrix <= self.key_radii.to(dist_matrix.device)  # broadcast [n_keys]
+        matched_mask = in_radius.any(dim=0)  # [n_keys]
+        
+        if not matched_mask.any():
+            return []
+        
+        # Get matched indices, sorted by min distance across queries
+        matched_idx = torch.where(matched_mask)[0]
+        min_dists = dist_matrix[:, matched_idx].min(dim=0).values
+        sorted_order = min_dists.argsort()
+        matched_idx = matched_idx[sorted_order].cpu().tolist()
+        
+        # Collect unique values up to cap_k keys
         retrieved = set()
-        matched_indices = []
-        
-        for q_idx in range(len(query_patches)):
-            q_emb = q_embs[q_idx:q_idx+1]
-            
-            if self.distance == "cosine":
-                dists = 1 - (q_emb @ self.key_embs.t()).squeeze(0).cpu().numpy()
-            else:
-                dists = torch.norm(self.key_embs.float() - q_emb.float(), dim=-1).cpu().numpy()
-            
-            # Find keys within radius
-            in_radius = dists <= radii
-            if in_radius.any():
-                # Get indices sorted by distance
-                valid_idx = np.where(in_radius)[0]
-                valid_idx = valid_idx[np.argsort(dists[valid_idx])]
-                matched_indices.extend(valid_idx.tolist())
-        
-        # Deduplicate and collect values (preserve order by first match)
-        seen_idx = set()
-        for idx in matched_indices:
-            if idx not in seen_idx and len(retrieved) < self.cap_k:
-                seen_idx.add(idx)
-                value = self.codebook[idx]["value"]
-                if value:
-                    retrieved.add(value)
+        for idx in matched_idx[:self.cap_k]:
+            value = self.codebook[idx]["value"]
+            if value:
+                retrieved.add(value)
         
         return list(retrieved)
 
@@ -349,7 +348,7 @@ class IKE_CHAIN(nn.Module):
             log.append({"uid": ex.get("uid"), "n_facts": len(facts), "facts": facts})
         
         self.last_retrieval_log = log
-        print(f"\n[IKE_PATCH] applied facts to {applied}/{len(data)} examples", flush=True)
+        print(f"[IKE_PATCH] applied facts to {applied}/{len(data)} examples", flush=True)
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook."""
