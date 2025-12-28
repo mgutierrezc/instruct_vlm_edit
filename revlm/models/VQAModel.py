@@ -28,7 +28,7 @@ class VQAModel(torch.nn.Module):
         self.config = config
         self.device = config.device
         self.temp = getattr(config.model, "temperature", 1.0)
-        self.image_size = getattr(config.model, "image_size", 336) # none for no resizing
+        self.image_size = getattr(config.model, "image_size", None)#336) # none for no resizing
         self.preserve_aspect_ratio = getattr(config.model, "preserve_aspect_ratio", False)
 
         self.model = get_hf_model(config)

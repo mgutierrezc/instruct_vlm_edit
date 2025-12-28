@@ -45,11 +45,11 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
         self.cap_k = int(getattr(cfg, "cap_k", 10))  # max entries to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
-        self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_layer(<blank, text>)
+        self.dual_layer = getattr(cfg, "dual_layer", False)  # concat lang_layer(<blank, text>) with vision_layer(<img, text>)
         
         # Radius estimation config
         self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
@@ -349,22 +349,20 @@ class IKE_CHAIN(nn.Module):
         if not matched_mask.any():
             return []
         
-        # Get matched key indices and their min distances
-        matched_idx = torch.where(matched_mask)[0].cpu().tolist()
-        key_min_dists = dist_matrix[:, matched_mask].min(dim=0).values.cpu().tolist()
+        # Get matched indices, sorted by min distance across queries
+        matched_idx = torch.where(matched_mask)[0]
+        min_dists = dist_matrix[:, matched_idx].min(dim=0).values
+        sorted_order = min_dists.argsort()
+        matched_idx = matched_idx[sorted_order].cpu().tolist()
         
-        # Group by sentence (value): find min distance for each unique sentence
-        sentence_min_dist = {}  # sentence -> min distance
-        for i, idx in enumerate(matched_idx):
+        # Collect unique values up to cap_k keys
+        retrieved = set()
+        for idx in matched_idx[:self.cap_k]:
             value = self.codebook[idx]["value"]
             if value:
-                dist = key_min_dists[i]
-                if value not in sentence_min_dist or dist < sentence_min_dist[value]:
-                    sentence_min_dist[value] = dist
+                retrieved.add(value)
         
-        # Sort sentences by distance (closest first), return top cap_k
-        sorted_sentences = sorted(sentence_min_dist.keys(), key=lambda s: sentence_min_dist[s])
-        return sorted_sentences[:self.cap_k]
+        return list(retrieved)
 
     def apply_to_dataset(self, dataset):
         """Apply retrieved facts to dataset prompts."""

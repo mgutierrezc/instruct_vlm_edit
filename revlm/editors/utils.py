@@ -102,7 +102,7 @@ def get_bg_cache() -> BackgroundCache:
     return _bg_cache
 
 
-def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_prob: float = 0.1) -> PILImage.Image:
+def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_prob: float = 0.2) -> PILImage.Image:
     """Create a mosaic background from cached images and noise.
     
     Args:
@@ -135,7 +135,7 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
     return canvas
 
 
-def pad_with_mosaic(img, pad_ratio: float = 0.4, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, pad_ratio: float = 0.2, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
@@ -211,14 +211,14 @@ class ImagePatchifier:
         "1x1": (1, 1, [(r, c) for r in range(3) for c in range(3)]),      # 9
         "1x2": (1, 2, [(r, c) for r in range(3) for c in range(2)]),      # 6
         "2x1": (2, 1, [(r, c) for r in range(2) for c in range(3)]),      # 6
-        # "1x3": (1, 3, [(r, 0) for r in range(3)]),                         # 3
-        # "3x1": (3, 1, [(0, c) for c in range(3)]),                         # 3
+        "1x3": (1, 3, [(r, 0) for r in range(3)]),                         # 3
+        "3x1": (3, 1, [(0, c) for c in range(3)]),                         # 3
         "2x2": (2, 2, [(r, c) for r in range(2) for c in range(2)]),      # 4
         "2x3": (2, 3, [(r, 0) for r in range(2)]),                         # 2
         "3x2": (3, 2, [(0, c) for c in range(2)]),                         # 2
         "3x3": (3, 3, [(0, 0)]),                                           # 1
     }
-    KERNEL_ORDER = ["1x1", "1x2", "2x1", "2x2", "2x3", "3x2", "3x3"]
+    KERNEL_ORDER = ["1x1", "1x2", "2x1", "1x3", "3x1", "2x2", "2x3", "3x2", "3x3"]
     
     def __init__(self, output_size: Tuple[int, int] = None):
         """
