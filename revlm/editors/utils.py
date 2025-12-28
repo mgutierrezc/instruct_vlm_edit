@@ -3,8 +3,59 @@ from PIL import Image as PILImage
 from torchvision import transforms as T
 
 
+# class Augmenter:
+#     """Online augmentation for images, questions, and rationales."""
+
+#     def __init__(self, wrapper=None):
+#         self.wrapper = wrapper
+#         self.img_aug = T.Compose([
+#             T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
+#             T.RandomHorizontalFlip(p=0.5),
+#             T.RandomRotation(15),
+#             T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+#         ])
+#         self._blank = PILImage.new("RGB", (364, 364), color="black")
+#         self.temp = 1.5
+#         self.n_chain = 5  # augment n times in sequence
+
+#     def image(self, img):
+#         """Apply random image augmentations."""
+#         if isinstance(img, str):
+#             img = PILImage.open(img).convert("RGB")
+#         elif hasattr(img, "convert"):
+#             img = img.convert("RGB")
+#         return self.img_aug(img)
+#         # return img
+
+#     def rephrase(self, text):
+#         """Rephrase text using VLM."""
+#         import random
+#         if not self.wrapper or not text:
+#             return text
+#         candidates = []
+#         for c in range(self.n_chain):
+#             prev = candidates[-1] if candidates else text
+#             prompt = f"Rephrase this sentence while keeping the same meaning:\n\n{prev}\n\nRephrased:"
+#             try:
+#                 out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=self.temp)[0]
+#                 out = str(out).strip()
+#                 if out and out != text:
+#                     candidates.append(out)
+#             except Exception:
+#                 pass
+#         result = random.choice(candidates) if candidates else text
+#         print(f"[AUG] orig: {text!r}  →  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
+#         return result
+
+#     def question(self, q):
+#         return self.rephrase(q)
+
+#     def rationale(self, sent):
+#         return self.rephrase(sent)
+
+
 class Augmenter:
-    """Online augmentation for images, questions, and rationales."""
+    """Online augmentation using small LLM for text, torchvision for images."""
 
     def __init__(self, wrapper=None):
         self.wrapper = wrapper
@@ -14,7 +65,23 @@ class Augmenter:
             T.RandomRotation(15),
             T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
         ])
-        self._blank = PILImage.new("RGB", (364, 364), color="black")
+        self.temp = 1.5
+        self.n_chain = 3
+        self._llm = None
+        self._llm_tok = None
+        self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"
+
+    def _get_llm(self):
+        """Lazy load small LLM for text augmentation."""
+        if self._llm is None:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            print(f"[Augmenter] Loading {self._llm_name}...")
+            self._llm_tok = AutoTokenizer.from_pretrained(self._llm_name)
+            self._llm = AutoModelForCausalLM.from_pretrained(
+                self._llm_name, torch_dtype=torch.float16, device_map="auto"
+            )
+            self._llm.eval()
+        return self._llm, self._llm_tok
 
     def image(self, img):
         """Apply random image augmentations."""
@@ -23,31 +90,36 @@ class Augmenter:
         elif hasattr(img, "convert"):
             img = img.convert("RGB")
         return self.img_aug(img)
-        # return img
+
+    def rephrase(self, text):
+        """Rephrase text using small LLM with chained augmentation."""
+        import random
+        if not text:
+            return text
+        model, tok = self._get_llm()
+        candidates = []
+        for c in range(self.n_chain):
+            prev = candidates[-1] if candidates else text
+            messages = [{"role": "user", "content": f"Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else.\n\n{prev}"}]
+            prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            inputs = tok(prompt, return_tensors="pt").to(model.device)
+            with torch.no_grad():
+                out_ids = model.generate(
+                    **inputs, max_new_tokens=64, temperature=self.temp,
+                    do_sample=True, pad_token_id=tok.eos_token_id
+                )
+            out = tok.decode(out_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+            if out and out != text and len(out) > 5:
+                candidates.append(out)
+        result = random.choice(candidates) if candidates else text
+        print(f"[AUG] orig: {text!r}  →  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
+        return result
 
     def question(self, q):
-        """Rephrase question using VLM."""
-        if not self.wrapper or not q:
-            return q
-        prompt = f"Rephrase this question differently while keeping the same meaning:\n\n{q}\n\nRephrased:"
-        try:
-            out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=0.7)[0]
-            out = str(out).strip()
-            return out if out else q
-        except Exception:
-            return q
+        return self.rephrase(q)
 
     def rationale(self, sent):
-        """Rephrase rationale sentence using VLM."""
-        if not self.wrapper or not sent:
-            return sent
-        prompt = f"Rephrase this fact differently while keeping the same meaning:\n\n{sent}\n\nRephrased:"
-        try:
-            out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=0.7)[0]
-            out = str(out).strip()
-            return out if out else sent
-        except Exception:
-            return sent
+        return self.rephrase(sent)
 
 
 def get_inner_params(named_parameters, inner_names):
