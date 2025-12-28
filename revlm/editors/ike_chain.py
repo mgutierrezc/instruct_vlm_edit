@@ -57,6 +57,9 @@ class IKE_CHAIN(nn.Module):
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 5))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         
+        # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full only
+        self.query_kernels = getattr(cfg, "query_kernels", ["2x2", "3x3"])
+        
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
         self.augmenter = Augmenter(self.wrapper)
@@ -187,8 +190,8 @@ class IKE_CHAIN(nn.Module):
             return self.fixed_radius
         
         if self.radius_method == "single_aug":
-            # One augmentation (image + text), scaled up
-            aug_img = self.augmenter.image(img)
+            # One augmentation (image + text), scaled up. Always use mosaic for aggressive aug.
+            aug_img = self.augmenter.image(img, use_mosaic=True)
             aug_text = self.augmenter.question(text) if text else ""
             aug_emb = self._encode_vlm([aug_img], [aug_text])
             dist = float(torch.norm(aug_emb - key_emb))
@@ -279,16 +282,16 @@ class IKE_CHAIN(nn.Module):
     def _retrieve(self, image, question: str) -> List[str]:
         """Retrieve values for a query <image, question>.
         
-        Patchifies query image, checks all 14 embeddings against codebook.
+        Patchifies query image using query_kernels (None=all 36, ["3x3"]=full only).
         Returns deduplicated set of retrieved values.
         """
         if self.key_embs is None or len(self.codebook) == 0:
             return []
         
-        # Patchify query image
-        query_patches = self.patchifier.patchify(image)  # 14 patches
+        # Patchify query image with specified kernels
+        query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
         
-        # Build query embeddings: <patch_i, question> for all 14
+        # Build query embeddings
         q_embs = self._encode_vlm(query_patches, [question] * len(query_patches))
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
@@ -346,7 +349,7 @@ class IKE_CHAIN(nn.Module):
             log.append({"uid": ex.get("uid"), "n_facts": len(facts), "facts": facts})
         
         self.last_retrieval_log = log
-        print(f"[IKE_PATCH] applied facts to {applied} examples", flush=True)
+        print(f"\n[IKE_PATCH] applied facts to {applied}/{len(data)} examples", flush=True)
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook."""

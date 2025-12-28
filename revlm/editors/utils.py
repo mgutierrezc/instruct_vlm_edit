@@ -1,7 +1,172 @@
 import torch
+import numpy as np
+import random
+import os
+from pathlib import Path
 from PIL import Image as PILImage
 from torchvision import transforms as T
 from typing import List, Dict, Tuple
+
+
+# ============================================================================
+# Background Cache & Mosaic Padding
+# ============================================================================
+
+class BackgroundCache:
+    """Cache random images from Lorem Picsum for mosaic backgrounds."""
+    
+    CACHE_DIR = Path.home() / ".cache" / "vlm_edit_bg"
+    
+    def __init__(self, n_images: int = 100, img_size: int = 256):
+        self.n_images = n_images
+        self.img_size = img_size
+        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._images = None
+    
+    def _download_images(self):
+        """Download random images from Lorem Picsum."""
+        import urllib.request
+        print(f"[BackgroundCache] Downloading {self.n_images} images to {self.CACHE_DIR}...")
+        for i in range(self.n_images):
+            path = self.CACHE_DIR / f"bg_{i:03d}.jpg"
+            if not path.exists():
+                try:
+                    # Use random seed to get different images
+                    url = f"https://picsum.photos/seed/{i+1000}/{self.img_size}/{self.img_size}"
+                    urllib.request.urlretrieve(url, path)
+                except Exception as e:
+                    print(f"  Failed to download image {i}: {e}")
+        print(f"[BackgroundCache] Done.")
+    
+    def load(self) -> List[PILImage.Image]:
+        """Load cached images (download if needed)."""
+        if self._images is not None:
+            return self._images
+        
+        # Check if we have enough cached images
+        existing = list(self.CACHE_DIR.glob("bg_*.jpg"))
+        if len(existing) < self.n_images:
+            self._download_images()
+        
+        # Load all cached images
+        self._images = []
+        for path in sorted(self.CACHE_DIR.glob("bg_*.jpg"))[:self.n_images]:
+            try:
+                self._images.append(PILImage.open(path).convert("RGB"))
+            except Exception:
+                pass
+        
+        # Fallback: create noise images if not enough
+        while len(self._images) < 10:
+            noise = np.random.randint(0, 256, (self.img_size, self.img_size, 3), dtype=np.uint8)
+            self._images.append(PILImage.fromarray(noise))
+        
+        return self._images
+    
+    def random_crop(self, size: Tuple[int, int]) -> PILImage.Image:
+        """Get a random crop from a random cached image."""
+        images = self.load()
+        img = random.choice(images)
+        w, h = img.size
+        tw, th = size
+        
+        # If crop size is larger than image, resize image up
+        if tw > w or th > h:
+            scale = max(tw / w, th / h) * 1.1
+            img = img.resize((int(w * scale), int(h * scale)), PILImage.Resampling.LANCZOS)
+            w, h = img.size
+        
+        # Random crop
+        x = random.randint(0, w - tw)
+        y = random.randint(0, h - th)
+        return img.crop((x, y, x + tw, y + th))
+
+
+# Global cache instance
+_bg_cache = None
+
+def get_bg_cache() -> BackgroundCache:
+    """Get or create global background cache."""
+    global _bg_cache
+    if _bg_cache is None:
+        _bg_cache = BackgroundCache()
+    return _bg_cache
+
+
+def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_prob: float = 0.2) -> PILImage.Image:
+    """Create a mosaic background from cached images and noise.
+    
+    Args:
+        size: (width, height) of background
+        tile_size: size of each tile in the mosaic
+        noise_prob: probability of a tile being noise vs cached image
+    
+    Returns:
+        PIL Image with mosaic background
+    """
+    w, h = size
+    canvas = PILImage.new("RGB", (w, h))
+    cache = get_bg_cache()
+    
+    for y in range(0, h, tile_size):
+        for x in range(0, w, tile_size):
+            tw = min(tile_size, w - x)
+            th = min(tile_size, h - y)
+            
+            if random.random() < noise_prob:
+                # Noise tile
+                noise = np.random.randint(0, 256, (th, tw, 3), dtype=np.uint8)
+                tile = PILImage.fromarray(noise)
+            else:
+                # Random crop from cached image
+                tile = cache.random_crop((tw, th))
+            
+            canvas.paste(tile, (x, y))
+    
+    return canvas
+
+
+def pad_with_mosaic(img, pad_ratio: float = 0.2, max_size: int = None, noise_prob: float = 0.2) -> PILImage.Image:
+    """Pad image with mosaic background, placing image at random position.
+    
+    Args:
+        img: Input PIL Image or path
+        pad_ratio: Fraction to expand canvas (0.2 = 20% larger each dimension)
+        max_size: If result exceeds this, resize to original size. None = no resize (keep padded size)
+        noise_prob: Probability of mosaic tiles being noise vs cached images
+    
+    Returns:
+        Padded image
+    """
+    # Load image
+    if isinstance(img, str):
+        img = PILImage.open(img).convert("RGB")
+    elif hasattr(img, "convert"):
+        img = img.convert("RGB")
+    
+    orig_w, orig_h = img.size
+    
+    # Calculate new canvas size
+    new_w = int(orig_w * (1 + pad_ratio))
+    new_h = int(orig_h * (1 + pad_ratio))
+    
+    # Create mosaic background
+    canvas = create_mosaic_background((new_w, new_h), noise_prob=noise_prob)
+    
+    # Random position for original image (anywhere that fits)
+    max_x = new_w - orig_w
+    max_y = new_h - orig_h
+    x = random.randint(0, max_x) if max_x > 0 else 0
+    y = random.randint(0, max_y) if max_y > 0 else 0
+    
+    # Paste original image
+    canvas.paste(img, (x, y))
+    
+    # Resize back only if max_size is specified and exceeded
+    if max_size is not None and max(new_w, new_h) > max_size:
+        canvas = canvas.resize((orig_w, orig_h), PILImage.Resampling.LANCZOS)
+    
+    return canvas
 
 
 class ImagePatchifier:
@@ -72,18 +237,24 @@ class ImagePatchifier:
             return patch.resize(self.output_size, PILImage.Resampling.LANCZOS)
         return patch
     
-    def patchify(self, img) -> List[PILImage.Image]:
-        """Generate 36 patches from image using all kernel sizes.
+    def patchify(self, img, kernels: List[str] = None) -> List[PILImage.Image]:
+        """Generate patches from image using specified kernel sizes.
+        
+        Args:
+            img: Input image (path, PIL Image, or convertible)
+            kernels: List of kernel names to use, e.g. ["1x1", "3x3"]. None = all 36.
         
         Returns:
-            List of 36 PIL Images in order: 1x1, 1x2, 2x1, 1x3, 3x1, 2x2, 2x3, 3x2, 3x3
+            List of PIL Images for requested kernels.
         """
         img = self._load_image(img)
         w, h = img.size
         cell_w, cell_h = w // 3, h // 3
         
+        use_kernels = kernels if kernels else self.KERNEL_ORDER
+        
         patches = []
-        for kernel_name in self.KERNEL_ORDER:
+        for kernel_name in use_kernels:
             rows, cols, positions = self.KERNELS[kernel_name]
             for row_start, col_start in positions:
                 patch = self._crop_region(img, row_start, col_start, rows, cols, cell_h, cell_w)
@@ -176,8 +347,9 @@ class ImagePatchifier:
 class Augmenter:
     """Online augmentation using small LLM for text, torchvision for images."""
 
-    def __init__(self, wrapper=None):
+    def __init__(self, wrapper=None, mosaic_prob: float = 0.0):
         self.wrapper = wrapper
+        self.mosaic_prob = mosaic_prob  # probability of applying mosaic padding
         self.img_aug = T.Compose([
             T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
             T.RandomHorizontalFlip(p=0.5),
@@ -202,12 +374,23 @@ class Augmenter:
             self._llm.eval()
         return self._llm, self._llm_tok
 
-    def image(self, img):
-        """Apply random image augmentations."""
+    def image(self, img, use_mosaic: bool = None):
+        """Apply random image augmentations.
+        
+        Args:
+            img: Input image (path or PIL Image)
+            use_mosaic: Force mosaic on/off. None = random based on mosaic_prob
+        """
         if isinstance(img, str):
             img = PILImage.open(img).convert("RGB")
         elif hasattr(img, "convert"):
             img = img.convert("RGB")
+        
+        # Optionally apply mosaic padding first
+        apply_mosaic = use_mosaic if use_mosaic is not None else (random.random() < self.mosaic_prob)
+        if apply_mosaic:
+            img = pad_with_mosaic(img, pad_ratio=0.2)
+        
         return self.img_aug(img)
 
     def rephrase(self, text):
@@ -239,6 +422,40 @@ class Augmenter:
 
     def rationale(self, sent):
         return self.rephrase(sent)
+    
+    def visualize(self, img, text: str = None, use_mosaic: bool = True):
+        """Visualize original vs augmented image (and text if provided)."""
+        import matplotlib.pyplot as plt
+        
+        if isinstance(img, str):
+            img = PILImage.open(img).convert("RGB")
+        elif hasattr(img, "convert"):
+            img = img.convert("RGB")
+        
+        # Augment
+        aug_img = self.image(img, use_mosaic=use_mosaic)
+        aug_text = self.rephrase(text) if text else None
+        
+        # Plot
+        fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+        axes[0].imshow(img)
+        axes[0].set_title("Original", fontsize=10)
+        axes[0].axis("off")
+        
+        axes[1].imshow(aug_img)
+        axes[1].set_title("Augmented", fontsize=10)
+        axes[1].axis("off")
+        
+        # Show text if provided
+        if text:
+            fig.suptitle(f"Text: {text[:60]}..." if len(text) > 60 else f"Text: {text}", fontsize=9)
+            if aug_text and aug_text != text:
+                fig.text(0.5, 0.02, f"Aug: {aug_text[:80]}...", ha='center', fontsize=8, style='italic')
+        
+        plt.tight_layout()
+        plt.show()
+        
+        return aug_img, aug_text
 
 
 def get_inner_params(named_parameters, inner_names):
