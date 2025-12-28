@@ -358,16 +358,19 @@ class IKE_CHAIN(nn.Module):
         data = getattr(dataset, "data", [])
         
         for ex in data:
-            prompt, q, img = ex.get("prompt", ""), ex.get("question", ""), ex.get("image")
-            if not prompt or img is None:
+            prompt_orig = ex.get("prompt_orig") or ex.get("prompt", "")
+            q, img = ex.get("question", ""), ex.get("image")
+            if not prompt_orig or img is None:
                 continue
             
             facts = self._retrieve_chain(img, q) if q else []
             
             if facts:
-                ex.setdefault("prompt_orig", prompt)
-                ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt}"
+                ex["prompt_orig"] = prompt_orig
+                ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt_orig}"
                 applied += 1
+            else:
+                ex["prompt"] = prompt_orig  # Reset to original if no facts
             
             log.append({"uid": ex.get("uid"), "n_facts": len(facts), "facts": facts})
         
