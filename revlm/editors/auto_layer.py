@@ -41,7 +41,7 @@ class AutoLayer:
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.device = getattr(config, "device", torch.device("cpu"))
-        self.augmenter = Augmenter(self.wrapper)
+        self.augmenter = Augmenter(self.wrapper) # , mosaic_prob=0.0) to suppress mosaic padding
         self._hooks = []
         self._all_acts = {}
         self._cache = {}

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=auto_layer_qwen3_4b
 #SBATCH -p gpu
-#SBATCH --gres=gpu:1  
+#SBATCH --gres=gpu:a6000:1   
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
 #SBATCH -t 24:00:00
