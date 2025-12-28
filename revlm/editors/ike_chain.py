@@ -58,7 +58,7 @@ class IKE_CHAIN(nn.Module):
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", ["3x3"])
+        self.query_kernels = getattr(cfg, "query_kernels", ["2x2"])
         
         # Seed for reproducibility
         self.seed = getattr(cfg, "seed", None)
@@ -136,7 +136,9 @@ class IKE_CHAIN(nn.Module):
         self._vision_act = None
         inputs = self.wrapper.encode(images, texts, tokenize=False)
         self.model(**inputs)
-        return self._pool_act(self._vision_act, batch_size)
+        emb = self._pool_act(self._vision_act, batch_size)
+        self._vision_act = None  # Release hook reference
+        return emb
 
     @torch.no_grad()
     def _get_nll(self, image, prompt: str, label: str) -> float:
@@ -176,6 +178,10 @@ class IKE_CHAIN(nn.Module):
             nll = self._get_nll(patch, self.patch_select_prompt, s1)
             nlls.append(nll)
         
+        # Clear cache after many forward passes
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         nlls = np.array(nlls)
         top_k_idx = np.argsort(nlls)[:self.top_k_patches]
         return [patches[i] for i in top_k_idx]
@@ -197,7 +203,7 @@ class IKE_CHAIN(nn.Module):
             aug_img = self.augmenter.image(img, use_mosaic=True)
             aug_text = self.augmenter.question(text) if text else ""
             aug_emb = self._encode_vlm([aug_img], [aug_text])
-            dist = float(torch.norm(aug_emb - key_emb))
+            dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
             return dist * self.single_aug_scale
         
         # Default: multiple augmentations, take percentile
@@ -206,7 +212,7 @@ class IKE_CHAIN(nn.Module):
             aug_img = self.augmenter.image(img)
             aug_text = self.augmenter.question(text) if text else ""
             aug_emb = self._encode_vlm([aug_img], [aug_text])
-            dist = float(torch.norm(aug_emb - key_emb))
+            dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
             aug_dists.append(dist)
         
         return float(np.percentile(aug_dists, self.radius_percentile))
@@ -271,6 +277,9 @@ class IKE_CHAIN(nn.Module):
             new_radii.append(r)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         
+        # Move to CPU to save GPU memory (only used for retrieval)
+        new_embs = new_embs.cpu()
+        
         # Append to codebook
         self.codebook.extend(new_entries)
         
@@ -280,13 +289,17 @@ class IKE_CHAIN(nn.Module):
         else:
             self.key_embs = torch.cat([self.key_embs, new_embs], dim=0)
             self.key_radii = torch.cat([self.key_radii, new_radii])
+        
+        # Clear CUDA cache
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     @torch.no_grad()
     def _retrieve(self, image, question: str) -> List[str]:
         """Retrieve values for a query <image, question>.
         
         Patchifies query image using query_kernels (None=all 36, ["3x3"]=full only).
-        Returns deduplicated set of retrieved values.
+        Returns unique sentences sorted by shortest distance to any matching key.
         """
         if self.key_embs is None or len(self.codebook) == 0:
             return []
@@ -299,6 +312,9 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         
+        # Move to CPU for distance calc (key_embs on CPU to save GPU memory)
+        q_embs = q_embs.cpu()
+        
         # Batch pairwise distances [n_queries, n_keys]
         if self.distance == "cosine":
             dist_matrix = 1 - (q_embs @ self.key_embs.t())
@@ -306,26 +322,28 @@ class IKE_CHAIN(nn.Module):
             dist_matrix = torch.cdist(q_embs.float(), self.key_embs.float(), p=2)
         
         # Check which keys have ANY query within radius
-        in_radius = dist_matrix <= self.key_radii.to(dist_matrix.device)  # broadcast [n_keys]
+        in_radius = dist_matrix <= self.key_radii  # all on CPU
         matched_mask = in_radius.any(dim=0)  # [n_keys]
         
         if not matched_mask.any():
             return []
         
-        # Get matched indices, sorted by min distance across queries
-        matched_idx = torch.where(matched_mask)[0]
-        min_dists = dist_matrix[:, matched_idx].min(dim=0).values
-        sorted_order = min_dists.argsort()
-        matched_idx = matched_idx[sorted_order].cpu().tolist()
+        # Get matched key indices and their min distances
+        matched_idx = torch.where(matched_mask)[0].cpu().tolist()
+        key_min_dists = dist_matrix[:, matched_mask].min(dim=0).values.cpu().tolist()
         
-        # Collect unique values up to cap_k keys
-        retrieved = set()
-        for idx in matched_idx[:self.cap_k]:
+        # Group by sentence (value): find min distance for each unique sentence
+        sentence_min_dist = {}  # sentence -> min distance
+        for i, idx in enumerate(matched_idx):
             value = self.codebook[idx]["value"]
             if value:
-                retrieved.add(value)
+                dist = key_min_dists[i]
+                if value not in sentence_min_dist or dist < sentence_min_dist[value]:
+                    sentence_min_dist[value] = dist
         
-        return list(retrieved)
+        # Sort sentences by distance (closest first), return top cap_k
+        sorted_sentences = sorted(sentence_min_dist.keys(), key=lambda s: sentence_min_dist[s])
+        return sorted_sentences[:self.cap_k]
 
     def apply_to_dataset(self, dataset):
         """Apply retrieved facts to dataset prompts."""
@@ -387,7 +405,7 @@ class IKE_CHAIN(nn.Module):
             r_info = f"single_aug(×{self.single_aug_scale})"
         else:
             r_info = f"augment(n={self.n_radius_samples})"
-        print(f"\n[IKE_PATCH] +{added} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
+        print(f"[IKE_PATCH] +{added} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
         self.apply_to_dataset(edit_ds)
         return self.model

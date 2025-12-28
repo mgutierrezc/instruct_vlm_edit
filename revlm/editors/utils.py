@@ -135,12 +135,12 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
     return canvas
 
 
-def pad_with_mosaic(img, pad_ratio: float = 0.2, max_size: int = None, noise_prob: float = 0.2, n_tiles: int = 3) -> PILImage.Image:
+def pad_with_mosaic(img, pad_ratio: float = 0.4, max_size: int = None, noise_prob: float = 0.2, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
         img: Input PIL Image or path
-        pad_ratio: Fraction to expand canvas (0.2 = 20% larger each dimension)
+        pad_ratio: Fraction to expand canvas (0.k = k0% larger each dimension)
         max_size: If result exceeds this, resize to original size. None = no resize (keep padded size)
         noise_prob: Probability of mosaic tiles being noise vs cached images
         n_tiles: Approximate number of tiles per row/column (controls tile size)
@@ -377,7 +377,7 @@ class Augmenter:
         self.n_chain = 3
         self._llm = None
         self._llm_tok = None
-        self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"
+        self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Smaller: 0.5B vs 1.5B
 
     def _get_llm(self):
         """Lazy load small LLM for text augmentation."""
@@ -406,7 +406,7 @@ class Augmenter:
         # Optionally apply mosaic padding first
         apply_mosaic = use_mosaic if use_mosaic is not None else (random.random() < self.mosaic_prob)
         if apply_mosaic:
-            img = pad_with_mosaic(img, pad_ratio=0.2)
+            img = pad_with_mosaic(img)
         
         return self.img_aug(img)
 

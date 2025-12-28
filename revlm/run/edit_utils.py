@@ -255,7 +255,13 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
 
 def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 10):
     """Edit sequentially, evaluating every `eval_every` batchess."""
-    model_old = copy.deepcopy(model)
+    editor_name_check = getattr(config.editor, "_name", "").lower()
+    # Retrieval-based editors don't modify weights - skip expensive deepcopy
+    retrieval_editors = ["ike", "ike_chain", "ike_proto", "ike_cot", "ike_clip", "ike_tuple"]
+    if any(editor_name_check.startswith(name) for name in retrieval_editors):
+        model_old = model  # Same reference, no copy needed
+    else:
+        model_old = copy.deepcopy(model)
     pristine_edit_ds = copy.deepcopy(edit_ds)
     editor_name = getattr(config.editor, "_name", "")
     dataset_name = config.experiment.dataset_name
