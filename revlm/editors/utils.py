@@ -1,6 +1,120 @@
 import torch
 from PIL import Image as PILImage
 from torchvision import transforms as T
+from typing import List, Dict, Tuple
+
+
+class ImagePatchifier:
+    """3×3 grid patchifier: generates 14 patches using 1×1, 2×2, and 3×3 kernels.
+    
+    Grid layout:
+    ┌───┬───┬───┐
+    │ 0 │ 1 │ 2 │
+    ├───┼───┼───┤
+    │ 3 │ 4 │ 5 │
+    ├───┼───┼───┤
+    │ 6 │ 7 │ 8 │
+    └───┴───┴───┘
+    
+    Patches:
+    - 1×1: 9 individual cells (indices 0-8)
+    - 2×2: 4 overlapping regions (indices 9-12)
+        - [0,1,3,4], [1,2,4,5], [3,4,6,7], [4,5,7,8]
+    - 3×3: 1 full image (index 13)
+    
+    Total: 14 patches
+    """
+    
+    # 2×2 kernel positions: (row_start, col_start)
+    KERNEL_2X2 = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    
+    def __init__(self, output_size: Tuple[int, int] = None):
+        """
+        Args:
+            output_size: Optional (H, W) to resize all patches. If None, keeps original crop size.
+        """
+        self.output_size = output_size
+    
+    def _load_image(self, img) -> PILImage.Image:
+        """Ensure image is PIL Image in RGB."""
+        if isinstance(img, str):
+            return PILImage.open(img).convert("RGB")
+        elif hasattr(img, "convert"):
+            return img.convert("RGB")
+        return img
+    
+    def _crop_grid_cell(self, img: PILImage.Image, row: int, col: int, 
+                        cell_h: int, cell_w: int) -> PILImage.Image:
+        """Crop a single grid cell."""
+        left = col * cell_w
+        top = row * cell_h
+        right = left + cell_w
+        bottom = top + cell_h
+        return img.crop((left, top, right, bottom))
+    
+    def _crop_region(self, img: PILImage.Image, row_start: int, col_start: int,
+                     rows: int, cols: int, cell_h: int, cell_w: int) -> PILImage.Image:
+        """Crop a multi-cell region."""
+        left = col_start * cell_w
+        top = row_start * cell_h
+        right = left + cols * cell_w
+        bottom = top + rows * cell_h
+        return img.crop((left, top, right, bottom))
+    
+    def _maybe_resize(self, patch: PILImage.Image) -> PILImage.Image:
+        """Resize patch if output_size is specified."""
+        if self.output_size is not None:
+            return patch.resize(self.output_size, PILImage.Resampling.LANCZOS)
+        return patch
+    
+    def patchify(self, img) -> List[PILImage.Image]:
+        """Generate 14 patches from image.
+        
+        Returns:
+            List of 14 PIL Images:
+            - [0-8]: 1×1 patches (individual cells)
+            - [9-12]: 2×2 patches
+            - [13]: 3×3 patch (original image)
+        """
+        img = self._load_image(img)
+        w, h = img.size
+        cell_w, cell_h = w // 3, h // 3
+        
+        patches = []
+        
+        # 1×1 kernels: 9 individual cells
+        for row in range(3):
+            for col in range(3):
+                patch = self._crop_grid_cell(img, row, col, cell_h, cell_w)
+                patches.append(self._maybe_resize(patch))
+        
+        # 2×2 kernels: 4 overlapping regions
+        for row_start, col_start in self.KERNEL_2X2:
+            patch = self._crop_region(img, row_start, col_start, 2, 2, cell_h, cell_w)
+            patches.append(self._maybe_resize(patch))
+        
+        # 3×3 kernel: full image
+        full = img if self.output_size is None else self._maybe_resize(img)
+        patches.append(full)
+        
+        return patches
+    
+    def patchify_exclude_full(self, img) -> List[PILImage.Image]:
+        """Generate 13 patches (excluding full image).
+        
+        Use this for patch selection where full image is always included separately.
+        """
+        return self.patchify(img)[:-1]
+    
+    def get_patch_info(self) -> Dict:
+        """Return metadata about patch indices."""
+        return {
+            "1x1": list(range(9)),       # indices 0-8
+            "2x2": list(range(9, 13)),   # indices 9-12
+            "3x3": [13],                  # index 13
+            "total": 14,
+            "exclude_full": 13
+        }
 
 
 # class Augmenter:
