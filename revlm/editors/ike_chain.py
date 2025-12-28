@@ -51,9 +51,10 @@ class IKE_CHAIN(nn.Module):
         self.distance = getattr(cfg, "distance", "l2")
         
         # Radius estimation config
-        self.radius_method = getattr(cfg, "radius_method", "fixed")  # "augment" or "fixed"
+        self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 10))
+        self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))  # scale factor for single_aug
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 5))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         
         # Patchifier and Augmenter
@@ -133,10 +134,7 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _get_nll(self, image, prompt: str, label: str) -> float:
-        """Get negative log-likelihood of label given <image, prompt>.
-        
-        Uses wrapper.get_loss_y if available, otherwise falls back to manual computation.
-        """
+        """Get negative log-likelihood of label given <image, prompt>."""
         if hasattr(self.wrapper, 'get_loss_y'):
             avg_nll, _, _ = self.wrapper.get_loss_y(image, prompt, label)
             return avg_nll
@@ -149,16 +147,13 @@ class IKE_CHAIN(nn.Module):
         
         input_ids = inputs["input_ids"]
         full_ids = torch.cat([input_ids, label_ids], dim=1)
-        
         labels = torch.full_like(full_ids, -100)
-        prompt_len = input_ids.size(1)
-        labels[:, prompt_len:] = full_ids[:, prompt_len:]
+        labels[:, input_ids.size(1):] = full_ids[:, input_ids.size(1):]
         
         inputs["input_ids"] = full_ids
         if "attention_mask" in inputs:
             inputs["attention_mask"] = torch.cat([
-                inputs["attention_mask"],
-                torch.ones_like(label_ids)
+                inputs["attention_mask"], torch.ones_like(label_ids)
             ], dim=1)
         inputs["labels"] = labels
         
@@ -167,36 +162,39 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _select_top_k_patches(self, image, s1: str) -> List[Image.Image]:
-        """Select top-k patches by log-likelihood of s1.
+        """Select top-k patches by log-likelihood of s1."""
+        patches = self.patchifier.patchify_exclude_full(image)  # 35 patches
         
-        Args:
-            image: Original image
-            s1: First rationale sentence (visual description)
-            
-        Returns:
-            List of top-k patch images (excluding full image)
-        """
-        patches = self.patchifier.patchify_exclude_full(image)  # 13 patches
-        
-        # Compute NLL for each patch
         nlls = []
         for patch in patches:
             nll = self._get_nll(patch, self.patch_select_prompt, s1)
             nlls.append(nll)
         
-        # Select top-k with lowest NLL (highest likelihood)
         nlls = np.array(nlls)
         top_k_idx = np.argsort(nlls)[:self.top_k_patches]
-        
         return [patches[i] for i in top_k_idx]
 
     @torch.no_grad()
     def _estimate_radius(self, key_emb: torch.Tensor, img, text: str) -> float:
-        """Estimate radius. Method: 'fixed' (fast) or 'augment' (99th percentile)."""
+        """Estimate radius.
+        
+        Methods:
+        - 'fixed': constant radius (fastest, no forward pass)
+        - 'single_aug': one aggressive augmentation × scale factor (1 forward pass)
+        - 'augment': 99th percentile of n augmented samples (n forward passes)
+        """
         if self.radius_method == "fixed":
             return self.fixed_radius
         
-        # Augment method: 99th percentile of augmented distances
+        if self.radius_method == "single_aug":
+            # One augmentation (image + text), scaled up
+            aug_img = self.augmenter.image(img)
+            aug_text = self.augmenter.question(text) if text else ""
+            aug_emb = self._encode_vlm([aug_img], [aug_text])
+            dist = float(torch.norm(aug_emb - key_emb))
+            return dist * self.single_aug_scale
+        
+        # Default: multiple augmentations, take percentile
         aug_dists = []
         for _ in range(self.n_radius_samples):
             aug_img = self.augmenter.image(img)
@@ -381,7 +379,12 @@ class IKE_CHAIN(nn.Module):
         
         n_after = len(self.codebook)
         mem_mb = self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0
-        r_info = f"fixed={self.fixed_radius}" if self.radius_method == "fixed" else f"augment(n={self.n_radius_samples})"
+        if self.radius_method == "fixed":
+            r_info = f"fixed={self.fixed_radius}"
+        elif self.radius_method == "single_aug":
+            r_info = f"single_aug(×{self.single_aug_scale})"
+        else:
+            r_info = f"augment(n={self.n_radius_samples})"
         print(f"\n[IKE_PATCH] +{added} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
         self.apply_to_dataset(edit_ds)
@@ -537,7 +540,7 @@ class IKE_CHAIN(nn.Module):
             G.add_node(i)
         
         # Add edges (top 10% similarities)
-        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 90) if n_keys > 1 else 0
+        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 75) if n_keys > 1 else 0
         for i in range(n_keys):
             for j in range(i + 1, n_keys):
                 if sims[i, j] > thresh:
