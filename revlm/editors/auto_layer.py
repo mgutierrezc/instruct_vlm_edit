@@ -48,7 +48,7 @@ class AutoLayer:
         self._samples = None
         self.n_samples = 100
         self.n_aug = 10
-        self.percentile_threshold = 0.9    # Filter out similarities below this percentile (0-1)
+        self.percentile_threshold = 0.0    # Filter out similarities below this percentile (0-1)
         self.threshold_mask = True         # True: exclude from calc, False: zero them
         self.blank_image_for_lang = False   # Use <blank, text> for language robustness
         self.blank_text_for_vision = False  # Use <image, ""> for vision robustness

@@ -112,7 +112,7 @@ class Augmenter:
             if out and out != text and len(out) > 5:
                 candidates.append(out)
         result = random.choice(candidates) if candidates else text
-        print(f"[AUG] orig: {text!r}  →  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
+        # print(f"[AUG] orig: {text!r}  ->  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
         return result
 
     def question(self, q):
