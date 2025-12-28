@@ -46,7 +46,13 @@ def generate_images(config):
     output_base.mkdir(parents=True, exist_ok=True)
     
     for _, row in tqdm(caption_df.iterrows(), total=len(caption_df), desc="Generating images"):
-        caption = row['caption']
+        caption = row['caption'].strip()
+        cot = row['cot'].strip()
+        if caption and not caption.endswith('.'):
+            caption += '.'
+        if cot and not cot.endswith('.'):
+            cot += '.'
+        caption = f"{caption} {cot}"
         image_id = row['image_info_id']
         
         output_dir = output_base / image_id
@@ -73,8 +79,8 @@ if __name__ == "__main__":
                        help="Dataset name")
     parser.add_argument("--model_name", type=str, required=True, choices=["flux", "sd3"], 
                        help="Image generation model to use")
-    parser.add_argument("--num_images", type=int, default=5, 
-                       help="Number of images to generate per caption (default: 5)")
+    parser.add_argument("--num_images", type=int, default=2, 
+                       help="Number of images to generate per caption (default: 2)")
     parser.add_argument("--start_idx", type=int, default=0, 
                        help="Starting row index (default: 0)")
     parser.add_argument("--end_idx", type=int, default=None, 

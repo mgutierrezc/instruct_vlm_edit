@@ -47,7 +47,7 @@ class IKE_CHAIN(nn.Module):
         # Hyperparams
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
         self.cap_k = int(getattr(cfg, "cap_k", 10))  # max entries to retrieve
-        self.prefix = getattr(cfg, "cot_prefix", "Context: ")
+        self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
         
         # Radius estimation config
@@ -352,16 +352,19 @@ class IKE_CHAIN(nn.Module):
         data = getattr(dataset, "data", [])
         
         for ex in data:
-            prompt, q, img = ex.get("prompt", ""), ex.get("question", ""), ex.get("image")
-            if not prompt or img is None:
+            prompt_orig = ex.get("prompt_orig") or ex.get("prompt", "")
+            q, img = ex.get("question", ""), ex.get("image")
+            if not prompt_orig or img is None:
                 continue
             
             facts = self._retrieve(img, q) if q else []
             
             if facts:
-                ex.setdefault("prompt_orig", prompt)
-                ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt}"
+                ex["prompt_orig"] = prompt_orig  # Save original
+                ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt_orig}"
                 applied += 1
+            else:
+                ex["prompt"] = prompt_orig  # Reset to original if no facts
             
             log.append({"uid": ex.get("uid"), "n_facts": len(facts), "facts": facts})
         
@@ -528,7 +531,7 @@ class IKE_CHAIN(nn.Module):
         """Plot force-directed network of keys.
         
         Color by edit_idx, size by is_patch (original=large, patch=small).
-        Optional: add query point as black star.
+        Optional: add query point as black star, circle retrieved keys with black border.
         """
         import matplotlib.pyplot as plt
         import networkx as nx
@@ -550,6 +553,25 @@ class IKE_CHAIN(nn.Module):
         embs = self.key_embs[indices].float().cpu().numpy()
         n_keys = len(indices)
         
+        # Find retrieved keys if query provided
+        retrieved_indices = set()
+        if query_img is not None and query_text is not None:
+            # Get matched codebook indices from retrieval
+            query_patches = self.patchifier.patchify(query_img, kernels=self.query_kernels)
+            q_embs = self._encode_vlm(query_patches, [query_text] * len(query_patches)).cpu()
+            if self.distance == "cosine":
+                q_embs = F.normalize(q_embs, dim=-1)
+                dist_matrix = 1 - (q_embs @ self.key_embs.t())
+            else:
+                dist_matrix = torch.cdist(q_embs.float(), self.key_embs.float(), p=2)
+            in_radius = dist_matrix <= self.key_radii
+            matched_mask = in_radius.any(dim=0)
+            matched_codebook_idx = set(torch.where(matched_mask)[0].tolist())
+            # Map to local indices
+            for local_i, global_i in enumerate(indices):
+                if global_i in matched_codebook_idx:
+                    retrieved_indices.add(local_i)
+        
         # Pairwise distances -> similarity
         dists = np.linalg.norm(embs[:, None] - embs[None, :], axis=-1)
         sims = 1 / (1 + dists)
@@ -559,8 +581,8 @@ class IKE_CHAIN(nn.Module):
         for i in range(n_keys):
             G.add_node(i)
         
-        # Add edges (top 10% similarities)
-        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 75) if n_keys > 1 else 0
+        # Add edges (top 50% similarities)
+        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 50) if n_keys > 1 else 0
         for i in range(n_keys):
             for j in range(i + 1, n_keys):
                 if sims[i, j] > thresh:
@@ -569,7 +591,7 @@ class IKE_CHAIN(nn.Module):
         # Add query node if provided
         q_node = None
         if query_img is not None and query_text is not None:
-            q_emb = self._encode_vlm([query_img], [query_text]).cpu().numpy()
+            q_emb = q_embs[0].numpy()  # Use first query patch embedding
             q_dists = np.linalg.norm(embs - q_emb, axis=-1)
             q_sims = 1 / (1 + q_dists)
             
@@ -598,8 +620,12 @@ class IKE_CHAIN(nn.Module):
             if not nodelist:
                 continue
             colors = [cmap(edit_to_color[self.codebook[indices[i]].get("edit_idx", 0)]) for i in nodelist]
+            # Black edge for retrieved nodes
+            edgecolors = ['black' if i in retrieved_indices else 'none' for i in nodelist]
+            linewidths = [1.5 if i in retrieved_indices else 0 for i in nodelist]
             nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color=colors,
-                                   node_size=size, alpha=0.8, ax=ax)
+                                   node_size=size, alpha=0.8, ax=ax,
+                                   edgecolors=edgecolors, linewidths=linewidths)
         
         # Draw query as black star
         if q_node is not None:
@@ -610,9 +636,12 @@ class IKE_CHAIN(nn.Module):
         ax.scatter([], [], c='gray', s=12, marker='o', label='patch')
         if q_node is not None:
             ax.scatter([], [], c='black', s=40, marker='*', label='query')
+        if retrieved_indices:
+            ax.scatter([], [], c='gray', s=30, marker='o', edgecolors='black', linewidths=1.5, label='retrieved')
         ax.legend(loc='lower left', fontsize=6, frameon=False, handletextpad=0.1)
         
-        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys)', fontsize=8)
+        n_retrieved = len(retrieved_indices)
+        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {n_retrieved} retrieved)', fontsize=8)
         ax.axis('off')
         plt.tight_layout()
         plt.show()

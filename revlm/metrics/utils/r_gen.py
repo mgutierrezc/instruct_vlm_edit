@@ -3,7 +3,7 @@ import os
 from huggingface_hub import snapshot_download
 import string
 
-def get_r_gen_input(dataset_name, s: int = 0):
+def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0):
     """Load caption dataframe from HuggingFace dataset."""
     repo_id = "JJoy333/RationaleVQA"
     local_root = snapshot_download(
@@ -18,6 +18,10 @@ def get_r_gen_input(dataset_name, s: int = 0):
         r = r_gen_df["rationale"].fillna("").astype(str)
         n = r.str.split(r"[.!?]+\s*").apply(lambda x: len([p for p in x if p.strip()]))
         r_gen_df = r_gen_df[n >= int(s)]
+    # Filter by edit_ds uids if provided
+    if edit_ds is not None:
+        edit_uids = [str(ex["uid"]) for ex in edit_ds.data]
+        r_gen_df = r_gen_df[r_gen_df["uid"].isin(edit_uids)]
     # Derive image_path directly from sid (deterministic path pattern)
     r_gen_df["image_path"] = f"data/r_gen/image/{dataset_name}/" + r_gen_df["sid"].astype(str) + ".png"
     return r_gen_df

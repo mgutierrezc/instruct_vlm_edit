@@ -8,6 +8,19 @@ from typing import Dict
 LOG = logging.getLogger(__name__)
 
 
+def resize_image(img, max_size, preserve_ratio=False):
+    """Resize image to max_size. If preserve_ratio, keep aspect ratio with longest edge = max_size."""
+    if preserve_ratio:
+        w, h = img.size
+        if max(w, h) <= max_size:
+            return img
+        scale = max_size / max(w, h)
+        return img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    else:
+        sz = (max_size, max_size) if isinstance(max_size, int) else max_size
+        return img.resize(sz, Image.LANCZOS)
+
+
 class VQAModel(torch.nn.Module):
     """Vision Question Answering model wrapper - works with all VLMs"""
     def __init__(self, config):
@@ -16,6 +29,7 @@ class VQAModel(torch.nn.Module):
         self.device = config.device
         self.temp = getattr(config.model, "temperature", 1.0)
         self.image_size = getattr(config.model, "image_size", 336) # none for no resizing
+        self.preserve_aspect_ratio = getattr(config.model, "preserve_aspect_ratio", False)
 
         self.model = get_hf_model(config)
         self.model.eval()
@@ -35,8 +49,7 @@ class VQAModel(torch.nn.Module):
         images = [Image.open(img).convert("RGB") if isinstance(img, str) else img for img in images]
         prompts = [prompts] if isinstance(prompts, str) else prompts
         if self.image_size:
-            sz = (self.image_size, self.image_size) if isinstance(self.image_size, int) else self.image_size
-            images = [img.resize(sz, Image.LANCZOS) for img in images]
+            images = [resize_image(img, self.image_size, self.preserve_aspect_ratio) for img in images]
         inputs = self.preprocess(images, prompts, self.processor, tokenize=tokenize)
         inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
         return inputs
