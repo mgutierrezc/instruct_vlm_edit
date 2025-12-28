@@ -46,13 +46,15 @@ def generate_images(config):
     output_base.mkdir(parents=True, exist_ok=True)
     
     for _, row in tqdm(caption_df.iterrows(), total=len(caption_df), desc="Generating images"):
-        caption = row['caption'].strip()
-        cot = row['cot'].strip()
+        caption = str(row['caption']).strip() if pd.notna(row['caption']) else ''
+        cot = str(row['cot']).strip() if pd.notna(row['cot']) else ''
         if caption and not caption.endswith('.'):
             caption += '.'
         if cot and not cot.endswith('.'):
             cot += '.'
-        caption = f"{caption} {cot}"
+        prompt = f"{caption} {cot}".strip()
+        if not prompt:
+            continue
         image_id = row['image_info_id']
         
         output_dir = output_base / image_id
@@ -64,7 +66,7 @@ def generate_images(config):
             if save_fname.exists() and not config.overwrite:
                 continue
 
-            generator.generate(caption, save_path=str(save_fname))
+            generator.generate(prompt, save_path=str(save_fname))
 
     del generator
     import torch
