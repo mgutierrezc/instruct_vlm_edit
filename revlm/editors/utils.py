@@ -410,26 +410,36 @@ class Augmenter:
         
         return self.img_aug(img)
 
+    def _is_english(self, text: str) -> bool:
+        """Check if text contains only English letters, digits, and punctuation."""
+        import re
+        return bool(re.fullmatch(r"[a-zA-Z0-9\s.,!?;:'\"\-()]+", text)) if text else False
+
     def rephrase(self, text):
         """Rephrase text using small LLM with chained augmentation."""
         import random
         if not text:
             return text
         model, tok = self._get_llm()
-        candidates = []
-        for c in range(self.n_chain):
-            prev = candidates[-1] if candidates else text
-            messages = [{"role": "user", "content": f"Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else.\n\n{prev}"}]
-            prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = tok(prompt, return_tensors="pt").to(model.device)
-            with torch.no_grad():
-                out_ids = model.generate(
-                    **inputs, max_new_tokens=64, temperature=self.temp,
-                    do_sample=True, pad_token_id=tok.eos_token_id
-                )
-            out = tok.decode(out_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
-            if out and out != text and len(out) > 5:
-                candidates.append(out)
+        
+        for attempt in range(3):
+            candidates = []
+            for c in range(self.n_chain):
+                prev = candidates[-1] if candidates else text
+                messages = [{"role": "user", "content": f"Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else.\n\n{prev}"}]
+                prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs = tok(prompt, return_tensors="pt").to(model.device)
+                with torch.no_grad():
+                    out_ids = model.generate(
+                        **inputs, max_new_tokens=64, temperature=self.temp,
+                        do_sample=True, pad_token_id=tok.eos_token_id
+                    )
+                out = tok.decode(out_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
+                if out and out != text and len(out) > 5 and self._is_english(out):
+                    candidates.append(out)
+            if candidates:
+                break
+        
         result = random.choice(candidates) if candidates else text
         # print(f"[AUG] orig: {text!r}  ->  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
         return result

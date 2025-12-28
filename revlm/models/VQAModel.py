@@ -15,6 +15,7 @@ class VQAModel(torch.nn.Module):
         self.config = config
         self.device = config.device
         self.temp = getattr(config.model, "temperature", 1.0)
+        self.image_size = getattr(config.model, "image_size", 224) # none for no resizing
 
         self.model = get_hf_model(config)
         self.model.eval()
@@ -29,11 +30,14 @@ class VQAModel(torch.nn.Module):
         self.loss = getattr(output, "loss", None)
         return output.logits if hasattr(output, "logits") else output
 
-    
     def encode(self, images, prompts, tokenize=False):
-        images = [images] if isinstance(images, Image.Image) else images
+        images = [images] if isinstance(images, (Image.Image, str)) else images
+        images = [Image.open(img).convert("RGB") if isinstance(img, str) else img for img in images]
         prompts = [prompts] if isinstance(prompts, str) else prompts
-        inputs = self.preprocess(images, prompts, self.processor, tokenize=tokenize) # preprocess images and prompts into tensors (CPU), then move to device
+        if self.image_size:
+            sz = (self.image_size, self.image_size) if isinstance(self.image_size, int) else self.image_size
+            images = [img.resize(sz, Image.LANCZOS) for img in images]
+        inputs = self.preprocess(images, prompts, self.processor, tokenize=tokenize)
         inputs = {k: v.to(self.device) if torch.is_tensor(v) else v for k, v in inputs.items()}
         return inputs
         
