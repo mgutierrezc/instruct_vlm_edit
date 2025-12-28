@@ -5,7 +5,7 @@ from typing import List, Dict, Tuple
 
 
 class ImagePatchifier:
-    """3×3 grid patchifier: generates 14 patches using 1×1, 2×2, and 3×3 kernels.
+    """3×3 grid patchifier: generates 36 patches using all kernel sizes.
     
     Grid layout:
     ┌───┬───┬───┐
@@ -16,17 +16,31 @@ class ImagePatchifier:
     │ 6 │ 7 │ 8 │
     └───┴───┴───┘
     
-    Patches:
-    - 1×1: 9 individual cells (indices 0-8)
-    - 2×2: 4 overlapping regions (indices 9-12)
-        - [0,1,3,4], [1,2,4,5], [3,4,6,7], [4,5,7,8]
-    - 3×3: 1 full image (index 13)
-    
-    Total: 14 patches
+    Patches (36 total):
+    - 1×1: 9 cells (idx 0-8)
+    - 1×2: 6 horizontal pairs (idx 9-14)
+    - 2×1: 6 vertical pairs (idx 15-20)
+    - 1×3: 3 horizontal strips (idx 21-23)
+    - 3×1: 3 vertical strips (idx 24-26)
+    - 2×2: 4 squares (idx 27-30)
+    - 2×3: 2 wide rectangles (idx 31-32)
+    - 3×2: 2 tall rectangles (idx 33-34)
+    - 3×3: 1 full image (idx 35)
     """
     
-    # 2×2 kernel positions: (row_start, col_start)
-    KERNEL_2X2 = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    # Kernel configs: (rows, cols, positions as (row_start, col_start))
+    KERNELS = {
+        "1x1": (1, 1, [(r, c) for r in range(3) for c in range(3)]),      # 9
+        "1x2": (1, 2, [(r, c) for r in range(3) for c in range(2)]),      # 6
+        "2x1": (2, 1, [(r, c) for r in range(2) for c in range(3)]),      # 6
+        "1x3": (1, 3, [(r, 0) for r in range(3)]),                         # 3
+        "3x1": (3, 1, [(0, c) for c in range(3)]),                         # 3
+        "2x2": (2, 2, [(r, c) for r in range(2) for c in range(2)]),      # 4
+        "2x3": (2, 3, [(r, 0) for r in range(2)]),                         # 2
+        "3x2": (3, 2, [(0, c) for c in range(2)]),                         # 2
+        "3x3": (3, 3, [(0, 0)]),                                           # 1
+    }
+    KERNEL_ORDER = ["1x1", "1x2", "2x1", "1x3", "3x1", "2x2", "2x3", "3x2", "3x3"]
     
     def __init__(self, output_size: Tuple[int, int] = None):
         """
@@ -42,15 +56,6 @@ class ImagePatchifier:
         elif hasattr(img, "convert"):
             return img.convert("RGB")
         return img
-    
-    def _crop_grid_cell(self, img: PILImage.Image, row: int, col: int, 
-                        cell_h: int, cell_w: int) -> PILImage.Image:
-        """Crop a single grid cell."""
-        left = col * cell_w
-        top = row * cell_h
-        right = left + cell_w
-        bottom = top + cell_h
-        return img.crop((left, top, right, bottom))
     
     def _crop_region(self, img: PILImage.Image, row_start: int, col_start: int,
                      rows: int, cols: int, cell_h: int, cell_w: int) -> PILImage.Image:
@@ -68,39 +73,26 @@ class ImagePatchifier:
         return patch
     
     def patchify(self, img) -> List[PILImage.Image]:
-        """Generate 14 patches from image.
+        """Generate 36 patches from image using all kernel sizes.
         
         Returns:
-            List of 14 PIL Images:
-            - [0-8]: 1×1 patches (individual cells)
-            - [9-12]: 2×2 patches
-            - [13]: 3×3 patch (original image)
+            List of 36 PIL Images in order: 1x1, 1x2, 2x1, 1x3, 3x1, 2x2, 2x3, 3x2, 3x3
         """
         img = self._load_image(img)
         w, h = img.size
         cell_w, cell_h = w // 3, h // 3
         
         patches = []
-        
-        # 1×1 kernels: 9 individual cells
-        for row in range(3):
-            for col in range(3):
-                patch = self._crop_grid_cell(img, row, col, cell_h, cell_w)
+        for kernel_name in self.KERNEL_ORDER:
+            rows, cols, positions = self.KERNELS[kernel_name]
+            for row_start, col_start in positions:
+                patch = self._crop_region(img, row_start, col_start, rows, cols, cell_h, cell_w)
                 patches.append(self._maybe_resize(patch))
-        
-        # 2×2 kernels: 4 overlapping regions
-        for row_start, col_start in self.KERNEL_2X2:
-            patch = self._crop_region(img, row_start, col_start, 2, 2, cell_h, cell_w)
-            patches.append(self._maybe_resize(patch))
-        
-        # 3×3 kernel: full image
-        full = img if self.output_size is None else self._maybe_resize(img)
-        patches.append(full)
         
         return patches
     
     def patchify_exclude_full(self, img) -> List[PILImage.Image]:
-        """Generate 13 patches (excluding full image).
+        """Generate 35 patches (excluding full 3x3 image).
         
         Use this for patch selection where full image is always included separately.
         """
@@ -108,13 +100,26 @@ class ImagePatchifier:
     
     def get_patch_info(self) -> Dict:
         """Return metadata about patch indices."""
-        return {
-            "1x1": list(range(9)),       # indices 0-8
-            "2x2": list(range(9, 13)),   # indices 9-12
-            "3x3": [13],                  # index 13
-            "total": 14,
-            "exclude_full": 13
-        }
+        idx = 0
+        info = {}
+        for kernel_name in self.KERNEL_ORDER:
+            n = len(self.KERNELS[kernel_name][2])
+            info[kernel_name] = list(range(idx, idx + n))
+            idx += n
+        info["total"] = idx
+        info["exclude_full"] = idx - 1
+        return info
+    
+    def get_patch_names(self) -> List[str]:
+        """Return list of patch names for visualization."""
+        names = []
+        for kernel_name in self.KERNEL_ORDER:
+            n = len(self.KERNELS[kernel_name][2])
+            if n == 1:
+                names.append(kernel_name)
+            else:
+                names.extend([f"{kernel_name}_{i}" for i in range(n)])
+        return names
 
 
 # class Augmenter:

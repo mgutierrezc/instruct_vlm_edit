@@ -51,6 +51,8 @@ class IKE_CHAIN(nn.Module):
         self.distance = getattr(cfg, "distance", "l2")
         
         # Radius estimation config
+        self.radius_method = getattr(cfg, "radius_method", "fixed")  # "augment" or "fixed"
+        self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 10))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         
@@ -190,7 +192,11 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _estimate_radius(self, key_emb: torch.Tensor, img, text: str) -> float:
-        """Estimate radius via 99th percentile of augmented distances."""
+        """Estimate radius. Method: 'fixed' (fast) or 'augment' (99th percentile)."""
+        if self.radius_method == "fixed":
+            return self.fixed_radius
+        
+        # Augment method: 99th percentile of augmented distances
         aug_dists = []
         for _ in range(self.n_radius_samples):
             aug_img = self.augmenter.image(img)
@@ -375,7 +381,8 @@ class IKE_CHAIN(nn.Module):
         
         n_after = len(self.codebook)
         mem_mb = self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0
-        print(f"\n[IKE_PATCH] +{added} edits (k={self.top_k_patches}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
+        r_info = f"fixed={self.fixed_radius}" if self.radius_method == "fixed" else f"augment(n={self.n_radius_samples})"
+        print(f"\n[IKE_PATCH] +{added} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
         self.apply_to_dataset(edit_ds)
         return self.model
@@ -418,51 +425,75 @@ class IKE_CHAIN(nn.Module):
         return stats
 
     @torch.no_grad()
-    def visualize_patches(self, image, s1: str = None, figsize=(14, 5)):
-        """Visualize patchification with NLL scores and top-k highlighted.
+    def visualize_patches(self, image, s1: str = None, figsize=(16, 10), score_type="softmax"):
+        """Visualize patchification with scores and top-k highlighted.
         
         Args:
             image: Input image
-            s1: First sentence for patch selection (if None, shows all patches without NLL)
+            s1: First sentence for patch selection (if None, shows all patches without scores)
+            figsize: Figure size
+            score_type: "softmax" (default, probabilities sum to 1) or "ll" (raw log-likelihood)
         """
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
+        from scipy.special import softmax
         
         patches = self.patchifier.patchify(image)
+        patch_names = self.patchifier.get_patch_names()
+        n_patches = len(patches)
         
-        fig, axes = plt.subplots(2, 7, figsize=figsize)
-        base_titles = [f"1x1_{i}" for i in range(9)] + [f"2x2_{i}" for i in range(4)] + ["3x3"]
+        # Grid layout: 6x6 for 36 patches
+        n_cols = 6
+        n_rows = (n_patches + n_cols - 1) // n_cols
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
+        axes = axes.flatten()
         
-        # Compute LL (log-likelihood) for each patch (excluding full image)
-        lls = None
+        # Compute scores for each patch (excluding full image)
+        scores = None
         top_k_idx = []
+        score_label = ""
         if s1:
-            lls = []
+            nlls = []
             for patch in patches[:-1]:  # exclude 3x3
                 nll = self._get_nll(patch, self.patch_select_prompt, s1)
-                lls.append(-nll)  # LL = -NLL
-            lls = np.array(lls)
-            top_k_idx = np.argsort(lls)[::-1][:self.top_k_patches].tolist()  # descending (higher LL = better)
+                nlls.append(nll)
+            nlls = np.array(nlls)
+            
+            if score_type == "softmax":
+                scores = softmax(-nlls)  # softmax over -NLL (higher prob = better)
+                score_label = "P"
+                top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
+            else:  # "ll"
+                scores = -nlls
+                score_label = "LL"
+                top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
         
-        for idx, (ax, patch) in enumerate(zip(axes.flatten(), patches)):
-            ax.imshow(patch)
-            
-            # Build title with LL if available
-            if lls is not None and idx < len(lls):
-                title = f"{base_titles[idx]}\nLL={lls[idx]:.2f}"
-            else:
-                title = base_titles[idx]
-            ax.set_title(title, fontsize=7)
+        for idx in range(len(axes)):
+            ax = axes[idx]
+            if idx < n_patches:
+                patch = patches[idx]
+                ax.imshow(patch)
+                
+                # Build title with score if available
+                if scores is not None and idx < len(scores):
+                    if score_type == "softmax":
+                        title = f"{patch_names[idx]}\n{score_label}={scores[idx]:.1%}"
+                    else:
+                        title = f"{patch_names[idx]}\n{score_label}={scores[idx]:.1f}"
+                else:
+                    title = patch_names[idx]
+                ax.set_title(title, fontsize=6)
+                
+                # Highlight top-k with green box
+                if idx in top_k_idx:
+                    rect = Rectangle((0, 0), patch.width-1, patch.height-1, 
+                                      linewidth=4, edgecolor='limegreen', facecolor='none')
+                    ax.add_patch(rect)
             ax.axis('off')
-            
-            # Highlight top-k with green box
-            if idx in top_k_idx:
-                rect = Rectangle((0, 0), patch.width-1, patch.height-1, 
-                                  linewidth=4, edgecolor='limegreen', facecolor='none')
-                ax.add_patch(rect)
         
         # Title with s1 preview
-        title = f"Patches (top-k={self.top_k_patches}, green=selected)"
+        score_info = "softmax prob" if score_type == "softmax" else "log-likelihood"
+        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, {score_info})"
         if s1:
             title += f"\ns1: {s1}"
         plt.suptitle(title, fontsize=10)
@@ -470,7 +501,7 @@ class IKE_CHAIN(nn.Module):
         plt.show()
 
     @torch.no_grad()
-    def plot_codebook(self, max_edits=20, figsize=(8, 6), query_img=None, query_text=None):
+    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None):
         """Plot force-directed network of keys.
         
         Color by edit_idx, size by is_patch (original=large, patch=small).
@@ -530,7 +561,7 @@ class IKE_CHAIN(nn.Module):
         
         # Plot
         fig, ax = plt.subplots(figsize=figsize)
-        nx.draw_networkx_edges(G, pos, alpha=0.1, width=0.3, ax=ax)
+        nx.draw_networkx_edges(G, pos, alpha=0.08, width=0.2, ax=ax)
         
         # Color map by edit
         edit_list = sorted(selected_edits)
@@ -538,7 +569,7 @@ class IKE_CHAIN(nn.Module):
         cmap = plt.cm.get_cmap('tab20', max(len(edit_list), 1))
         
         # Draw original (large) and patch (small) nodes separately
-        for is_patch, size in [(False, 120), (True, 30)]:
+        for is_patch, size in [(False, 60), (True, 15)]:
             nodelist = [i for i in range(n_keys) 
                        if self.codebook[indices[i]].get("is_patch", False) == is_patch]
             if not nodelist:
@@ -549,16 +580,16 @@ class IKE_CHAIN(nn.Module):
         
         # Draw query as black star
         if q_node is not None:
-            ax.scatter(pos[q_node][0], pos[q_node][1], c='black', s=200, marker='*', zorder=10)
+            ax.scatter(pos[q_node][0], pos[q_node][1], c='black', s=80, marker='*', zorder=10)
         
         # Legend
-        ax.scatter([], [], c='gray', s=100, marker='o', label='original')
-        ax.scatter([], [], c='gray', s=30, marker='o', label='patch')
+        ax.scatter([], [], c='gray', s=40, marker='o', label='original')
+        ax.scatter([], [], c='gray', s=12, marker='o', label='patch')
         if q_node is not None:
-            ax.scatter([], [], c='black', s=100, marker='*', label='query')
-        ax.legend(loc='lower left', fontsize=8)
+            ax.scatter([], [], c='black', s=40, marker='*', label='query')
+        ax.legend(loc='lower left', fontsize=6, frameon=False, handletextpad=0.1)
         
-        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys)')
+        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys)', fontsize=8)
         ax.axis('off')
         plt.tight_layout()
         plt.show()
