@@ -45,10 +45,11 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # patches to select per edit
         self.cap_k = int(getattr(cfg, "cap_k", 10))  # max entries to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
+        self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_layer(<blank, text>)
         
         # Radius estimation config
         self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
@@ -58,7 +59,7 @@ class IKE_CHAIN(nn.Module):
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", ["2x2"])
+        self.query_kernels = getattr(cfg, "query_kernels", ["2x2", "3x3"])
         
         # Seed for reproducibility
         self.seed = getattr(cfg, "seed", None)
@@ -70,13 +71,18 @@ class IKE_CHAIN(nn.Module):
         # Prompt for patch selection
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
-        # Hook for VLM activations (vision-only)
+        # Hook for VLM activations
         model_cfg = getattr(config, "model", config)
         inner_params_vision = getattr(model_cfg, "inner_params_vision", [])
+        inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
         if not inner_params_vision:
             raise ValueError("Requires config.model.inner_params_vision")
+        if self.dual_layer and not inner_params_lang:
+            raise ValueError("dual_layer=True requires config.model.inner_params_lang")
         
         self._vision_act = None
+        self._lang_act = None
+        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128)) if self.dual_layer else None
         
         def _setup_hook(param_name, attr_name):
             name = param_name.rsplit(".", 1)[0] if param_name.endswith((".weight", ".bias")) else param_name
@@ -87,6 +93,7 @@ class IKE_CHAIN(nn.Module):
             )
         
         self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act")
+        self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act") if self.dual_layer else None
 
         # Codebook: list of {key_idx, value, edit_idx, is_patch}
         self.codebook = []
@@ -126,19 +133,33 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _encode_vlm(self, images: List, texts: List[str]) -> torch.Tensor:
-        """Get VLM vision embedding for <image, text> pairs.
+        """Get VLM embedding for <image, text> pairs.
         
-        Returns: [B, hidden] tensor
+        If dual_layer=True: concat(vision(<img,text>), lang(<blank,text>))
+        Returns: [B, hidden] or [B, hidden*2] tensor
         """
         self.model.eval()
         batch_size = len(images) if isinstance(images, list) else 1
         
+        # Pass 1: <image, text> -> vision embedding
         self._vision_act = None
         inputs = self.wrapper.encode(images, texts, tokenize=False)
         self.model(**inputs)
-        emb = self._pool_act(self._vision_act, batch_size)
-        self._vision_act = None  # Release hook reference
-        return emb
+        vision_emb = self._pool_act(self._vision_act, batch_size)
+        self._vision_act = None
+        
+        if not self.dual_layer:
+            return vision_emb
+        
+        # Pass 2: <blank_image, text> -> language embedding
+        self._lang_act = None
+        blank_imgs = [self._blank_image] * batch_size
+        inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
+        self.model(**inputs)
+        lang_emb = self._pool_act(self._lang_act, batch_size)
+        self._lang_act = None
+        
+        return torch.cat([vision_emb, lang_emb], dim=-1)
 
     @torch.no_grad()
     def _get_nll(self, image, prompt: str, label: str) -> float:
