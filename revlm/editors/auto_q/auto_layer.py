@@ -258,6 +258,34 @@ class AutoLayer(ModularityCore):
         return all_embs
 
     @torch.no_grad()
+    def _encode_bimodal(self, layers, n_aug, pbar=None):
+        """Encode <image, text> with both image AND text augmentations for bi_modality Q."""
+        all_embs = {l: [] for l in layers}
+        augmenter = self._get_augmenter()
+        
+        for idx, (img, text) in enumerate(zip(self._images, self._texts)):
+            # Anchor: <image, text>
+            embs = self._encode_all(img, text)
+            for layer in layers:
+                if layer in embs:
+                    all_embs[layer].append(embs[layer])
+            if pbar:
+                pbar.update(1)
+            
+            # Augmentations: augment BOTH image and text together
+            for _ in range(n_aug):
+                aug_img = augmenter.image(img)
+                aug_text = augmenter.question(text) if text else ""
+                embs = self._encode_all(aug_img, aug_text)
+                for layer in layers:
+                    if layer in embs:
+                        all_embs[layer].append(embs[layer])
+                if pbar:
+                    pbar.update(1)
+        
+        return all_embs
+
+    @torch.no_grad()
     def find_best(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
         """Find best layers for vision and language.
         
@@ -292,13 +320,14 @@ class AutoLayer(ModularityCore):
         # Forward count
         n_entangled = n * n
         n_pure_per = n * (1 + n_aug)
-        n_forwards = n_entangled + 2 * n_pure_per
+        n_forwards = n_entangled + 3 * n_pure_per  # +1 for bimodal
         
         if verbose:
             print(f"[AutoLayer] {n} samples, {len(layers)} layers")
             print(f"            Entangled: {n}×{n} = {n_entangled} pairs")
             print(f"            Pure Vision: {n} × (1 + {n_aug}) = {n_pure_per}")
             print(f"            Pure Language: {n} × (1 + {n_aug}) = {n_pure_per}")
+            print(f"            Bi-modality: {n} × (1 + {n_aug}) = {n_pure_per}")
             print(f"            Total: {n_forwards} forwards")
         
         # Hook all layers
@@ -323,6 +352,9 @@ class AutoLayer(ModularityCore):
         # 3. Encode pure language: <blank, text> + text augs
         pure_language_embs = self._encode_pure_language(layers, n_aug, pbar)
         
+        # 4. Encode bimodal: <image, text> + both augs
+        bimodal_embs = self._encode_bimodal(layers, n_aug, pbar)
+        
         if pbar:
             pbar.close()
         
@@ -341,6 +373,8 @@ class AutoLayer(ModularityCore):
                 continue
             if len(pure_language_embs[layer]) < n * (1 + n_aug) * 0.5:
                 continue
+            if len(bimodal_embs[layer]) < n * (1 + n_aug) * 0.5:
+                continue
             
             # Get edge filter tuple
             edge_filter = self._get_edge_filter_tuple()
@@ -357,18 +391,23 @@ class AutoLayer(ModularityCore):
             pl_embs = torch.cat(pure_language_embs[layer], dim=0)
             pure_lang_Q = self.compute_Q(pl_embs, aug_target, edge_filter)
             
+            # Bi-modality score: <image, text> + both augs
+            bm_embs = torch.cat(bimodal_embs[layer], dim=0)
+            bimodal_Q = self.compute_Q(bm_embs, aug_target, edge_filter)
+            
             scores[layer] = {
                 "vision_Q": ent_scores["vision_Q"],
                 "language_Q": ent_scores["language_Q"],
                 "harmonic": ent_scores["harmonic"],
                 "pure_vision_Q": pure_vis_Q,
                 "pure_language_Q": pure_lang_Q,
+                "bimodal_Q": bimodal_Q,
             }
             
             if verbose:
                 s = scores[layer]
                 tqdm.write(f"  {layer[-45:]}: vis={s['vision_Q']:.3f}, lang={s['language_Q']:.3f}, "
-                          f"H={s['harmonic']:.3f}, p_vis={s['pure_vision_Q']:.3f}, p_lang={s['pure_language_Q']:.3f}")
+                          f"H={s['harmonic']:.3f}, p_vis={s['pure_vision_Q']:.3f}, p_lang={s['pure_language_Q']:.3f}, bi={s['bimodal_Q']:.3f}")
             
             torch.cuda.empty_cache()
         
@@ -378,8 +417,10 @@ class AutoLayer(ModularityCore):
             all_entangled = [s["vision_Q"] for s in scores.values()] + [s["language_Q"] for s in scores.values()]
             global_min = min(all_entangled)
             
-            # Global min across pure scores
-            all_pure = [s["pure_vision_Q"] for s in scores.values()] + [s["pure_language_Q"] for s in scores.values()]
+            # Global min across pure scores (including bimodal)
+            all_pure = ([s["pure_vision_Q"] for s in scores.values()] + 
+                       [s["pure_language_Q"] for s in scores.values()] +
+                       [s["bimodal_Q"] for s in scores.values()])
             global_min_pure = min(all_pure)
             
             # Shift all scores by their respective global min
@@ -389,6 +430,7 @@ class AutoLayer(ModularityCore):
                 s["language_Q_shifted"] = s["language_Q"] - global_min
                 s["pure_vision_Q_shifted"] = s["pure_vision_Q"] - global_min_pure
                 s["pure_language_Q_shifted"] = s["pure_language_Q"] - global_min_pure
+                s["bimodal_Q_shifted"] = s["bimodal_Q"] - global_min_pure
                 
                 # Recompute harmonic on shifted values (now both >= 0)
                 v, l = s["vision_Q_shifted"], s["language_Q_shifted"]
@@ -417,6 +459,7 @@ class AutoLayer(ModularityCore):
             "harmonic": build_best_dict("harmonic_shifted"),
             "pure_vision_Q": build_best_dict("pure_vision_Q"),
             "pure_language_Q": build_best_dict("pure_language_Q"),
+            "bimodal_Q": build_best_dict("bimodal_Q"),
         }
         
         if verbose:
@@ -602,6 +645,7 @@ class AutoLayer(ModularityCore):
         # Check if pure scores and shifted scores exist
         sample_layer = layers[0]
         has_pure = "pure_vision_Q" in scores[sample_layer]
+        has_bimodal = "bimodal_Q" in scores[sample_layer]
         has_shifted = "harmonic_shifted" in scores[sample_layer]
         
         # Use shifted harmonic if available (more meaningful with negatives)
@@ -613,11 +657,12 @@ class AutoLayer(ModularityCore):
             plot_data = [
                 (axes[0, 0], "vision_Q", 'Vision Q\n(<image, text>)'),
                 (axes[0, 1], "language_Q", 'Language Q\n(<image, text>)'),
-                (axes[0, 2], harmonic_key, 'Harmonic'),
+                (axes[0, 2], "bimodal_Q" if has_bimodal else harmonic_key, 
+                 'Bi-modality Q\n(<image, text> + augs)' if has_bimodal else 'Harmonic'),
                 (axes[1, 0], "pure_vision_Q", 'Pure Vision Q\n(<image, "">)'),
                 (axes[1, 1], "pure_language_Q", 'Pure Language Q\n(<blank, text>)'),
             ]
-            axes[1, 2].axis('off')  # Empty subplot
+            axes[1, 2].axis('off')
         else:
             fig, axes = plt.subplots(1, 3, figsize=(12, 4))
             plot_data = [

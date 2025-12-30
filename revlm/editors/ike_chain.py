@@ -45,7 +45,7 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 2))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
         self.cap_k = int(getattr(cfg, "cap_k", 10))  # k closest keys to retrieve among all matching keys
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
@@ -53,7 +53,7 @@ class IKE_CHAIN(nn.Module):
         self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")  # "internal" or "sbert"
         # Use lang_scaler_sbert if sbert, else lang_scaler
         if self.lang_encoder == "sbert":
-            self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 16.0))
+            self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 10.0))
         else:
             self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
         

@@ -62,8 +62,6 @@ class AutoScaler(ModularityCore):
             raise ValueError("Requires inner_params_vision")
         
         self._vision_hook = self._setup_hook(inner_params_vision[0], "_vision_act")
-        
-        # Language hook only needed for internal encoder
         self._lang_hook = None
         self._sbert = None
         if lang_encoder == "internal":
@@ -71,8 +69,7 @@ class AutoScaler(ModularityCore):
                 raise ValueError("inner_params_lang required when lang_encoder='internal'")
             self._lang_hook = self._setup_hook(inner_params_lang[0], "_lang_act")
         elif lang_encoder == "sbert":
-            # Lazy load sentence-transformers
-            pass
+            pass # Lazy load sentence-transformers
         else:
             raise ValueError(f"Unknown lang_encoder: {lang_encoder}")
         
@@ -185,12 +182,16 @@ class AutoScaler(ModularityCore):
         return torch.cat(embs, dim=0)
 
     @torch.no_grad()
-    def search(self, dataset, lang_scalers=None, verbose=True):
+    def search(self, dataset, lang_scalers=None, shift_mode="global", verbose=True):
         """Search for optimal lang_scaler.
         
         Args:
             dataset: Dataset with .data containing image/question samples
             lang_scalers: List of scalers to try
+            shift_mode: How to shift Q values for harmonic mean:
+                - "global": shift both Vision Q and Language Q by global min (default)
+                - "langq_only": shift only Language Q by its min (keeps Vision Q raw)
+                - "none": no shifting (raw Q values in harmonic)
             verbose: Print progress
             
         Returns:
@@ -249,28 +250,45 @@ class AutoScaler(ModularityCore):
                 tqdm.write(f"  scaler={scaler}: vis_Q={r['vision_Q']:.4f}, lang_Q={r['language_Q']:.4f}, H={r['harmonic']:.4f}")
             torch.cuda.empty_cache()
         
-        # Shift Q values by GLOBAL min (preserves relative relationship)
+        # Shift Q values based on shift_mode
         if results:
-            all_Q = [r["vision_Q"] for r in results.values()] + [r["language_Q"] for r in results.values()]
-            global_min = min(all_Q)
+            all_vision_Q = [r["vision_Q"] for r in results.values()]
+            all_language_Q = [r["language_Q"] for r in results.values()]
+            
+            if shift_mode == "global":
+                # Shift both by global min
+                global_min = min(all_vision_Q + all_language_Q)
+                vision_shift = global_min
+                lang_shift = global_min
+                if verbose:
+                    print(f"\n[Shift] mode=global, min={global_min:.4f}")
+            elif shift_mode == "langq_only":
+                # Shift only Language Q by its min
+                lang_min = min(all_language_Q)
+                vision_shift = 0.0
+                lang_shift = lang_min
+                if verbose:
+                    print(f"\n[Shift] mode=langq_only, lang_min={lang_min:.4f}")
+            else:  # "none"
+                vision_shift = 0.0
+                lang_shift = 0.0
+                if verbose:
+                    print(f"\n[Shift] mode=none")
             
             for scaler in results:
                 r = results[scaler]
-                r["vision_Q_shifted"] = r["vision_Q"] - global_min
-                r["language_Q_shifted"] = r["language_Q"] - global_min
+                r["vision_Q_shifted"] = r["vision_Q"] - vision_shift
+                r["language_Q_shifted"] = r["language_Q"] - lang_shift
                 
                 v, l = r["vision_Q_shifted"], r["language_Q_shifted"]
-                r["harmonic_shifted"] = 2 * v * l / (v + l) if (v + l) > 0 else 0.0
-            
-            if verbose:
-                print(f"\n[Shift] global_min={global_min:.4f}")
+                r["harmonic_shifted"] = 2 * v * l / (v + l) if (v > 0 and l > 0) else 0.0
         
         # Use shifted harmonic for best selection
         best = max(results, key=lambda s: results[s]["harmonic_shifted"])
         if verbose:
             print(f"[AutoScaler] Best scaler={best} (H_shifted={results[best]['harmonic_shifted']:.4f})")
         
-        return {"scalers": results, "baselines": baselines}
+        return {"scalers": results, "baselines": baselines, "shift_mode": shift_mode}
 
     # ==================== Save / Load / Aggregate ====================
 
@@ -299,6 +317,7 @@ class AutoScaler(ModularityCore):
             "model_tag": model_tag,
             "n_samples": self.n_samples,
             "run_id": run_id,
+            "shift_mode": results.get("shift_mode", "global"),
             "scalers": results["scalers"],
             "baselines": results.get("baselines", {}),
         }
@@ -404,14 +423,31 @@ class AutoScaler(ModularityCore):
         
         scalers = results["scalers"]
         baselines = results.get("baselines", {})
+        shift_mode = results.get("shift_mode", "global")
         is_agg = self._is_aggregated(results)
         
         x_values = sorted(scalers.keys())
         
-        # Use shifted harmonic if available (more meaningful with negatives)
+        # Determine which Q values and harmonic to plot based on shift_mode
         sample_scaler = x_values[0]
         has_shifted = "harmonic_shifted" in scalers[sample_scaler]
-        harm_key = "harmonic_shifted" if has_shifted else "harmonic"
+        
+        # Labels adapt to shift_mode
+        if shift_mode == "none":
+            harm_key = "harmonic"
+            harm_label = "Harmonic (raw)"
+            vis_label = "Vision Q"
+            lang_label = "Language Q"
+        elif shift_mode == "langq_only":
+            harm_key = "harmonic_shifted" if has_shifted else "harmonic"
+            harm_label = "Harmonic (lang shifted)"
+            vis_label = "Vision Q"
+            lang_label = "Language Q"
+        else:  # "global"
+            harm_key = "harmonic_shifted" if has_shifted else "harmonic"
+            harm_label = "Harmonic (shifted)"
+            vis_label = "Vision Q"
+            lang_label = "Language Q"
         
         fig, ax = plt.subplots(figsize=figsize)
         
@@ -425,19 +461,19 @@ class AutoScaler(ModularityCore):
             harm_std = np.array([scalers[x][harm_key]["std"] for x in x_values])
             
             ax.errorbar(x_values, vis_Q, yerr=vis_std, fmt='o-', color='green', 
-                       label='Vision Q', ms=5, lw=1.5, capsize=3)
+                       label=vis_label, ms=5, lw=1.5, capsize=3)
             ax.errorbar(x_values, lang_Q, yerr=lang_std, fmt='o-', color='blue', 
-                       label='Language Q', ms=5, lw=1.5, capsize=3)
+                       label=lang_label, ms=5, lw=1.5, capsize=3)
             ax.errorbar(x_values, harmonic, yerr=harm_std, fmt='s-', color='red', 
-                       label='Harmonic', ms=6, lw=2, capsize=3)
+                       label=harm_label, ms=6, lw=2, capsize=3)
         else:
             vis_Q = [scalers[x]["vision_Q"] for x in x_values]
             lang_Q = [scalers[x]["language_Q"] for x in x_values]
             harmonic = [scalers[x][harm_key] for x in x_values]
             
-            ax.plot(x_values, vis_Q, 'o-', color='green', label='Vision Q', ms=5, lw=1.5)
-            ax.plot(x_values, lang_Q, 'o-', color='blue', label='Language Q', ms=5, lw=1.5)
-            ax.plot(x_values, harmonic, 's-', color='red', label='Harmonic', ms=6, lw=2)
+            ax.plot(x_values, vis_Q, 'o-', color='green', label=vis_label, ms=5, lw=1.5)
+            ax.plot(x_values, lang_Q, 'o-', color='blue', label=lang_label, ms=5, lw=1.5)
+            ax.plot(x_values, harmonic, 's-', color='red', label=harm_label, ms=6, lw=2)
         
         ax.set_xscale('log')
         
@@ -475,7 +511,8 @@ class AutoScaler(ModularityCore):
         
         ax.set_xlabel('lang_scaler')
         ax.set_ylabel('Modularity Q (↑)')
-        ax.set_title('Vision Q vs Language Q Trade-off')
+        title = f'Vision Q vs Language Q Trade-off (shift={shift_mode})'
+        ax.set_title(title)
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
         ax.grid(alpha=0.3)
         
