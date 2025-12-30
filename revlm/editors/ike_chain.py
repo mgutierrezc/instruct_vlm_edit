@@ -45,11 +45,12 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # patches to select per edit
         self.cap_k = int(getattr(cfg, "cap_k", 10))  # max entries to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
-        self.dual_layer = getattr(cfg, "dual_layer", False)  # concat lang_layer(<blank, text>) with vision_layer(<img, text>)
+        self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
+        self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))  # model-specific, set via config/model/*.yaml
         
         # Radius estimation config
         self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
@@ -156,7 +157,7 @@ class IKE_CHAIN(nn.Module):
         blank_imgs = [self._blank_image] * batch_size
         inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
         self.model(**inputs)
-        lang_emb = self._pool_act(self._lang_act, batch_size)
+        lang_emb = self._pool_act(self._lang_act, batch_size) * self.lang_scaler
         self._lang_act = None
         
         return torch.cat([vision_emb, lang_emb], dim=-1)

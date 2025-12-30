@@ -1,10 +1,10 @@
-"""Run AutoLayer analysis with bootstrapping for error bars.
+"""Run AutoScaler analysis with bootstrapping for error bars.
 
 Usage:
-    python -m revlm.run.auto_layer --model_name qwen3 --n_runs 10
+    python -m revlm.run.auto_scaler --model_name qwen3 --n_runs 10
     
 Or via sbatch:
-    sbatch scripts/auto_layer.sh
+    sbatch scripts/auto_scaler.sh
 """
 
 import argparse
@@ -21,53 +21,68 @@ os.chdir(PROJECT_ROOT)
 
 from revlm import VQAModel, VQADataset
 from revlm.config_utils import configure_args
-from revlm.editors import AutoLayer
+from revlm.editors import AutoScaler
 
 
-def run_auto_layer(config, n_runs=10, n_samples=10, n_aug=5):
-    """Run AutoLayer analysis k times for error bars.
+def run_auto_scaler(config, n_runs=100, n_samples=10, lang_scalers=None):
+    """Run AutoScaler analysis k times for error bars.
     
     Args:
         config: Config object
         n_runs: Number of bootstrap runs
-        n_samples: Samples per run for Q computation
-        n_aug: Augmentations per sample for pure Q scores
+        n_samples: Samples per run
+        lang_scalers: List of scalers to test (default: wide range)
     """
+    
+    if lang_scalers is None:
+        # Log-spaced from 0.1 to 1000 (4 orders of magnitude, ~8 points per decade)
+        import numpy as np
+        lang_scalers = np.logspace(-1, 3, 33).round(2).tolist()  # 0.1 to 1000
     
     # Build model & dataset
     model = VQAModel(config)
     dataset = VQADataset(config)
     print(f"Model: {config.model.name}, Dataset: {len(dataset)} samples", flush=True)
     
-    # Initialize AutoLayer
-    auto = AutoLayer(config, model, n_samples=n_samples, n_aug=n_aug)
-    layers = auto.get_candidate_layers()
+    # Get layer params from config
+    inner_params_vision = getattr(config.model, "inner_params_vision", None)
+    inner_params_lang = getattr(config.model, "inner_params_lang", None)
+    
+    if not inner_params_vision or not inner_params_lang:
+        raise ValueError("Model config must have inner_params_vision and inner_params_lang")
+    
+    print(f"Vision layer: {inner_params_vision[0]}")
+    print(f"Language layer: {inner_params_lang[0]}")
+    
+    # Initialize AutoScaler
+    searcher = AutoScaler(config, model, inner_params_vision, inner_params_lang, n_samples=n_samples)
     
     # Run k times
     for run_id in range(n_runs):
-        auto._images = None  # Force new random samples each run
-        auto._texts = None
-        best, scores = auto.find_best(dataset, layers, verbose=(run_id == 0))
-        auto.save_results(best, scores, run_id=run_id)
+        searcher._images = None  # Force new random samples each run
+        searcher._texts = None
+        
+        results = searcher.search(dataset, lang_scalers=lang_scalers, verbose=(run_id == 0))
+        searcher.save_results(results, run_id=run_id)
         print(f"Run {run_id+1}/{n_runs} done", flush=True)
     
     # Load all runs and print aggregated results
     print(f"\n{'='*50}", flush=True)
     print("Aggregating results...", flush=True)
-    agg_scores = auto.load_results_k()
-    best = auto.get_best_from_agg(agg_scores)
+    agg_results = searcher.load_results_k()
+    best = searcher.get_best_from_agg(agg_results)
     
     # Cleanup
-    auto.cleanup()
+    searcher.cleanup()
     del model
     torch.cuda.empty_cache()
     print("Cleaned up model and freed GPU memory", flush=True)
     
-    return agg_scores, best
+    return agg_results, best
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AutoLayer Analysis with Bootstrapping")
+    parser = argparse.ArgumentParser(description="AutoScaler Analysis with Bootstrapping")
 
     # Config
     parser.add_argument("--config", type=str, default="revlm/config/config.yaml")
@@ -77,10 +92,9 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--split", type=str, default="all", choices=["train", "test", "all"])
     
-    # AutoLayer params
+    # AutoScaler params
     parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
     parser.add_argument("--n_samples", type=int, default=10, help="Samples per run for Q computation")
-    parser.add_argument("--n_aug", type=int, default=5, help="Augmentations per sample for pure Q")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -91,4 +105,5 @@ if __name__ == "__main__":
     
     config = configure_args(args, config_path=args.config)
 
-    run_auto_layer(config, n_runs=args.n_runs, n_samples=args.n_samples, n_aug=args.n_aug)
+    run_auto_scaler(config, n_runs=args.n_runs, n_samples=args.n_samples)
+

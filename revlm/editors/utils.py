@@ -376,7 +376,7 @@ class Augmenter:
         self.n_chain = 3
         self._llm = None
         self._llm_tok = None
-        self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Smaller: 0.5B vs 1.5B
+        self._llm_name = "Qwen/Qwen2.5-0.5B-Instruct"  # Smaller: 0.5B vs 1.5B
 
     def _get_llm(self):
         """Lazy load small LLM for text augmentation."""

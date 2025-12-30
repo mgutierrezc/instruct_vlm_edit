@@ -4,6 +4,7 @@ pt: null
 inner_params: ["model.language_model.layers.31.mlp.gate_proj.weight"] # conventional layer
 inner_params_vision: ["model.language_model.layers.27.mlp.gate_proj.weight"]
 inner_params_lang: ["model.language_model.layers.31.mlp.gate_proj.weight"]
+lang_scaler: 30  # for dual-layer embedding: concat(vis_layer, scaler * lang_layer)
 processor_class: null
 tokenizer_class: null
 temperature: 0.0
