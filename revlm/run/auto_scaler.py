@@ -24,21 +24,16 @@ from revlm.config_utils import configure_args
 from revlm.editors import AutoScaler
 
 
-def run_auto_scaler(config, n_runs=100, n_samples=10, lang_scalers=None):
+def run_auto_scaler(config, n_runs=100, n_samples=10, lang_scalers=None, overwrite=False):
     """Run AutoScaler analysis k times for error bars.
     
     Args:
         config: Config object
         n_runs: Number of bootstrap runs
         n_samples: Samples per run
-        lang_scalers: List of scalers to test (default: wide range)
+        lang_scalers: List of scalers to test (default: uses AutoScaler's default)
+        overwrite: If False, skip runs that already have saved results
     """
-    
-    if lang_scalers is None:
-        # Log-spaced from 0.1 to 1000 (4 orders of magnitude, ~8 points per decade)
-        import numpy as np
-        lang_scalers = np.logspace(-1, 3, 33).round(2).tolist()  # 0.1 to 1000
-    
     # Build model & dataset
     model = VQAModel(config)
     dataset = VQADataset(config)
@@ -59,6 +54,13 @@ def run_auto_scaler(config, n_runs=100, n_samples=10, lang_scalers=None):
     
     # Run k times
     for run_id in range(n_runs):
+        # Check if this run already exists
+        if not overwrite:
+            existing = searcher.load_results(run_id=run_id)
+            if existing is not None:
+                print(f"Run {run_id+1}/{n_runs} already exists, skipping", flush=True)
+                continue
+        
         searcher._images = None  # Force new random samples each run
         searcher._texts = None
         
@@ -95,15 +97,15 @@ if __name__ == "__main__":
     # AutoScaler params
     parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
     parser.add_argument("--n_samples", type=int, default=10, help="Samples per run for Q computation")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     args.editor = "ike_chain"
     args.rationale = False
     args.cot = False
-    args.overwrite = False
     
     config = configure_args(args, config_path=args.config)
 
-    run_auto_scaler(config, n_runs=args.n_runs, n_samples=args.n_samples)
+    run_auto_scaler(config, n_runs=args.n_runs, n_samples=args.n_samples, overwrite=args.overwrite)
 

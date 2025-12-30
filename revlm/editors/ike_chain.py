@@ -45,7 +45,7 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 2))  # patches to select per edit
         self.cap_k = int(getattr(cfg, "cap_k", 10))  # max entries to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
