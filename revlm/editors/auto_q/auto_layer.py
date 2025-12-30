@@ -78,6 +78,7 @@ class AutoLayer(ModularityCore):
         self._images = None
         self._texts = None
         self._augmenter = None
+        self._sbert = None
 
     def get_candidate_layers(self, include_all=False):
         """Get candidate layer names."""
@@ -158,6 +159,23 @@ class AutoLayer(ModularityCore):
         if self._augmenter is None:
             self._augmenter = Augmenter(self.wrapper)
         return self._augmenter
+
+    def _get_sbert(self):
+        """Lazy load SBERT model."""
+        if self._sbert is None:
+            from sentence_transformers import SentenceTransformer
+            self._sbert = SentenceTransformer(
+                "sentence-transformers/paraphrase-mpnet-base-v2",
+                device=self.device
+            )
+        return self._sbert
+
+    @torch.no_grad()
+    def _encode_sbert(self, texts):
+        """Encode texts with SBERT, return [N, dim] tensor."""
+        sbert = self._get_sbert()
+        embs = sbert.encode(texts, convert_to_tensor=True, device=self.device)
+        return embs
 
     def _get_edge_filter_tuple(self):
         """Convert edge_filter config to tuple format for compute_Q."""
@@ -365,6 +383,18 @@ class AutoLayer(ModularityCore):
         vis_layers, merger_layers, lang_layers = self._classify_layers(layers)
         aug_target = self.build_aug_target(n, n_aug).to(self.device)
         
+        # 5. Compute SBERT baseline for language Q (after aug_target is built)
+        augmenter = self._get_augmenter()
+        sbert_texts = []
+        for text in self._texts:
+            sbert_texts.append(text)  # anchor
+            for _ in range(n_aug):
+                sbert_texts.append(augmenter.question(text) if text else "")
+        sbert_embs = self._encode_sbert(sbert_texts)
+        sbert_lang_Q = self.compute_Q(sbert_embs, aug_target, self._get_edge_filter_tuple())
+        if verbose:
+            print(f"[SBERT] language_Q baseline = {sbert_lang_Q:.4f}")
+        
         for layer in (tqdm(layers, desc="scoring") if verbose else layers):
             # Check minimum embeddings
             if len(entangled_embs[layer]) < n * n * 0.5:
@@ -462,6 +492,9 @@ class AutoLayer(ModularityCore):
             "bimodal_Q": build_best_dict("bimodal_Q"),
         }
         
+        # Store SBERT baseline in scores metadata
+        scores["__sbert_lang_Q__"] = sbert_lang_Q
+        
         if verbose:
             print(f"\n{'='*70}")
             print("Best layers per metric:")
@@ -471,6 +504,7 @@ class AutoLayer(ModularityCore):
                     if layer:
                         val = scores[layer].get(metric_name, scores[layer].get("harmonic_shifted", 0))
                         print(f"    {group:15} → {layer} ({val:.3f})")
+            print(f"  SBERT baseline: {sbert_lang_Q:.4f}")
             print(f"{'='*70}")
         
         return best, scores
@@ -550,24 +584,31 @@ class AutoLayer(ModularityCore):
             with open(f) as fp:
                 all_scores.append(json.load(fp)["scores"])
         
-        # Get all metrics from first run
-        sample_layer = list(all_scores[0].keys())[0]
+        # Get all metrics from first run (skip metadata keys)
+        sample_layer = next(k for k in all_scores[0] if not k.startswith("__"))
         metrics = list(all_scores[0][sample_layer].keys())
         
-        # Aggregate
+        # Aggregate layers
         agg = {}
         for layer in all_scores[0]:
+            if layer.startswith("__"):
+                continue  # Skip metadata keys
             agg[layer] = {}
             for m in metrics:
                 vals = [s[layer][m] for s in all_scores if layer in s]
                 agg[layer][m] = {"mean": np.mean(vals), "std": np.std(vals)}
+        
+        # Aggregate SBERT baseline
+        sbert_vals = [s.get("__sbert_lang_Q__") for s in all_scores if "__sbert_lang_Q__" in s]
+        if sbert_vals:
+            agg["__sbert_lang_Q__"] = {"mean": np.mean(sbert_vals), "std": np.std(sbert_vals)}
         
         print(f"[AutoLayer] Aggregated {len(files)} runs, {len(agg)} layers")
         return agg
 
     def get_best_from_agg(self, agg_scores, metric="harmonic"):
         """Get best layers from aggregated scores."""
-        layers = list(agg_scores.keys())
+        layers = [k for k in agg_scores.keys() if not k.startswith("__")]
         vis_layers, merger_layers, lang_layers = self._classify_layers(layers)
         
         def find_best_in(subset, key):
@@ -611,9 +652,12 @@ class AutoLayer(ModularityCore):
 
     def _is_aggregated(self, scores):
         """Check if scores are aggregated (have mean/std)."""
-        sample_layer = list(scores.keys())[0]
-        sample_val = scores[sample_layer]["vision_Q"]
-        return isinstance(sample_val, dict) and "mean" in sample_val
+        # Find first actual layer (skip metadata keys)
+        for k in scores:
+            if not k.startswith("__"):
+                sample_val = scores[k]["vision_Q"]
+                return isinstance(sample_val, dict) and "mean" in sample_val
+        return False
 
     def plot(self, scores, figsize=(15, 6)):
         """Plot all Q scores vs layer index.
@@ -623,6 +667,9 @@ class AutoLayer(ModularityCore):
         Bottom row: Pure scores (Pure Vision Q, Pure Language Q)
         """
         import matplotlib.pyplot as plt
+        
+        # Extract SBERT baseline if present
+        sbert_lang_Q = scores.pop("__sbert_lang_Q__", None)
         
         layers = list(scores.keys())
         vis_layers, merger_layers, lang_layers = self._classify_layers(layers)
@@ -691,6 +738,22 @@ class AutoLayer(ModularityCore):
             ax.set_ylabel(f'{key} (↑)')
             ax.set_title(title)
             ax.grid(alpha=0.3)
+            
+            # Draw SBERT baseline on language Q plots
+            if sbert_lang_Q is not None and key in ["language_Q", "pure_language_Q"]:
+                # Handle both scalar and aggregated (dict with mean/std) formats
+                if isinstance(sbert_lang_Q, dict):
+                    sbert_mean = sbert_lang_Q["mean"]
+                    sbert_std = sbert_lang_Q.get("std", 0)
+                    ax.axhline(y=sbert_mean, color='red', linestyle='--', lw=1.5, 
+                              label=f'SBERT ({sbert_mean:.3f}±{sbert_std:.3f})')
+                    if sbert_std > 0:
+                        ax.axhspan(sbert_mean - sbert_std, sbert_mean + sbert_std, 
+                                  alpha=0.2, color='red')
+                else:
+                    ax.axhline(y=sbert_lang_Q, color='red', linestyle='--', lw=1.5, 
+                              label=f'SBERT ({sbert_lang_Q:.3f})')
+                ax.legend(fontsize=7, loc='best')
         
         # Legend on first plot
         if has_pure:
@@ -701,6 +764,10 @@ class AutoLayer(ModularityCore):
         ax0.scatter([], [], c='orange', s=30, label='merger')
         ax0.scatter([], [], c='blue', s=30, label='language')
         ax0.legend(fontsize=8)
+        
+        # Restore SBERT baseline to scores dict
+        if sbert_lang_Q is not None:
+            scores["__sbert_lang_Q__"] = sbert_lang_Q
         
         plt.tight_layout()
         plt.show()

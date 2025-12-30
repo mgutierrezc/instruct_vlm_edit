@@ -13,7 +13,7 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 from .modularity_core import ModularityCore
-from ..utils import parent_module, brackets_to_periods
+from ..utils import parent_module, brackets_to_periods, Augmenter
 
 
 class AutoScaler(ModularityCore):
@@ -30,7 +30,7 @@ class AutoScaler(ModularityCore):
     """
 
     def __init__(self, config, model, inner_params_vision, inner_params_lang=None, n_samples=10,
-                 edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert"):
+                 n_aug=4, edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert"):
         """
         Args:
             config: Config object with device
@@ -38,6 +38,7 @@ class AutoScaler(ModularityCore):
             inner_params_vision: List of vision layer param names (use first)
             inner_params_lang: List of language layer param names (use first). Optional if lang_encoder="sbert"
             n_samples: Number of samples to use
+            n_aug: Number of augmentations per sample for bimodal_Q
             edge_filter: Filter method - "none", "percentile", "knn", or "disparity"
             edge_filter_kwargs: Dict of kwargs for the filter method
             lang_encoder: "internal" (VLM layer) or "sbert" (sentence-transformers)
@@ -48,9 +49,11 @@ class AutoScaler(ModularityCore):
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.n_samples = n_samples
+        self.n_aug = n_aug
         self.edge_filter = edge_filter
         self.edge_filter_kwargs = edge_filter_kwargs or {}
         self.lang_encoder = lang_encoder
+        self._augmenter = None
         
         # Activations storage
         self._vision_act = None
@@ -112,6 +115,42 @@ class AutoScaler(ModularityCore):
         sbert = self._get_sbert()
         emb = sbert.encode([text], convert_to_tensor=True, device=self.device)
         return emb.to(torch.float32)
+
+    def _get_augmenter(self):
+        """Lazy init augmenter."""
+        if self._augmenter is None:
+            self._augmenter = Augmenter(self.wrapper)
+        return self._augmenter
+
+    @staticmethod
+    def build_aug_target(n_samples, n_aug):
+        """Target for augmentation: samples should cluster (anchor + augs together)."""
+        group_size = 1 + n_aug
+        N = n_samples * group_size
+        labels = torch.arange(N) // group_size
+        return (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+
+    @torch.no_grad()
+    def _encode_bimodal(self, lang_scaler, verbose=True):
+        """Encode <image, text> with both image AND text augmentations for bimodal_Q."""
+        n = len(self._images)
+        augmenter = self._get_augmenter()
+        embs = []
+        
+        pairs = [(i, aug_idx) for i in range(n) for aug_idx in range(1 + self.n_aug)]
+        for i, aug_idx in (tqdm(pairs, desc="bimodal", leave=False) if verbose else pairs):
+            img, text = self._images[i], self._texts[i]
+            if aug_idx == 0:
+                # Anchor
+                emb = self._encode_dual(img, text, lang_scaler)
+            else:
+                # Augment both
+                aug_img = augmenter.image(img)
+                aug_text = augmenter.question(text) if text else ""
+                emb = self._encode_dual(aug_img, aug_text, lang_scaler)
+            embs.append(emb)
+        
+        return torch.cat(embs, dim=0)
 
     def _get_edge_filter_tuple(self):
         """Convert edge_filter config to tuple format for compute_Q."""
@@ -240,14 +279,24 @@ class AutoScaler(ModularityCore):
                 print(f"    {layer}_layer: vis_Q={b['vision_Q']:.4f}, lang_Q={b['language_Q']:.4f}, H={b['harmonic']:.4f}")
             torch.cuda.empty_cache()
         
+        # Build augmentation target for bimodal_Q
+        aug_target = self.build_aug_target(n, self.n_aug).to(self.device)
+        
         # Scaler sweep
         results = {}
         for scaler in (tqdm(lang_scalers, desc="scalers") if verbose else lang_scalers):
+            # Entangled n×n scores
             embs = self._encode_all_pairs(lambda img, txt: self._encode_dual(img, txt, scaler), verbose)
             results[scaler] = self.compute_scores(embs, n, edge_filter)
+            
+            # Bimodal_Q: <image, text> + both augs
+            bimodal_embs = self._encode_bimodal(scaler, verbose)
+            bimodal_Q = self.compute_Q(bimodal_embs, aug_target, edge_filter)
+            results[scaler]["bimodal_Q"] = bimodal_Q
+            
             if verbose:
                 r = results[scaler]
-                tqdm.write(f"  scaler={scaler}: vis_Q={r['vision_Q']:.4f}, lang_Q={r['language_Q']:.4f}, H={r['harmonic']:.4f}")
+                tqdm.write(f"  scaler={scaler}: vis_Q={r['vision_Q']:.4f}, lang_Q={r['language_Q']:.4f}, bi_Q={r['bimodal_Q']:.4f}")
             torch.cuda.empty_cache()
         
         # Shift Q values based on shift_mode
@@ -451,6 +500,9 @@ class AutoScaler(ModularityCore):
         
         fig, ax = plt.subplots(figsize=figsize)
         
+        # Check if bimodal_Q exists
+        has_bimodal = "bimodal_Q" in scalers[sample_scaler]
+        
         if is_agg:
             vis_Q = np.array([scalers[x]["vision_Q"]["mean"] for x in x_values])
             lang_Q = np.array([scalers[x]["language_Q"]["mean"] for x in x_values])
@@ -466,6 +518,12 @@ class AutoScaler(ModularityCore):
                        label=lang_label, ms=5, lw=1.5, capsize=3)
             ax.errorbar(x_values, harmonic, yerr=harm_std, fmt='s-', color='red', 
                        label=harm_label, ms=6, lw=2, capsize=3)
+            
+            if has_bimodal:
+                bimodal = np.array([scalers[x]["bimodal_Q"]["mean"] for x in x_values])
+                bimodal_std = np.array([scalers[x]["bimodal_Q"]["std"] for x in x_values])
+                ax.errorbar(x_values, bimodal, yerr=bimodal_std, fmt='^-', color='orange', 
+                           label='Bimodal Q', ms=5, lw=1.5, capsize=3)
         else:
             vis_Q = [scalers[x]["vision_Q"] for x in x_values]
             lang_Q = [scalers[x]["language_Q"] for x in x_values]
@@ -474,6 +532,10 @@ class AutoScaler(ModularityCore):
             ax.plot(x_values, vis_Q, 'o-', color='green', label=vis_label, ms=5, lw=1.5)
             ax.plot(x_values, lang_Q, 'o-', color='blue', label=lang_label, ms=5, lw=1.5)
             ax.plot(x_values, harmonic, 's-', color='red', label=harm_label, ms=6, lw=2)
+            
+            if has_bimodal:
+                bimodal = [scalers[x]["bimodal_Q"] for x in x_values]
+                ax.plot(x_values, bimodal, '^-', color='orange', label='Bimodal Q', ms=5, lw=1.5)
         
         ax.set_xscale('log')
         
