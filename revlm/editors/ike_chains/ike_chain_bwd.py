@@ -1,12 +1,19 @@
-"""IKE_PATCH: Patch-Aware In-Context Knowledge Editing
+"""IKE_CHAIN_BWD: Backward Chain-of-Keys for VLM Editing
 
-Expands retrieval surface by creating patch-level keys from images.
-Uses log-likelihood scoring to select informative patches.
+Backward chaining retrieval: enter at any key, then check upstream keys
+by swapping query text with the upstream key's text.
 
-Key structure: [<image/patch, text>, value]
-- Original image always included (4 keys)
-- Top-k patches selected by log-likelihood of s1 (4k keys)
-- Total per edit: 4 + 4k keys
+Key structure per edit (3 rationale sentences):
+- <img, s1> → value=[s1], upstream=[]
+- <img, s2> → value=[s2], upstream=[idx_s1]
+- <img, s3> → value=[s3], upstream=[idx_s1, idx_s2]
+- <img, q>  → value=["answer..."], upstream=[idx_s1, idx_s2, idx_s3]
+
+Retrieval:
+1. Find entry points within radius (top cap_k_enter)
+2. For each entry, follow backward chain with text-swap queries
+3. Merge all retrieved values, keep min distance per unique value
+4. Return top cap_k closest unique values
 """
 
 import re
@@ -15,24 +22,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 
 from .utils import brackets_to_periods, parent_module, Augmenter, ImagePatchifier
 
 
 class IKE_CHAIN(nn.Module):
-    """Patch-aware codebook for VLM editing.
+    """Backward chain-of-keys codebook for VLM editing.
     
-    Codebook entry: [key_emb, value, radius]
+    Codebook entry: {key_emb, value, radius, upstream_indices, key_text}
     - key_emb: vision_layer(<image/patch, text>) embedding
     - value: sentence to retrieve
-    - radius: 99th percentile of augmented distances
-    
-    Edit structure:
-    - 4 keys from original image: (question, s1, s2, s3) × original
-    - 4k keys from top-k patches: (question, s1, s2, s3) × each patch
-    
-    Query: patchify query image, check all 14 query embeddings against codebook.
+    - radius: estimated from augmentation
+    - upstream_indices: indices of prior keys in the reasoning chain
+    - key_text: the text used to create this key (for text-swap queries)
     """
 
     def __init__(self, config, model):
@@ -45,26 +48,22 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Hyperparams
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 2))  # patches to select per edit
-        self.cap_k = int(getattr(cfg, "cap_k", 10))  # k closest keys to retrieve among all matching keys
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))
+        self.cap_k_enter = int(getattr(cfg, "cap_k_enter", 1))  # max entry points
+        self.cap_k = int(getattr(cfg, "cap_k", 10))  # max unique values to return
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
-        self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
-        self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")  # "internal" or "sbert"
-        # Use lang_scaler_sbert if sbert, else lang_scaler
-        if self.lang_encoder == "sbert":
-            self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 16.0))
-        else:
-            self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
+        self.dual_layer = getattr(cfg, "dual_layer", True)
+        self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
         
         # Radius estimation config
-        self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
+        self.radius_method = getattr(cfg, "radius_method", "augment")
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
-        self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))  # scale factor for single_aug
+        self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 4))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
         
-        # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
+        # Query kernels for patchification
         self.query_kernels = getattr(cfg, "query_kernels", ["2x2", "3x3"])
         
         # Seed for reproducibility
@@ -83,14 +82,12 @@ class IKE_CHAIN(nn.Module):
         inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
         if not inner_params_vision:
             raise ValueError("Requires config.model.inner_params_vision")
-        # inner_params_lang only required for dual_layer with internal encoder
-        if self.dual_layer and self.lang_encoder == "internal" and not inner_params_lang:
-            raise ValueError("dual_layer=True with lang_encoder='internal' requires config.model.inner_params_lang")
+        if self.dual_layer and not inner_params_lang:
+            raise ValueError("dual_layer=True requires config.model.inner_params_lang")
         
         self._vision_act = None
         self._lang_act = None
-        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128)) if (self.dual_layer and self.lang_encoder == "internal") else None
-        self._sbert = None  # lazy loaded
+        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128)) if self.dual_layer else None
         
         def _setup_hook(param_name, attr_name):
             name = param_name.rsplit(".", 1)[0] if param_name.endswith((".weight", ".bias")) else param_name
@@ -101,12 +98,9 @@ class IKE_CHAIN(nn.Module):
             )
         
         self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act")
-        # Lang hook only needed for internal encoder
-        self._lang_hook = None
-        if self.dual_layer and self.lang_encoder == "internal":
-            self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act")
+        self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act") if self.dual_layer else None
 
-        # Codebook: list of {key_idx, value, edit_idx, is_patch}
+        # Codebook: list of {value, is_patch, edit_idx, key_text, upstream_indices}
         self.codebook = []
         
         # Embeddings and radii
@@ -142,28 +136,12 @@ class IKE_CHAIN(nn.Module):
         else:
             raise RuntimeError(f"Expected 2D or 3D activation, got {act.shape}")
 
-    def _get_sbert(self):
-        """Lazy load sentence-transformers model."""
-        if self._sbert is None:
-            from sentence_transformers import SentenceTransformer
-            self._sbert = SentenceTransformer("sentence-transformers/paraphrase-mpnet-base-v2")
-            self._sbert.to(self.device)
-        return self._sbert
-
-    def _encode_sbert(self, texts: List[str]) -> torch.Tensor:
-        """Get sentence embeddings from SBERT. Returns [B, 768]."""
-        sbert = self._get_sbert()
-        emb = sbert.encode(texts, convert_to_tensor=True)
-        return emb.to(self.device, torch.float32)
-
     @torch.no_grad()
     def _encode_vlm(self, images: List, texts: List[str]) -> torch.Tensor:
         """Get VLM embedding for <image, text> pairs.
         
-        If dual_layer=True:
-          - internal: concat(vision(<img,text>), lang(<blank,text>))
-          - sbert: concat(vision(<img,text>), sbert(text))
-        Returns: [B, hidden] or [B, hidden+lang_dim] tensor
+        If dual_layer=True: concat(vision(<img,text>), lang_scaler * lang(<blank,text>))
+        Returns: [B, hidden] or [B, hidden*2] tensor
         """
         self.model.eval()
         batch_size = len(images) if isinstance(images, list) else 1
@@ -178,16 +156,13 @@ class IKE_CHAIN(nn.Module):
         if not self.dual_layer:
             return vision_emb
         
-        # Pass 2: language embedding (internal VLM layer or SBERT)
-        if self.lang_encoder == "sbert":
-            lang_emb = self._encode_sbert(texts) * self.lang_scaler
-        else:
-            self._lang_act = None
-            blank_imgs = [self._blank_image] * batch_size
-            inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
-            self.model(**inputs)
-            lang_emb = self._pool_act(self._lang_act, batch_size) * self.lang_scaler
-            self._lang_act = None
+        # Pass 2: <blank_image, text> -> language embedding
+        self._lang_act = None
+        blank_imgs = [self._blank_image] * batch_size
+        inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
+        self.model(**inputs)
+        lang_emb = self._pool_act(self._lang_act, batch_size) * self.lang_scaler
+        self._lang_act = None
         
         return torch.cat([vision_emb, lang_emb], dim=-1)
 
@@ -198,7 +173,6 @@ class IKE_CHAIN(nn.Module):
             avg_nll, _, _ = self.wrapper.get_loss_y(image, prompt, label)
             return avg_nll
         
-        # Fallback: manual NLL computation
         inputs = self.wrapper.encode([image], [prompt], tokenize=False)
         label_ids = self.wrapper.tokenizer(
             label, return_tensors="pt", add_special_tokens=False
@@ -222,14 +196,13 @@ class IKE_CHAIN(nn.Module):
     @torch.no_grad()
     def _select_top_k_patches(self, image, s1: str) -> List[Image.Image]:
         """Select top-k patches by log-likelihood of s1."""
-        patches = self.patchifier.patchify_exclude_full(image)  # 35 patches
+        patches = self.patchifier.patchify_exclude_full(image)
         
         nlls = []
         for patch in patches:
             nll = self._get_nll(patch, self.patch_select_prompt, s1)
             nlls.append(nll)
         
-        # Clear cache after many forward passes
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
@@ -239,25 +212,18 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _estimate_radius(self, key_emb: torch.Tensor, img, text: str) -> float:
-        """Estimate radius.
-        
-        Methods:
-        - 'fixed': constant radius (fastest, no forward pass)
-        - 'single_aug': one aggressive augmentation × scale factor (1 forward pass)
-        - 'augment': 99th percentile of n augmented samples (n forward passes)
-        """
+        """Estimate radius for a key."""
         if self.radius_method == "fixed":
             return self.fixed_radius
         
         if self.radius_method == "single_aug":
-            # One augmentation (image + text), scaled up. Always use mosaic for aggressive aug.
             aug_img = self.augmenter.image(img, use_mosaic=True)
             aug_text = self.augmenter.question(text) if text else ""
             aug_emb = self._encode_vlm([aug_img], [aug_text])
             dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
             return dist * self.single_aug_scale
         
-        # Default: multiple augmentations, take percentile
+        # Default: multiple augmentations
         aug_dists = []
         for _ in range(self.n_radius_samples):
             aug_img = self.augmenter.image(img)
@@ -270,21 +236,17 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
-        """Add keys for one edit.
+        """Add keys for one edit with backward chain structure.
         
-        Creates:
-        - 4 keys from original image
-        - 4k keys from top-k patches
+        Creates keys with upstream indices pointing to prior reasoning steps.
         """
-        # Select top-k patches based on s1 likelihood
         s1 = rationale_sents[0] if rationale_sents else ""
         top_patches = self._select_top_k_patches(img, s1) if s1 else []
         
-        # Prepare all image sources: original + top-k patches
         image_sources = [img] + top_patches
-        
-        # Build 4 key-value pairs per image source
         answer_value = f"The answer to '{question}' is {answer}." if answer else ""
+        
+        n_sents = len(rationale_sents)
         
         new_entries = []
         new_imgs = []
@@ -292,27 +254,34 @@ class IKE_CHAIN(nn.Module):
         
         for src_idx, src_img in enumerate(image_sources):
             is_patch = (src_idx > 0)
+            base_idx = len(self.codebook) + len(new_entries)
             
-            # Key 1: <image, question> -> answer
-            new_entries.append({
-                "value": answer_value,
-                "is_patch": is_patch,
-                "edit_idx": self._edit_count,
-                "key_text": question
-            })
-            new_imgs.append(src_img)
-            new_texts.append(question)
+            # Track sentence key indices for this image source
+            sent_indices = []
             
-            # Keys 2-4: <image, si> -> si for each sentence
-            for sent in rationale_sents:
+            # Keys for each sentence: <img, si> with upstream to all prior sentences
+            for i, sent in enumerate(rationale_sents):
+                sent_indices.append(base_idx + i)
                 new_entries.append({
                     "value": sent,
                     "is_patch": is_patch,
                     "edit_idx": self._edit_count,
-                    "key_text": sent
+                    "key_text": sent,
+                    "upstream_indices": sent_indices[:-1].copy()  # all prior sentence indices
                 })
                 new_imgs.append(src_img)
                 new_texts.append(sent)
+            
+            # Key for question: <img, q> with upstream to all sentences
+            new_entries.append({
+                "value": answer_value,
+                "is_patch": is_patch,
+                "edit_idx": self._edit_count,
+                "key_text": question,
+                "upstream_indices": sent_indices.copy()  # all sentence indices
+            })
+            new_imgs.append(src_img)
+            new_texts.append(question)
         
         self._edit_count += 1
         
@@ -328,7 +297,7 @@ class IKE_CHAIN(nn.Module):
             new_radii.append(r)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         
-        # Move to CPU to save GPU memory (only used for retrieval)
+        # Move to CPU
         new_embs = new_embs.cpu()
         
         # Append to codebook
@@ -341,58 +310,126 @@ class IKE_CHAIN(nn.Module):
             self.key_embs = torch.cat([self.key_embs, new_embs], dim=0)
             self.key_radii = torch.cat([self.key_radii, new_radii])
         
-        # Clear CUDA cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
     @torch.no_grad()
     def _retrieve(self, image, question: str) -> List[str]:
-        """Retrieve values for a query <image, question>.
+        """Retrieve values using backward chain.
         
-        Patchifies query image using query_kernels (None=all 36, ["3x3"]=full only).
-        Returns unique sentences sorted by shortest distance to any matching key.
+        1. Patchify query image, find entry points within radius
+        2. For each entry (up to cap_k_enter), follow backward chain
+        3. Merge all values, keep min distance per unique value
+        4. Return top cap_k closest unique values
         """
         if self.key_embs is None or len(self.codebook) == 0:
             return []
         
-        # Patchify query image with specified kernels
+        # Patchify query image
         query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
+        n_query_patches = len(query_patches)
         
-        # Build query embeddings [n_queries, hidden]
-        q_embs = self._encode_vlm(query_patches, [question] * len(query_patches))
+        # Build query embeddings for original text
+        q_embs = self._encode_vlm(query_patches, [question] * n_query_patches)
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
-        
-        # Move to CPU for distance calc (key_embs on CPU to save GPU memory)
         q_embs = q_embs.cpu()
         
-        # Batch pairwise distances [n_queries, n_keys]
+        # Compute distances [n_queries, n_keys]
         if self.distance == "cosine":
             dist_matrix = 1 - (q_embs @ self.key_embs.t())
         else:
             dist_matrix = torch.cdist(q_embs.float(), self.key_embs.float(), p=2)
         
-        # Check which keys have ANY query within radius
-        in_radius = dist_matrix <= self.key_radii  # all on CPU
-        matched_mask = in_radius.any(dim=0)  # [n_keys]
+        # Find keys where ANY query patch is within radius
+        in_radius = dist_matrix <= self.key_radii
+        matched_mask = in_radius.any(dim=0)
         
         if not matched_mask.any():
             return []
         
-        # Get matched indices, sorted by min distance across queries
+        # Get entry points sorted by min distance
         matched_idx = torch.where(matched_mask)[0]
         min_dists = dist_matrix[:, matched_idx].min(dim=0).values
         sorted_order = min_dists.argsort()
-        matched_idx = matched_idx[sorted_order].cpu().tolist()
+        entry_indices = matched_idx[sorted_order][:self.cap_k_enter].cpu().tolist()
         
-        # Collect unique values up to cap_k keys
-        retrieved = set()
-        for idx in matched_idx[:self.cap_k]:
-            value = self.codebook[idx]["value"]
+        # Collect (value, min_dist) from all chains
+        value_to_dist: Dict[str, float] = {}
+        
+        for entry_idx in entry_indices:
+            # Follow backward chain from this entry
+            self._follow_chain_backward(
+                query_patches, image, entry_idx, dist_matrix, value_to_dist
+            )
+        
+        if not value_to_dist:
+            return []
+        
+        # Sort by distance, return top cap_k
+        sorted_values = sorted(value_to_dist.items(), key=lambda x: x[1])
+        return [v for v, d in sorted_values[:self.cap_k]]
+
+    @torch.no_grad()
+    def _follow_chain_backward(
+        self,
+        query_patches: List,
+        query_image,
+        entry_idx: int,
+        dist_matrix: torch.Tensor,
+        value_to_dist: Dict[str, float]
+    ):
+        """Follow backward chain from entry point, collecting values.
+        
+        For each upstream key, create text-swap query and check radius.
+        """
+        visited: Set[int] = set()
+        to_check = [entry_idx]
+        
+        while to_check:
+            idx = to_check.pop(0)
+            if idx in visited:
+                continue
+            visited.add(idx)
+            
+            entry = self.codebook[idx]
+            value = entry["value"]
+            
+            # Get min distance for this key from original query
+            min_dist = float(dist_matrix[:, idx].min())
+            
+            # Update value_to_dist with min distance
             if value:
-                retrieved.add(value)
-        
-        return list(retrieved)
+                if value not in value_to_dist or min_dist < value_to_dist[value]:
+                    value_to_dist[value] = min_dist
+            
+            # Check upstream keys with text-swap queries
+            upstream_indices = entry.get("upstream_indices", [])
+            for up_idx in upstream_indices:
+                if up_idx in visited:
+                    continue
+                
+                up_entry = self.codebook[up_idx]
+                up_text = up_entry["key_text"]
+                
+                # Create text-swap query: <query_patches, upstream_key_text>
+                up_q_embs = self._encode_vlm(query_patches, [up_text] * len(query_patches))
+                if self.distance == "cosine":
+                    up_q_embs = F.normalize(up_q_embs, dim=-1)
+                up_q_embs = up_q_embs.cpu()
+                
+                # Compute distance to upstream key
+                if self.distance == "cosine":
+                    up_dists = 1 - (up_q_embs @ self.key_embs[up_idx:up_idx+1].t()).squeeze(-1)
+                else:
+                    up_dists = torch.norm(up_q_embs - self.key_embs[up_idx], dim=-1)
+                
+                up_min_dist = float(up_dists.min())
+                up_radius = float(self.key_radii[up_idx])
+                
+                # If within radius, add to check list
+                if up_min_dist <= up_radius:
+                    to_check.append(up_idx)
 
     def apply_to_dataset(self, dataset):
         """Apply retrieved facts to dataset prompts."""
@@ -409,16 +446,16 @@ class IKE_CHAIN(nn.Module):
             facts = self._retrieve(img, q) if q else []
             
             if facts:
-                ex["prompt_orig"] = prompt_orig  # Save original
+                ex["prompt_orig"] = prompt_orig
                 ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt_orig}"
                 applied += 1
             else:
-                ex["prompt"] = prompt_orig  # Reset to original if no facts
+                ex["prompt"] = prompt_orig
             
             log.append({"uid": ex.get("uid"), "n_facts": len(facts), "facts": facts})
         
         self.last_retrieval_log = log
-        print(f"[IKE_PATCH] applied facts to {applied}/{len(data)} examples", flush=True)
+        print(f"[IKE_CHAIN_BWD] applied facts to {applied}/{len(data)} examples", flush=True)
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook."""
@@ -428,7 +465,6 @@ class IKE_CHAIN(nn.Module):
         n_before = len(self.codebook)
         added = 0
         
-        # Filter valid examples first
         valid_exs = []
         for ex in getattr(edit_ds, "data", []):
             uid = ex.get("uid") or (ex.get("image"), ex.get("question"))
@@ -443,7 +479,7 @@ class IKE_CHAIN(nn.Module):
         
         total = len(valid_exs)
         for i, (ex, sents, uid) in enumerate(valid_exs):
-            print(f"\r[IKE_PATCH] edit {i+1}/{total}...", end="", flush=True)
+            print(f"\r[IKE_CHAIN_BWD] edit {i+1}/{total}...", end="", flush=True)
             self._add_edit(ex.get("image"), ex.get("question", ""), 
                           ex.get("answer") or ex.get("target") or "", sents)
             self._added_uids.add(uid)
@@ -457,7 +493,7 @@ class IKE_CHAIN(nn.Module):
             r_info = f"single_aug(×{self.single_aug_scale})"
         else:
             r_info = f"augment(n={self.n_radius_samples})"
-        print(f"[IKE_PATCH] +{added} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
+        print(f"\n[IKE_CHAIN_BWD] +{added} edits (patches={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
         self.apply_to_dataset(edit_ds)
         return self.model
@@ -470,7 +506,7 @@ class IKE_CHAIN(nn.Module):
             "key_radii": self.key_radii,
             "top_k_patches": self.top_k_patches,
         }, path)
-        print(f"[IKE_PATCH] saved {len(self.codebook)} keys to {path}", flush=True)
+        print(f"[IKE_CHAIN_BWD] saved {len(self.codebook)} keys to {path}", flush=True)
     
     def load_index(self, path):
         """Load codebook, embeddings, and radii from disk."""
@@ -478,7 +514,7 @@ class IKE_CHAIN(nn.Module):
         self.codebook = data["codebook"]
         self.key_embs = data["key_embs"].to(self.device)
         self.key_radii = data["key_radii"].to(self.device)
-        print(f"[IKE_PATCH] loaded {len(self.codebook)} keys from {path}", flush=True)
+        print(f"[IKE_CHAIN_BWD] loaded {len(self.codebook)} keys from {path}", flush=True)
 
     def get_stats(self) -> Dict:
         """Return statistics about stored keys."""
@@ -491,6 +527,8 @@ class IKE_CHAIN(nn.Module):
             "num_patch_keys": n_patch_keys,
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
+            "cap_k_enter": self.cap_k_enter,
+            "cap_k": self.cap_k,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
         if self.key_radii is not None:
@@ -498,6 +536,123 @@ class IKE_CHAIN(nn.Module):
             stats["min_radius"] = float(self.key_radii.min())
             stats["max_radius"] = float(self.key_radii.max())
         return stats
+
+    @torch.no_grad()
+    def visualize_chain(self, image, question: str, figsize=(12, 6)):
+        """Visualize the backward chain retrieval process."""
+        import matplotlib.pyplot as plt
+        
+        if self.key_embs is None or len(self.codebook) == 0:
+            print("[IKE_CHAIN_BWD] No keys to visualize")
+            return
+        
+        # Get query embeddings
+        query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
+        q_embs = self._encode_vlm(query_patches, [question] * len(query_patches))
+        if self.distance == "cosine":
+            q_embs = F.normalize(q_embs, dim=-1)
+        q_embs = q_embs.cpu()
+        
+        # Compute distances
+        if self.distance == "cosine":
+            dist_matrix = 1 - (q_embs @ self.key_embs.t())
+        else:
+            dist_matrix = torch.cdist(q_embs.float(), self.key_embs.float(), p=2)
+        
+        # Find entry points
+        in_radius = dist_matrix <= self.key_radii
+        matched_mask = in_radius.any(dim=0)
+        
+        if not matched_mask.any():
+            print("[IKE_CHAIN_BWD] No entry points found")
+            return
+        
+        matched_idx = torch.where(matched_mask)[0]
+        min_dists = dist_matrix[:, matched_idx].min(dim=0).values
+        sorted_order = min_dists.argsort()
+        entry_indices = matched_idx[sorted_order][:self.cap_k_enter].cpu().tolist()
+        
+        # Visualize
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+        
+        # Left: query image
+        axes[0].imshow(image)
+        axes[0].set_title(f"Query: {question[:50]}...", fontsize=9)
+        axes[0].axis('off')
+        
+        # Right: chain structure
+        ax = axes[1]
+        
+        # Collect chain info
+        chain_info = []
+        for entry_idx in entry_indices:
+            chain = []
+            visited = set()
+            to_check = [entry_idx]
+            
+            while to_check:
+                idx = to_check.pop(0)
+                if idx in visited:
+                    continue
+                visited.add(idx)
+                
+                entry = self.codebook[idx]
+                chain.append({
+                    "idx": idx,
+                    "text": entry["key_text"][:30] + "...",
+                    "value": entry["value"][:30] + "..." if entry["value"] else "",
+                    "dist": float(dist_matrix[:, idx].min()),
+                    "radius": float(self.key_radii[idx])
+                })
+                
+                # Check upstream
+                for up_idx in entry.get("upstream_indices", []):
+                    if up_idx not in visited:
+                        up_entry = self.codebook[up_idx]
+                        up_text = up_entry["key_text"]
+                        up_q_embs = self._encode_vlm(query_patches, [up_text] * len(query_patches))
+                        if self.distance == "cosine":
+                            up_q_embs = F.normalize(up_q_embs, dim=-1)
+                        up_q_embs = up_q_embs.cpu()
+                        
+                        if self.distance == "cosine":
+                            up_dist = float((1 - (up_q_embs @ self.key_embs[up_idx:up_idx+1].t())).min())
+                        else:
+                            up_dist = float(torch.norm(up_q_embs - self.key_embs[up_idx], dim=-1).min())
+                        
+                        if up_dist <= float(self.key_radii[up_idx]):
+                            to_check.append(up_idx)
+            
+            chain_info.append(chain)
+        
+        # Plot chains
+        y_offset = 0
+        colors = plt.cm.tab10(np.linspace(0, 1, len(chain_info)))
+        
+        for chain_idx, (chain, color) in enumerate(zip(chain_info, colors)):
+            for i, node in enumerate(chain):
+                x = i * 2
+                y = y_offset
+                
+                in_rad = "✓" if node["dist"] <= node["radius"] else "✗"
+                label = f"{node['text']}\nd={node['dist']:.1f} r={node['radius']:.1f} {in_rad}"
+                
+                ax.scatter(x, y, s=200, c=[color], zorder=10)
+                ax.annotate(label, (x, y - 0.3), ha='center', fontsize=6)
+                
+                if i > 0:
+                    ax.annotate('', xy=(x - 0.3, y), xytext=(x - 1.7, y),
+                               arrowprops=dict(arrowstyle='->', color=color, lw=1.5))
+            
+            y_offset -= 2
+        
+        ax.set_xlim(-1, max(len(c) for c in chain_info) * 2)
+        ax.set_ylim(y_offset - 1, 1)
+        ax.set_title(f"Backward Chains ({len(entry_indices)} entry points)", fontsize=10)
+        ax.axis('off')
+        
+        plt.tight_layout()
+        plt.show()
 
     @torch.no_grad()
     def visualize_patches(self, image, s1: str = None, figsize=(16, 10), score_type="softmax"):
@@ -586,7 +741,7 @@ class IKE_CHAIN(nn.Module):
         import networkx as nx
         
         if self.key_embs is None or len(self.codebook) == 0:
-            print("[IKE_PATCH] No keys to plot")
+            print("[IKE_CHAIN_BWD] No keys to plot")
             return
         
         # Sample edits if too many

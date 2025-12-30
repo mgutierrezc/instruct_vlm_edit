@@ -23,22 +23,24 @@ class AutoScaler(ModularityCore):
         AutoScaler(..., edge_filter="percentile", edge_filter_kwargs={"percentile": 0.25})
         AutoScaler(..., edge_filter="knn", edge_filter_kwargs={"k": 10, "mutual": True})
         AutoScaler(..., edge_filter="disparity", edge_filter_kwargs={"alpha": 0.05})
+    
+    Language encoder options:
+        lang_encoder="internal" - use VLM's internal language layer (default)
+        lang_encoder="sbert"    - use sentence-transformers/paraphrase-mpnet-base-v2
     """
 
-    def __init__(self, config, model, inner_params_vision, inner_params_lang, n_samples=10,
-                 edge_filter="none", edge_filter_kwargs=None):
+    def __init__(self, config, model, inner_params_vision, inner_params_lang=None, n_samples=10,
+                 edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert"):
         """
         Args:
             config: Config object with device
             model: VLM wrapper (has .model and .encode)
             inner_params_vision: List of vision layer param names (use first)
-            inner_params_lang: List of language layer param names (use first)
+            inner_params_lang: List of language layer param names (use first). Optional if lang_encoder="sbert"
             n_samples: Number of samples to use
             edge_filter: Filter method - "none", "percentile", "knn", or "disparity"
-            edge_filter_kwargs: Dict of kwargs for the filter method. Defaults:
-                - percentile: {"percentile": 0.25}
-                - knn: {"k": 10, "mutual": True}
-                - disparity: {"alpha": 0.05, "pre_topk": 50}
+            edge_filter_kwargs: Dict of kwargs for the filter method
+            lang_encoder: "internal" (VLM layer) or "sbert" (sentence-transformers)
         """
         super().__init__(getattr(config, "device", torch.device("cpu")))
         
@@ -48,6 +50,7 @@ class AutoScaler(ModularityCore):
         self.n_samples = n_samples
         self.edge_filter = edge_filter
         self.edge_filter_kwargs = edge_filter_kwargs or {}
+        self.lang_encoder = lang_encoder
         
         # Activations storage
         self._vision_act = None
@@ -55,11 +58,23 @@ class AutoScaler(ModularityCore):
         self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))
         
         # Setup hooks
-        if not inner_params_vision or not inner_params_lang:
-            raise ValueError("Requires both inner_params_vision and inner_params_lang")
+        if not inner_params_vision:
+            raise ValueError("Requires inner_params_vision")
         
         self._vision_hook = self._setup_hook(inner_params_vision[0], "_vision_act")
-        self._lang_hook = self._setup_hook(inner_params_lang[0], "_lang_act")
+        
+        # Language hook only needed for internal encoder
+        self._lang_hook = None
+        self._sbert = None
+        if lang_encoder == "internal":
+            if not inner_params_lang:
+                raise ValueError("inner_params_lang required when lang_encoder='internal'")
+            self._lang_hook = self._setup_hook(inner_params_lang[0], "_lang_act")
+        elif lang_encoder == "sbert":
+            # Lazy load sentence-transformers
+            pass
+        else:
+            raise ValueError(f"Unknown lang_encoder: {lang_encoder}")
         
         # Cache
         self._images = None
@@ -88,6 +103,19 @@ class AutoScaler(ModularityCore):
         else:
             raise RuntimeError(f"Unexpected activation shape: {act.shape}")
 
+    def _get_sbert(self):
+        """Lazy load sentence-transformers model."""
+        if self._sbert is None:
+            from sentence_transformers import SentenceTransformer
+            self._sbert = SentenceTransformer("sentence-transformers/paraphrase-mpnet-base-v2", device=self.device)
+        return self._sbert
+
+    def _encode_sbert(self, text):
+        """Get sentence embedding from SBERT."""
+        sbert = self._get_sbert()
+        emb = sbert.encode([text], convert_to_tensor=True, device=self.device)
+        return emb.to(torch.float32)
+
     def _get_edge_filter_tuple(self):
         """Convert edge_filter config to tuple format for compute_Q."""
         if self.edge_filter == "none" or not self.edge_filter:
@@ -107,24 +135,33 @@ class AutoScaler(ModularityCore):
 
     @torch.no_grad()
     def _encode_dual(self, image, text, lang_scaler):
-        """Get dual-layer embedding: concat(vis(<img,text>), scaler*lang(<blank,text>))."""
+        """Get dual-layer embedding: concat(vis(<img,text>), scaler*lang(text))."""
         self.model.eval()
         
+        # Vision embedding from VLM
         self._vision_act = None
         self.model(**self.wrapper.encode([image], [text], tokenize=False))
         vis_emb = self._pool_act(self._vision_act)
         self._vision_act = None
         
-        self._lang_act = None
-        self.model(**self.wrapper.encode([self._blank_image], [text], tokenize=False))
-        lang_emb = self._pool_act(self._lang_act) * lang_scaler
-        self._lang_act = None
+        # Language embedding: internal (VLM layer) or sbert
+        if self.lang_encoder == "sbert":
+            lang_emb = self._encode_sbert(text) * lang_scaler
+        else:
+            self._lang_act = None
+            self.model(**self.wrapper.encode([self._blank_image], [text], tokenize=False))
+            lang_emb = self._pool_act(self._lang_act) * lang_scaler
+            self._lang_act = None
         
         return torch.cat([vis_emb, lang_emb], dim=-1).cpu()
 
     @torch.no_grad()
     def _encode_single(self, image, text, layer="vision"):
         """Get single-layer embedding."""
+        # For sbert lang encoder, use sbert directly for lang baseline
+        if layer == "lang" and self.lang_encoder == "sbert":
+            return self._encode_sbert(text).cpu()
+        
         self.model.eval()
         self._vision_act = None
         self._lang_act = None
@@ -183,6 +220,7 @@ class AutoScaler(ModularityCore):
         
         if verbose:
             print(f"[AutoScaler] {n} samples → {n*n} pairs, scalers={lang_scalers}")
+            print(f"  Lang encoder: {self.lang_encoder}")
             if self.edge_filter != "none":
                 print(f"  Edge filter: {self.edge_filter} {self.edge_filter_kwargs}")
         
@@ -239,7 +277,11 @@ class AutoScaler(ModularityCore):
     def _get_model_tag(self):
         """Get model tag for saving."""
         model_name = getattr(getattr(self.config, "model", None), "name", "unknown")
-        return (model_name.split("/")[-1] or "model").replace(" ", "_")
+        tag = (model_name.split("/")[-1] or "model").replace(" ", "_")
+        lang_enc = getattr(self, "lang_encoder", "internal")
+        if lang_enc != "internal":
+            tag += f"_{lang_enc}"
+        return tag
 
     def save_results(self, results, run_id=None, out_dir=None):
         """Save results to JSON."""
@@ -468,11 +510,12 @@ class AutoScaler(ModularityCore):
             self.plot_network(sim, language_target, n, title=f"Dual (scaler={scaler}) - Language Clustering")
 
     def cleanup(self):
-        """Remove hooks."""
+        """Remove hooks and free resources."""
         if hasattr(self, '_vision_hook') and self._vision_hook:
             self._vision_hook.remove()
         if hasattr(self, '_lang_hook') and self._lang_hook:
             self._lang_hook.remove()
         self._images = None
         self._texts = None
+        self._sbert = None
 

@@ -402,29 +402,32 @@ class AutoLayer(ModularityCore):
             valid = {l: scores[l] for l in subset if l in scores}
             return max(valid, key=lambda l: valid[l][key]) if valid else None
         
+        def build_best_dict(key):
+            """Build best dict for a metric: overall + per layer type."""
+            return {
+                "overall": find_best_in(scores.keys(), key),
+                "vision_layer": find_best_in(vis_layers, key),
+                "merger_layer": find_best_in(merger_layers, key),
+                "language_layer": find_best_in(lang_layers, key),
+            }
+        
         best = {
-            "best_vision_layer": find_best_in(vis_layers, "vision_Q"),
-            "best_language_layer": find_best_in(lang_layers, "language_Q"),
-            "best_merger": find_best_in(merger_layers, "harmonic_shifted"),
-            "best_overall_vision": find_best_in(scores.keys(), "vision_Q"),
-            "best_overall_language": find_best_in(scores.keys(), "language_Q"),
-            "best_overall_harmonic": find_best_in(scores.keys(), "harmonic_shifted"),
-            "best_pure_vision": find_best_in(scores.keys(), "pure_vision_Q"),
-            "best_pure_language": find_best_in(scores.keys(), "pure_language_Q"),
+            "vision_Q": build_best_dict("vision_Q"),
+            "language_Q": build_best_dict("language_Q"),
+            "harmonic": build_best_dict("harmonic_shifted"),
+            "pure_vision_Q": build_best_dict("pure_vision_Q"),
+            "pure_language_Q": build_best_dict("pure_language_Q"),
         }
         
         if verbose:
             print(f"\n{'='*70}")
-            print("Best layers:")
-            for k, v in best.items():
-                if v:
-                    s = scores[v]
-                    metric = k.replace("best_", "").replace("_layer", "")
-                    key = f"{metric}_Q" if metric in ["vision", "language"] else metric
-                    if "pure" in k:
-                        key = k.replace("best_", "") + "_Q"
-                    val = s.get(key, s.get("harmonic", 0))
-                    print(f"  {k}: ...{v[-55:]} ({key}={val:.3f})")
+            print("Best layers per metric:")
+            for metric_name, bests in best.items():
+                print(f"  {metric_name}:")
+                for group, layer in bests.items():
+                    if layer:
+                        val = scores[layer].get(metric_name, scores[layer].get("harmonic_shifted", 0))
+                        print(f"    {group:15} → {layer} ({val:.3f})")
             print(f"{'='*70}")
         
         return best, scores
@@ -476,7 +479,7 @@ class AutoLayer(ModularityCore):
         
         if not os.path.exists(in_path):
             print(f"[AutoLayer] No saved results at {in_path}")
-            return None, None
+            return None
         
         with open(in_path, "r") as f:
             data = json.load(f)
@@ -528,23 +531,36 @@ class AutoLayer(ModularityCore):
             valid = {l: agg_scores[l] for l in subset if l in agg_scores}
             return max(valid, key=lambda l: valid[l][key]["mean"]) if valid else None
         
+        def build_best_dict(key):
+            """Build best dict for a metric: overall + per layer type."""
+            return {
+                "overall": find_best_in(layers, key),
+                "vision_layer": find_best_in(vis_layers, key),
+                "merger_layer": find_best_in(merger_layers, key),
+                "language_layer": find_best_in(lang_layers, key),
+            }
+        
+        # Use shifted versions if available
+        sample_layer = layers[0]
+        harmonic_key = "harmonic_shifted" if "harmonic_shifted" in agg_scores[sample_layer] else "harmonic"
+        
         best = {
-            "best_vision_layer": find_best_in(vis_layers, "vision_Q"),
-            "best_language_layer": find_best_in(lang_layers, "language_Q"),
-            "best_merger": find_best_in(merger_layers, metric),
-            "best_overall_vision": find_best_in(layers, "vision_Q"),
-            "best_overall_language": find_best_in(layers, "language_Q"),
-            "best_overall_harmonic": find_best_in(layers, "harmonic"),
-            "best_pure_vision": find_best_in(layers, "pure_vision_Q"),
-            "best_pure_language": find_best_in(layers, "pure_language_Q"),
+            "vision_Q": build_best_dict("vision_Q"),
+            "language_Q": build_best_dict("language_Q"),
+            "harmonic": build_best_dict(harmonic_key),
+            "pure_vision_Q": build_best_dict("pure_vision_Q"),
+            "pure_language_Q": build_best_dict("pure_language_Q"),
         }
         
-        print(f"Best layers (from mean {metric}):")
-        for k, v in best.items():
-            if v:
-                score = agg_scores[v][metric]["mean"]
-                std = agg_scores[v][metric]["std"]
-                print(f"  {k}: ...{v[-50:]} ({metric}={score:.3f}±{std:.3f})")
+        print(f"Best layers (from mean):")
+        for metric_name, bests in best.items():
+            print(f"  {metric_name}:")
+            for group, layer in bests.items():
+                if layer:
+                    key = harmonic_key if metric_name == "harmonic" else metric_name
+                    score = agg_scores[layer][key]["mean"]
+                    std = agg_scores[layer][key]["std"]
+                    print(f"    {group:15} → {layer} ({score:.3f}±{std:.3f})")
         
         return best
 

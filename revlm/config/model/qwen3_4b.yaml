@@ -5,6 +5,7 @@ inner_params: ["model.language_model.layers.35.mlp.gate_proj.weight"] # langauge
 inner_params_vision: ["model.visual.blocks.21.mlp.linear_fc1.weight"] # vision layer
 inner_params_lang: ["model.language_model.layers.35.mlp.gate_proj.weight"] # langauge layer
 lang_scaler: 35  # for dual-layer embedding: concat(vis_layer, scaler * lang_layer)
+lang_scaler_sbert: 10
 processor_class: null
 tokenizer_class: null
 temperature: 0.0

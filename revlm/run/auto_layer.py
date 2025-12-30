@@ -24,7 +24,7 @@ from revlm.config_utils import configure_args
 from revlm.editors import AutoLayer
 
 
-def run_auto_layer(config, n_runs=10, n_samples=10, n_aug=5, overwrite=False):
+def run_auto_layer(config, n_runs=10, n_samples=100, n_aug=10, overwrite=False):
     """Run AutoLayer analysis k times for error bars.
     
     Args:
@@ -87,8 +87,8 @@ if __name__ == "__main__":
     
     # AutoLayer params
     parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
-    parser.add_argument("--n_samples", type=int, default=10, help="Samples per run for Q computation")
-    parser.add_argument("--n_aug", type=int, default=5, help="Augmentations per sample for pure Q")
+    parser.add_argument("--n_samples", type=int, default=100, help="Samples per run for Q computation")
+    parser.add_argument("--n_aug", type=int, default=10, help="Augmentations per sample for pure Q")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
 
     args = parser.parse_args()
