@@ -46,18 +46,18 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 2))  # patches to select per edit
-        self.cap_k = int(getattr(cfg, "cap_k", 10))  # max entries to retrieve
+        self.cap_k = int(getattr(cfg, "cap_k", 10))  # k closest keys to retrieve among all matching keys
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
         self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
         self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))  # model-specific, set via config/model/*.yaml
         
         # Radius estimation config
-        self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
+        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "single_aug", or "augment"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
         self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))  # scale factor for single_aug
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 5))
-        self.radius_percentile = float(getattr(cfg, "radius_percentile", 99))
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 4))
+        self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
         self.query_kernels = getattr(cfg, "query_kernels", ["2x2", "3x3"])
