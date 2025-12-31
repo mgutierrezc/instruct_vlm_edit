@@ -136,7 +136,7 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
 
 
 
-def pad_with_mosaic(img, area_pct: float = 0.25, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, area_pct: float = 0.2, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
@@ -432,8 +432,8 @@ class Augmenter:
         
         # Prompt and temperature based on mode
         if mode == "question":
-            instruction = "Ask a short question that can be answered by this sentence. Only output the question, nothing else."
-            temp = 0.5  # Lower temp for question mode to reduce hallucination
+            instruction = "Ask a general question that can be answered by this sentence. Only output the question, nothing else."
+            temp = 0.1  # Lower temp for question mode to reduce hallucination
             max_new_tokens = 32
         else:  # rephrase
             instruction = "Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else."
