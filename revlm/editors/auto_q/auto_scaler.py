@@ -288,10 +288,13 @@ class AutoScaler(ModularityCore):
         """
         if lang_scalers is None:
             import numpy as np
-            # Log-spaced from 0.1 to 100 (3 decades, step=0.1 in log10 = 10 pts/decade)
-            raw = np.logspace(-1, 2, 31)
-            # Round <1 to 2 decimals, >=1 to integers
-            rounded = np.where(raw < 1, np.round(raw, 2), np.round(raw, 0))
+            # Log-spaced from 0.1 to 100, finer grid (41 points)
+            raw = np.logspace(-1, 2, 41)
+            # Round: <1 → 2 decimals, 1-10 → 1 decimal, >=10 → integers
+            rounded = np.where(
+                raw < 1, np.round(raw, 2),
+                np.where(raw < 10, np.round(raw, 1), np.round(raw, 0))
+            )
             lang_scalers = np.unique(rounded).tolist()
         
         # Sample data
