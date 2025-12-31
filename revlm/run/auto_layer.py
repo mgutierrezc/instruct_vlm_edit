@@ -24,14 +24,13 @@ from revlm.config_utils import configure_args
 from revlm.editors import AutoLayer
 
 
-def run_auto_layer(config, n_runs=10, n_samples=100, n_aug=10, overwrite=False):
+def run_auto_layer(config, n_runs=10, n_samples=10, overwrite=False):
     """Run AutoLayer analysis k times for error bars.
     
     Args:
         config: Config object
         n_runs: Number of bootstrap runs
-        n_samples: Samples per run for Q computation
-        n_aug: Augmentations per sample for pure Q scores
+        n_samples: Samples per run for Q computation (n_aug defaults to n_samples-1)
         overwrite: If False, skip runs that already have saved results
     """
     
@@ -40,8 +39,8 @@ def run_auto_layer(config, n_runs=10, n_samples=100, n_aug=10, overwrite=False):
     dataset = VQADataset(config)
     print(f"Model: {config.model.name}, Dataset: {len(dataset)} samples", flush=True)
     
-    # Initialize AutoLayer
-    auto = AutoLayer(config, model, n_samples=n_samples, n_aug=n_aug)
+    # Initialize AutoLayer (n_aug defaults to n_samples-1 for consistent community size)
+    auto = AutoLayer(config, model, n_samples=n_samples)
     layers = auto.get_candidate_layers()
     
     # Run k times
@@ -87,8 +86,7 @@ if __name__ == "__main__":
     
     # AutoLayer params
     parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
-    parser.add_argument("--n_samples", type=int, default=100, help="Samples per run for Q computation")
-    parser.add_argument("--n_aug", type=int, default=10, help="Augmentations per sample for pure Q")
+    parser.add_argument("--n_samples", type=int, default=10, help="Samples per run (n_aug = n_samples-1)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
 
     args = parser.parse_args()
@@ -99,4 +97,4 @@ if __name__ == "__main__":
     
     config = configure_args(args, config_path=args.config)
 
-    run_auto_layer(config, n_runs=args.n_runs, n_samples=args.n_samples, n_aug=args.n_aug, overwrite=args.overwrite)
+    run_auto_layer(config, n_runs=args.n_runs, n_samples=args.n_samples, overwrite=args.overwrite)

@@ -45,14 +45,15 @@ class AutoLayer(ModularityCore):
         AutoLayer(..., edge_filter="disparity", edge_filter_kwargs={"alpha": 0.05})
     """
 
-    def __init__(self, config, model, n_samples=100, n_aug=10, blank_image_size="match",
+    def __init__(self, config, model, n_samples=100, n_aug=None, blank_image_size="match",
                  edge_filter="none", edge_filter_kwargs=None):
         """
         Args:
             config: Config object with device
             model: VLM wrapper
             n_samples: Number of samples for Q computation
-            n_aug: Augmentations per sample for pure scores
+            n_aug: Augmentations per sample for pure scores.
+                   Default: n_samples-1 (matches community size with entangled n×n pairs)
             blank_image_size: Size for blank images in pure language Q.
                 - "match": Match original image size (like old implementation)
                 - tuple (W, H): Fixed size, e.g. (224, 224)
@@ -68,7 +69,7 @@ class AutoLayer(ModularityCore):
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.n_samples = n_samples
-        self.n_aug = n_aug  # Augmentations per sample for pure scores
+        self.n_aug = n_aug if n_aug is not None else (n_samples - 1)
         self.blank_image_size = blank_image_size  # "match" or (W, H) tuple
         self.edge_filter = edge_filter
         self.edge_filter_kwargs = edge_filter_kwargs or {}
@@ -157,7 +158,7 @@ class AutoLayer(ModularityCore):
     def _get_augmenter(self):
         """Lazy init augmenter."""
         if self._augmenter is None:
-            self._augmenter = Augmenter(self.wrapper)
+            self._augmenter = Augmenter(self.wrapper, mosaic_prob=0.0)
         return self._augmenter
 
     def _get_sbert(self):
@@ -201,6 +202,38 @@ class AutoLayer(ModularityCore):
         N = n_samples * group_size
         labels = torch.arange(N) // group_size
         return (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
+
+    @staticmethod
+    def build_bimodal_target(img_labels, text_labels, mode="and_or"):
+        """Build target matrix for bi-modality Q.
+        
+        Args:
+            img_labels: List of image labels for each embedding
+            text_labels: List of text labels for each embedding  
+            mode: "and" (strict), "or" (loose), or "and_or" (weighted)
+        
+        Returns:
+            Target matrix [N, N] where:
+            - "and": 1 if same_img AND same_text, else 0
+            - "or": 1 if same_img OR same_text, else 0
+            - "and_or": 2 if same_img AND same_text, 1 if XOR, else 0
+        """
+        img_labels = torch.tensor(img_labels)
+        text_labels = torch.tensor(text_labels)
+        
+        same_img = (img_labels.unsqueeze(0) == img_labels.unsqueeze(1))
+        same_text = (text_labels.unsqueeze(0) == text_labels.unsqueeze(1))
+        
+        if mode == "and":
+            target = (same_img & same_text).float() * 2  # Weight 2 for strict AND
+        elif mode == "or":
+            target = (same_img | same_text).float()
+        elif mode == "and_or":
+            target = same_img.float() + same_text.float()  # 2 if both, 1 if one, 0 if none
+        else:
+            raise ValueError(f"Unknown bimodal_mode: {mode}")
+        
+        return target
 
     @torch.no_grad()
     def _encode_pure_vision(self, layers, n_aug, pbar=None):
@@ -277,20 +310,34 @@ class AutoLayer(ModularityCore):
 
     @torch.no_grad()
     def _encode_bimodal(self, layers, n_aug, pbar=None):
-        """Encode <image, text> with both image AND text augmentations for bi_modality Q."""
-        all_embs = {l: [] for l in layers}
-        augmenter = self._get_augmenter()
+        """Encode full bi-modal set: anchors + augmentations + cross-combinations.
         
-        for idx, (img, text) in enumerate(zip(self._images, self._texts)):
-            # Anchor: <image, text>
+        Returns:
+            all_embs: Dict[layer, List[embeddings]]
+            img_labels: List of image labels for each embedding
+            text_labels: List of text labels for each embedding
+        """
+        all_embs = {l: [] for l in layers}
+        img_labels = []
+        text_labels = []
+        augmenter = self._get_augmenter()
+        n = len(self._images)
+        
+        # 1. Anchors + augmentations (same image, same text)
+        for i in range(n):
+            img, text = self._images[i], self._texts[i]
+            
+            # Anchor
             embs = self._encode_all(img, text)
             for layer in layers:
                 if layer in embs:
                     all_embs[layer].append(embs[layer])
+            img_labels.append(i)
+            text_labels.append(i)
             if pbar:
                 pbar.update(1)
             
-            # Augmentations: augment BOTH image and text together
+            # Augmentations
             for _ in range(n_aug):
                 aug_img = augmenter.image(img)
                 aug_text = augmenter.question(text) if text else ""
@@ -298,10 +345,38 @@ class AutoLayer(ModularityCore):
                 for layer in layers:
                     if layer in embs:
                         all_embs[layer].append(embs[layer])
+                img_labels.append(i)  # Same image label
+                text_labels.append(i)  # Same text label
                 if pbar:
                     pbar.update(1)
         
-        return all_embs
+        # 2. Cross-combinations: <img_i, text_j> for i != j (anchor + augmented images)
+        for i in range(n):
+            for j in range(n):
+                if i != j:
+                    # Anchor cross-combination
+                    embs = self._encode_all(self._images[i], self._texts[j])
+                    for layer in layers:
+                        if layer in embs:
+                            all_embs[layer].append(embs[layer])
+                    img_labels.append(i)
+                    text_labels.append(j)
+                    if pbar:
+                        pbar.update(1)
+                    
+                    # Augmented image cross-combinations: <aug_img_i, text_j>
+                    for _ in range(n_aug):
+                        aug_img = augmenter.image(self._images[i])
+                        embs = self._encode_all(aug_img, self._texts[j])
+                        for layer in layers:
+                            if layer in embs:
+                                all_embs[layer].append(embs[layer])
+                        img_labels.append(i)  # Same image label (augmented)
+                        text_labels.append(j)  # Different text label
+                        if pbar:
+                            pbar.update(1)
+        
+        return all_embs, img_labels, text_labels
 
     @torch.no_grad()
     def find_best(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
@@ -338,14 +413,15 @@ class AutoLayer(ModularityCore):
         # Forward count
         n_entangled = n * n
         n_pure_per = n * (1 + n_aug)
-        n_forwards = n_entangled + 3 * n_pure_per  # +1 for bimodal
+        n_bimodal = n * (1 + n_aug) + n * (n - 1)  # anchors+augs + cross-combos
+        n_forwards = n_entangled + 2 * n_pure_per + n_bimodal
         
         if verbose:
             print(f"[AutoLayer] {n} samples, {len(layers)} layers")
             print(f"            Entangled: {n}×{n} = {n_entangled} pairs")
             print(f"            Pure Vision: {n} × (1 + {n_aug}) = {n_pure_per}")
             print(f"            Pure Language: {n} × (1 + {n_aug}) = {n_pure_per}")
-            print(f"            Bi-modality: {n} × (1 + {n_aug}) = {n_pure_per}")
+            print(f"            Bi-modality: {n}×(1+{n_aug}) + {n}×{n-1} = {n_bimodal}")
             print(f"            Total: {n_forwards} forwards")
         
         # Hook all layers
@@ -370,8 +446,8 @@ class AutoLayer(ModularityCore):
         # 3. Encode pure language: <blank, text> + text augs
         pure_language_embs = self._encode_pure_language(layers, n_aug, pbar)
         
-        # 4. Encode bimodal: <image, text> + both augs
-        bimodal_embs = self._encode_bimodal(layers, n_aug, pbar)
+        # 4. Encode bimodal: anchors + augs + cross-combinations
+        bimodal_embs, bimodal_img_labels, bimodal_text_labels = self._encode_bimodal(layers, n_aug, pbar)
         
         if pbar:
             pbar.close()
@@ -382,6 +458,11 @@ class AutoLayer(ModularityCore):
         scores = {}
         vis_layers, merger_layers, lang_layers = self._classify_layers(layers)
         aug_target = self.build_aug_target(n, n_aug).to(self.device)
+        
+        # Build bi-modal targets for all 3 modes
+        bimodal_target_and = self.build_bimodal_target(bimodal_img_labels, bimodal_text_labels, "and").to(self.device)
+        bimodal_target_or = self.build_bimodal_target(bimodal_img_labels, bimodal_text_labels, "or").to(self.device)
+        bimodal_target_and_or = self.build_bimodal_target(bimodal_img_labels, bimodal_text_labels, "and_or").to(self.device)
         
         # 5. Compute SBERT baseline for language Q (after aug_target is built)
         augmenter = self._get_augmenter()
@@ -397,13 +478,14 @@ class AutoLayer(ModularityCore):
         
         for layer in (tqdm(layers, desc="scoring") if verbose else layers):
             # Check minimum embeddings
+            n_bimodal_expected = n * (1 + n_aug) + n * (n - 1)
             if len(entangled_embs[layer]) < n * n * 0.5:
                 continue
             if len(pure_vision_embs[layer]) < n * (1 + n_aug) * 0.5:
                 continue
             if len(pure_language_embs[layer]) < n * (1 + n_aug) * 0.5:
                 continue
-            if len(bimodal_embs[layer]) < n * (1 + n_aug) * 0.5:
+            if len(bimodal_embs[layer]) < n_bimodal_expected * 0.5:
                 continue
             
             # Get edge filter tuple
@@ -421,9 +503,11 @@ class AutoLayer(ModularityCore):
             pl_embs = torch.cat(pure_language_embs[layer], dim=0)
             pure_lang_Q = self.compute_Q(pl_embs, aug_target, edge_filter)
             
-            # Bi-modality score: <image, text> + both augs
+            # Bi-modality scores: 3 modes
             bm_embs = torch.cat(bimodal_embs[layer], dim=0)
-            bimodal_Q = self.compute_Q(bm_embs, aug_target, edge_filter)
+            bimodal_and_Q = self.compute_Q(bm_embs, bimodal_target_and, edge_filter)
+            bimodal_or_Q = self.compute_Q(bm_embs, bimodal_target_or, edge_filter)
+            bimodal_and_or_Q = self.compute_Q(bm_embs, bimodal_target_and_or, edge_filter)
             
             scores[layer] = {
                 "vision_Q": ent_scores["vision_Q"],
@@ -431,13 +515,15 @@ class AutoLayer(ModularityCore):
                 "harmonic": ent_scores["harmonic"],
                 "pure_vision_Q": pure_vis_Q,
                 "pure_language_Q": pure_lang_Q,
-                "bimodal_Q": bimodal_Q,
+                "bimodal_and_Q": bimodal_and_Q,
+                "bimodal_or_Q": bimodal_or_Q,
+                "bimodal_and_or_Q": bimodal_and_or_Q,
             }
             
             if verbose:
                 s = scores[layer]
                 tqdm.write(f"  {layer[-45:]}: vis={s['vision_Q']:.3f}, lang={s['language_Q']:.3f}, "
-                          f"H={s['harmonic']:.3f}, p_vis={s['pure_vision_Q']:.3f}, p_lang={s['pure_language_Q']:.3f}, bi={s['bimodal_Q']:.3f}")
+                          f"bi_and={s['bimodal_and_Q']:.3f}, bi_or={s['bimodal_or_Q']:.3f}, bi_and_or={s['bimodal_and_or_Q']:.3f}")
             
             torch.cuda.empty_cache()
         
@@ -450,7 +536,9 @@ class AutoLayer(ModularityCore):
             # Global min across pure scores (including bimodal)
             all_pure = ([s["pure_vision_Q"] for s in scores.values()] + 
                        [s["pure_language_Q"] for s in scores.values()] +
-                       [s["bimodal_Q"] for s in scores.values()])
+                       [s["bimodal_and_Q"] for s in scores.values()] +
+                       [s["bimodal_or_Q"] for s in scores.values()] +
+                       [s["bimodal_and_or_Q"] for s in scores.values()])
             global_min_pure = min(all_pure)
             
             # Shift all scores by their respective global min
@@ -460,7 +548,9 @@ class AutoLayer(ModularityCore):
                 s["language_Q_shifted"] = s["language_Q"] - global_min
                 s["pure_vision_Q_shifted"] = s["pure_vision_Q"] - global_min_pure
                 s["pure_language_Q_shifted"] = s["pure_language_Q"] - global_min_pure
-                s["bimodal_Q_shifted"] = s["bimodal_Q"] - global_min_pure
+                s["bimodal_and_Q_shifted"] = s["bimodal_and_Q"] - global_min_pure
+                s["bimodal_or_Q_shifted"] = s["bimodal_or_Q"] - global_min_pure
+                s["bimodal_and_or_Q_shifted"] = s["bimodal_and_or_Q"] - global_min_pure
                 
                 # Recompute harmonic on shifted values (now both >= 0)
                 v, l = s["vision_Q_shifted"], s["language_Q_shifted"]
@@ -489,7 +579,9 @@ class AutoLayer(ModularityCore):
             "harmonic": build_best_dict("harmonic_shifted"),
             "pure_vision_Q": build_best_dict("pure_vision_Q"),
             "pure_language_Q": build_best_dict("pure_language_Q"),
-            "bimodal_Q": build_best_dict("bimodal_Q"),
+            "bimodal_and_Q": build_best_dict("bimodal_and_Q"),
+            "bimodal_or_Q": build_best_dict("bimodal_or_Q"),
+            "bimodal_and_or_Q": build_best_dict("bimodal_and_or_Q"),
         }
         
         # Store SBERT baseline in scores metadata
@@ -692,24 +784,28 @@ class AutoLayer(ModularityCore):
         # Check if pure scores and shifted scores exist
         sample_layer = layers[0]
         has_pure = "pure_vision_Q" in scores[sample_layer]
-        has_bimodal = "bimodal_Q" in scores[sample_layer]
+        has_bimodal = "bimodal_and_Q" in scores[sample_layer]
         has_shifted = "harmonic_shifted" in scores[sample_layer]
         
         # Use shifted harmonic if available (more meaningful with negatives)
         harmonic_key = "harmonic_shifted" if has_shifted else "harmonic"
         
         if has_pure:
-            fig, axes = plt.subplots(2, 3, figsize=figsize)
+            fig, axes = plt.subplots(2, 4, figsize=(18, 8))
             
             plot_data = [
                 (axes[0, 0], "vision_Q", 'Vision Q\n(<image, text>)'),
                 (axes[0, 1], "language_Q", 'Language Q\n(<image, text>)'),
-                (axes[0, 2], "bimodal_Q" if has_bimodal else harmonic_key, 
-                 'Bi-modality Q\n(<image, text> + augs)' if has_bimodal else 'Harmonic'),
-                (axes[1, 0], "pure_vision_Q", 'Pure Vision Q\n(<image, "">)'),
-                (axes[1, 1], "pure_language_Q", 'Pure Language Q\n(<blank, text>)'),
+                (axes[0, 2], "pure_vision_Q", 'Pure Vision Q\n(<image, "">)'),
+                (axes[0, 3], "pure_language_Q", 'Pure Language Q\n(<blank, text>)'),
+                (axes[1, 0], harmonic_key, 'Harmonic Mean\n(Vision & Language)'),
+                (axes[1, 1], "bimodal_and_Q" if has_bimodal else harmonic_key, 
+                 'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Harmonic'),
+                (axes[1, 2], "bimodal_or_Q" if has_bimodal else harmonic_key, 
+                 'Bimodal OR Q\n(same img OR text)' if has_bimodal else 'Harmonic'),
+                (axes[1, 3], "bimodal_and_or_Q" if has_bimodal else harmonic_key, 
+                 'Bimodal AND/OR Q\n(weighted)' if has_bimodal else 'Harmonic'),
             ]
-            axes[1, 2].axis('off')
         else:
             fig, axes = plt.subplots(1, 3, figsize=(12, 4))
             plot_data = [
@@ -741,6 +837,14 @@ class AutoLayer(ModularityCore):
             
             # Draw SBERT baseline on language Q plots
             if sbert_lang_Q is not None and key in ["language_Q", "pure_language_Q"]:
+                sbert_val = sbert_lang_Q["mean"] if isinstance(sbert_lang_Q, dict) else sbert_lang_Q
+                vlm_max = np.max(np.abs(vals))
+                
+                # Use symlog if SBERT is much larger than VLM values
+                if sbert_val > vlm_max * 2:
+                    linthresh = max(0.01, vlm_max * 0.5)  # Linear region covers VLM data
+                    ax.set_yscale('symlog', linthresh=linthresh)
+                
                 # Handle both scalar and aggregated (dict with mean/std) formats
                 if isinstance(sbert_lang_Q, dict):
                     sbert_mean = sbert_lang_Q["mean"]

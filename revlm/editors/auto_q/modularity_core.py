@@ -173,6 +173,10 @@ class ModularityCore:
         embs = embs.to(self.device)
         target = target.to(self.device)
         
+        # Remove self-connections from target (we only compare different pairs)
+        target = target.clone()
+        target.fill_diagonal_(0.0)
+        
         sim = self.compute_similarity(embs)
         
         # Apply edge filtering if specified

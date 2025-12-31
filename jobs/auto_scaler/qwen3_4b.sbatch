@@ -24,5 +24,5 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
-python -m revlm.run.auto_scaler --model_name qwen3_4b --n_runs 100 --n_samples 10
+python -m revlm.run.auto_scaler --model_name qwen3_4b
 

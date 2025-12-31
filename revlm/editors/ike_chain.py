@@ -53,15 +53,15 @@ class IKE_CHAIN(nn.Module):
         self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")  # "internal" or "sbert"
         # Use lang_scaler_sbert if sbert, else lang_scaler
         if self.lang_encoder == "sbert":
-            self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 10.0))
+            self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0))
         else:
             self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
         
         # Radius estimation config
-        self.radius_method = getattr(cfg, "radius_method", "single_aug")  # "fixed", "single_aug", or "augment"
+        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "single_aug", or "augment"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
         self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))  # scale factor for single_aug
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 4))
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 5))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only

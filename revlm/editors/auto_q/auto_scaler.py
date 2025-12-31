@@ -30,7 +30,7 @@ class AutoScaler(ModularityCore):
     """
 
     def __init__(self, config, model, inner_params_vision, inner_params_lang=None, n_samples=10,
-                 n_aug=4, edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert"):
+                 n_aug=None, edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert"):
         """
         Args:
             config: Config object with device
@@ -38,7 +38,8 @@ class AutoScaler(ModularityCore):
             inner_params_vision: List of vision layer param names (use first)
             inner_params_lang: List of language layer param names (use first). Optional if lang_encoder="sbert"
             n_samples: Number of samples to use
-            n_aug: Number of augmentations per sample for bimodal_Q
+            n_aug: Number of augmentations per sample for bimodal_Q. 
+                   Default: n_samples-1 (matches community size with entangled n×n pairs)
             edge_filter: Filter method - "none", "percentile", "knn", or "disparity"
             edge_filter_kwargs: Dict of kwargs for the filter method
             lang_encoder: "internal" (VLM layer) or "sbert" (sentence-transformers)
@@ -49,7 +50,7 @@ class AutoScaler(ModularityCore):
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.n_samples = n_samples
-        self.n_aug = n_aug
+        self.n_aug = n_aug if n_aug is not None else (n_samples - 1)
         self.edge_filter = edge_filter
         self.edge_filter_kwargs = edge_filter_kwargs or {}
         self.lang_encoder = lang_encoder
@@ -119,7 +120,7 @@ class AutoScaler(ModularityCore):
     def _get_augmenter(self):
         """Lazy init augmenter."""
         if self._augmenter is None:
-            self._augmenter = Augmenter(self.wrapper)
+            self._augmenter = Augmenter(self.wrapper, mosaic_prob=0.0)
         return self._augmenter
 
     @staticmethod
@@ -130,27 +131,76 @@ class AutoScaler(ModularityCore):
         labels = torch.arange(N) // group_size
         return (labels.unsqueeze(0) == labels.unsqueeze(1)).float()
 
+    @staticmethod
+    def build_bimodal_target(img_labels, text_labels, mode="and_or"):
+        """Build target matrix for bi-modality Q.
+        
+        Args:
+            img_labels: List of image labels for each embedding
+            text_labels: List of text labels for each embedding  
+            mode: "and" (strict), "or" (loose), or "and_or" (weighted)
+        """
+        img_labels = torch.tensor(img_labels)
+        text_labels = torch.tensor(text_labels)
+        
+        same_img = (img_labels.unsqueeze(0) == img_labels.unsqueeze(1))
+        same_text = (text_labels.unsqueeze(0) == text_labels.unsqueeze(1))
+        
+        if mode == "and":
+            target = (same_img & same_text).float() * 2  # Weight 2 for strict AND
+        elif mode == "or":
+            target = (same_img | same_text).float()
+        elif mode == "and_or":
+            target = same_img.float() + same_text.float()  # 2 if both, 1 if one, 0 if none
+        else:
+            raise ValueError(f"Unknown bimodal_mode: {mode}")
+        
+        return target
+
     @torch.no_grad()
     def _encode_bimodal(self, lang_scaler, verbose=True):
-        """Encode <image, text> with both image AND text augmentations for bimodal_Q."""
+        """Encode full bi-modal set: anchors + augmentations + cross-combinations.
+        
+        Returns:
+            embs: [N, dim] tensor
+            img_labels: List of image labels
+            text_labels: List of text labels
+        """
         n = len(self._images)
         augmenter = self._get_augmenter()
         embs = []
+        img_labels = []
+        text_labels = []
         
+        # 1. Anchors + augmentations
         pairs = [(i, aug_idx) for i in range(n) for aug_idx in range(1 + self.n_aug)]
-        for i, aug_idx in (tqdm(pairs, desc="bimodal", leave=False) if verbose else pairs):
+        for i, aug_idx in (tqdm(pairs, desc="bimodal-aug", leave=False) if verbose else pairs):
             img, text = self._images[i], self._texts[i]
             if aug_idx == 0:
-                # Anchor
                 emb = self._encode_dual(img, text, lang_scaler)
             else:
-                # Augment both
                 aug_img = augmenter.image(img)
                 aug_text = augmenter.question(text) if text else ""
                 emb = self._encode_dual(aug_img, aug_text, lang_scaler)
             embs.append(emb)
+            img_labels.append(i)
+            text_labels.append(i)
         
-        return torch.cat(embs, dim=0)
+        # 2. Cross-combinations: <img_i, text_j> for i != j (anchor + augmented images)
+        cross_pairs = [(i, j, aug_idx) for i in range(n) for j in range(n) if i != j for aug_idx in range(1 + self.n_aug)]
+        for i, j, aug_idx in (tqdm(cross_pairs, desc="bimodal-cross", leave=False) if verbose else cross_pairs):
+            if aug_idx == 0:
+                # Anchor cross-combination
+                emb = self._encode_dual(self._images[i], self._texts[j], lang_scaler)
+            else:
+                # Augmented image cross-combination: <aug_img_i, text_j>
+                aug_img = augmenter.image(self._images[i])
+                emb = self._encode_dual(aug_img, self._texts[j], lang_scaler)
+            embs.append(emb)
+            img_labels.append(i)  # Same image label (original or augmented)
+            text_labels.append(j)  # Different text label
+        
+        return torch.cat(embs, dim=0), img_labels, text_labels
 
     def _get_edge_filter_tuple(self):
         """Convert edge_filter config to tuple format for compute_Q."""
@@ -279,9 +329,6 @@ class AutoScaler(ModularityCore):
                 print(f"    {layer}_layer: vis_Q={b['vision_Q']:.4f}, lang_Q={b['language_Q']:.4f}, H={b['harmonic']:.4f}")
             torch.cuda.empty_cache()
         
-        # Build augmentation target for bimodal_Q
-        aug_target = self.build_aug_target(n, self.n_aug).to(self.device)
-        
         # Scaler sweep
         results = {}
         for scaler in (tqdm(lang_scalers, desc="scalers") if verbose else lang_scalers):
@@ -289,14 +336,20 @@ class AutoScaler(ModularityCore):
             embs = self._encode_all_pairs(lambda img, txt: self._encode_dual(img, txt, scaler), verbose)
             results[scaler] = self.compute_scores(embs, n, edge_filter)
             
-            # Bimodal_Q: <image, text> + both augs
-            bimodal_embs = self._encode_bimodal(scaler, verbose)
-            bimodal_Q = self.compute_Q(bimodal_embs, aug_target, edge_filter)
-            results[scaler]["bimodal_Q"] = bimodal_Q
+            # Bimodal Q: 3 modes
+            bimodal_embs, img_labels, text_labels = self._encode_bimodal(scaler, verbose)
+            bimodal_target_and = self.build_bimodal_target(img_labels, text_labels, "and").to(self.device)
+            bimodal_target_or = self.build_bimodal_target(img_labels, text_labels, "or").to(self.device)
+            bimodal_target_and_or = self.build_bimodal_target(img_labels, text_labels, "and_or").to(self.device)
+            
+            results[scaler]["bimodal_and_Q"] = self.compute_Q(bimodal_embs, bimodal_target_and, edge_filter)
+            results[scaler]["bimodal_or_Q"] = self.compute_Q(bimodal_embs, bimodal_target_or, edge_filter)
+            results[scaler]["bimodal_and_or_Q"] = self.compute_Q(bimodal_embs, bimodal_target_and_or, edge_filter)
             
             if verbose:
                 r = results[scaler]
-                tqdm.write(f"  scaler={scaler}: vis_Q={r['vision_Q']:.4f}, lang_Q={r['language_Q']:.4f}, bi_Q={r['bimodal_Q']:.4f}")
+                tqdm.write(f"  scaler={scaler}: vis={r['vision_Q']:.3f}, lang={r['language_Q']:.3f}, "
+                          f"bi_and={r['bimodal_and_Q']:.3f}, bi_or={r['bimodal_or_Q']:.3f}")
             torch.cuda.empty_cache()
         
         # Shift Q values based on shift_mode
@@ -465,8 +518,17 @@ class AutoScaler(ModularityCore):
         sample_val = results["scalers"][sample_scaler]["vision_Q"]
         return isinstance(sample_val, dict) and "mean" in sample_val
 
-    def plot(self, results, figsize=(10, 5)):
-        """Plot results with optional error bars for aggregated results."""
+    def plot(self, results, figsize=(10, 5), 
+             metrics=["vision_Q", "language_Q", "harmonic", "bimodal_and_Q"]):
+        """Plot results with optional error bars for aggregated results.
+        
+        Args:
+            results: Results dict from search()
+            figsize: Figure size
+            metrics: List of metrics to plot. Options:
+                - "vision_Q", "language_Q", "harmonic"
+                - "bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"
+        """
         import matplotlib.pyplot as plt
         import numpy as np
         
@@ -485,68 +547,81 @@ class AutoScaler(ModularityCore):
         if shift_mode == "none":
             harm_key = "harmonic"
             harm_label = "Harmonic (raw)"
-            vis_label = "Vision Q"
-            lang_label = "Language Q"
         elif shift_mode == "langq_only":
             harm_key = "harmonic_shifted" if has_shifted else "harmonic"
             harm_label = "Harmonic (lang shifted)"
-            vis_label = "Vision Q"
-            lang_label = "Language Q"
         else:  # "global"
             harm_key = "harmonic_shifted" if has_shifted else "harmonic"
             harm_label = "Harmonic (shifted)"
-            vis_label = "Vision Q"
-            lang_label = "Language Q"
         
         fig, ax = plt.subplots(figsize=figsize)
         
-        # Check if bimodal_Q exists
-        has_bimodal = "bimodal_Q" in scalers[sample_scaler]
+        # Define all available metrics with their plot settings
+        metric_config = {
+            "vision_Q": ("vision_Q", "green", "o", "Vision Q"),
+            "language_Q": ("language_Q", "blue", "o", "Language Q"),
+            "harmonic": (harm_key, "red", "s", harm_label),
+            "bimodal_and_Q": ("bimodal_and_Q", "orange", "^", "Bimodal AND"),
+            "bimodal_or_Q": ("bimodal_or_Q", "purple", "v", "Bimodal OR"),
+            "bimodal_and_or_Q": ("bimodal_and_or_Q", "brown", "d", "Bimodal AND/OR"),
+        }
         
-        if is_agg:
-            vis_Q = np.array([scalers[x]["vision_Q"]["mean"] for x in x_values])
-            lang_Q = np.array([scalers[x]["language_Q"]["mean"] for x in x_values])
-            harmonic = np.array([scalers[x][harm_key]["mean"] for x in x_values])
+        # Store values for markers
+        plotted_data = {}
+        
+        for metric in metrics:
+            if metric not in metric_config:
+                continue
+            key, color, marker, label = metric_config[metric]
+            if key not in scalers[sample_scaler]:
+                continue
             
-            vis_std = np.array([scalers[x]["vision_Q"]["std"] for x in x_values])
-            lang_std = np.array([scalers[x]["language_Q"]["std"] for x in x_values])
-            harm_std = np.array([scalers[x][harm_key]["std"] for x in x_values])
+            if is_agg:
+                vals = np.array([scalers[x][key]["mean"] for x in x_values])
+                stds = np.array([scalers[x][key]["std"] for x in x_values])
+                lw = 2 if metric == "harmonic" else 1.5
+                ms = 6 if metric == "harmonic" else 5
+                ax.errorbar(x_values, vals, yerr=stds, fmt=f'{marker}-', color=color, 
+                           label=label, ms=ms, lw=lw, capsize=3)
+            else:
+                vals = np.array([scalers[x][key] for x in x_values])
+                lw = 2 if metric == "harmonic" else 1.5
+                ms = 6 if metric == "harmonic" else 5
+                ax.plot(x_values, vals, f'{marker}-', color=color, label=label, ms=ms, lw=lw)
             
-            ax.errorbar(x_values, vis_Q, yerr=vis_std, fmt='o-', color='green', 
-                       label=vis_label, ms=5, lw=1.5, capsize=3)
-            ax.errorbar(x_values, lang_Q, yerr=lang_std, fmt='o-', color='blue', 
-                       label=lang_label, ms=5, lw=1.5, capsize=3)
-            ax.errorbar(x_values, harmonic, yerr=harm_std, fmt='s-', color='red', 
-                       label=harm_label, ms=6, lw=2, capsize=3)
-            
-            if has_bimodal:
-                bimodal = np.array([scalers[x]["bimodal_Q"]["mean"] for x in x_values])
-                bimodal_std = np.array([scalers[x]["bimodal_Q"]["std"] for x in x_values])
-                ax.errorbar(x_values, bimodal, yerr=bimodal_std, fmt='^-', color='orange', 
-                           label='Bimodal Q', ms=5, lw=1.5, capsize=3)
-        else:
-            vis_Q = [scalers[x]["vision_Q"] for x in x_values]
-            lang_Q = [scalers[x]["language_Q"] for x in x_values]
-            harmonic = [scalers[x][harm_key] for x in x_values]
-            
-            ax.plot(x_values, vis_Q, 'o-', color='green', label=vis_label, ms=5, lw=1.5)
-            ax.plot(x_values, lang_Q, 'o-', color='blue', label=lang_label, ms=5, lw=1.5)
-            ax.plot(x_values, harmonic, 's-', color='red', label=harm_label, ms=6, lw=2)
-            
-            if has_bimodal:
-                bimodal = [scalers[x]["bimodal_Q"] for x in x_values]
-                ax.plot(x_values, bimodal, '^-', color='orange', label='Bimodal Q', ms=5, lw=1.5)
+            plotted_data[metric] = vals
         
         ax.set_xscale('log')
         
-        # Mark best (use shifted harmonic)
-        if is_agg:
-            harm_vals = [scalers[x][harm_key]["mean"] for x in x_values]
-        else:
-            harm_vals = harmonic
-        best_idx = np.argmax(harm_vals)
-        ax.scatter([x_values[best_idx]], [harm_vals[best_idx]], c='red', s=150, marker='*',
-                   zorder=5, edgecolors='black', label=f'Best ({x_values[best_idx]})')
+        # Mark best harmonic (if plotted)
+        if "harmonic" in plotted_data:
+            harm_vals = plotted_data["harmonic"]
+            best_idx = np.argmax(harm_vals)
+            ax.scatter([x_values[best_idx]], [harm_vals[best_idx]], c='red', s=150, marker='*',
+                       zorder=5, edgecolors='black', label=f'Best H ({x_values[best_idx]})')
+        
+        # Mark where Language Q crosses zero (if plotted)
+        if "language_Q" in plotted_data:
+            lang_Q_arr = plotted_data["language_Q"]
+            zero_cross_idx = None
+            for i in range(len(lang_Q_arr) - 1):
+                if lang_Q_arr[i] < 0 and lang_Q_arr[i + 1] >= 0:
+                    zero_cross_idx = i + 1  # First non-negative point
+                    break
+            if zero_cross_idx is not None:
+                cross_x = x_values[zero_cross_idx]
+                cross_y = lang_Q_arr[zero_cross_idx]
+                ax.axvline(x=cross_x, color='blue', linestyle=':', lw=1.5, alpha=0.7)
+                ax.scatter([cross_x], [cross_y], c='blue', s=100, marker='D', 
+                          zorder=5, edgecolors='black', label=f'Lang Q≥0 ({cross_x})')
+        
+        # Mark Bimodal AND peak (if plotted)
+        if "bimodal_and_Q" in plotted_data:
+            bimodal_and_vals = plotted_data["bimodal_and_Q"]
+            bimodal_and_peak_idx = np.argmax(bimodal_and_vals)
+            ax.scatter([x_values[bimodal_and_peak_idx]], [bimodal_and_vals[bimodal_and_peak_idx]], 
+                      c='orange', s=150, marker='*', zorder=5, edgecolors='black', 
+                      label=f'Bimodal AND peak ({x_values[bimodal_and_peak_idx]})')
         
         # Baselines - plot all three metrics for each baseline
         if baselines:

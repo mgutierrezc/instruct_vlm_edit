@@ -10,5 +10,5 @@ sbatch llava.sbatch
 sbatch qwen3.sbatch
 sbatch qwen3_4b.sbatch
 
-echo "Submitted 4 auto_scaler jobs (100 runs × 10 samples each)"
+echo "Submitted 4 auto_scaler jobs (10 runs × 10 samples each)"
 
