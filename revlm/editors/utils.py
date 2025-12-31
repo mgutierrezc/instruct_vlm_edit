@@ -136,21 +136,12 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
 
 
 
-"""
-| `pad_ratio` | Canvas size | Original % of area |
-|-------------|-------------|-------------------|
-| 0.0 | 1× (no padding) | 100% |
-| 0.414 | ~1.41× each dim | 50% |
-| 0.5 | 1.5× each dim | 44% |
-| 1.0 | 2× each dim | 25% |
-| 2.0 | 3× each dim | 11% |
-"""
-def pad_with_mosaic(img, pad_ratio: float = 0.5, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, area_pct: float = 0.25, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
         img: Input PIL Image or path
-        pad_ratio: Fraction to expand canvas (0.k = k0% larger each dimension)
+        area_pct: Target % of canvas area for original image (0.5 = 50%, 1.0 = no padding)
         max_size: If result exceeds this, resize to original size. None = no resize (keep padded size)
         n_tiles: Approximate number of tiles per row/column (controls tile size)
     
@@ -164,6 +155,10 @@ def pad_with_mosaic(img, pad_ratio: float = 0.5, max_size: int = None, n_tiles: 
         img = img.convert("RGB")
     
     orig_w, orig_h = img.size
+    
+    # Convert area_pct to pad_ratio: area_pct = 1/(1+p)^2 → p = sqrt(1/area_pct) - 1
+    area_pct = max(0.01, min(1.0, area_pct))  # clamp to [0.01, 1.0]
+    pad_ratio = (1.0 / area_pct) ** 0.5 - 1.0
     
     # Calculate new canvas size
     new_w = int(orig_w * (1 + pad_ratio))
@@ -382,11 +377,10 @@ class Augmenter:
             T.RandomRotation(10),
             T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
         ])
-        self.temp = 1.5
         self.n_chain = 3
         self._llm = None
         self._llm_tok = None
-        self._llm_name = "Qwen/Qwen2.5-0.5B-Instruct"  # Smaller: 0.5B vs 1.5B
+        self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Smaller: 0.5B vs 1.5B
 
     def _get_llm(self):
         """Lazy load small LLM for text augmentation."""
@@ -424,40 +418,68 @@ class Augmenter:
         import re
         return bool(re.fullmatch(r"[a-zA-Z0-9\s.,!?;:'\"\-()]+", text)) if text else False
 
-    def rephrase(self, text):
-        """Rephrase text using small LLM with chained augmentation."""
+    def rephrase(self, text, mode: str = "rephrase"):
+        """Augment text using small LLM with chained generation.
+        
+        Args:
+            text: Input text
+            mode: "rephrase" (keep meaning, change words) or "question" (turn into question about it)
+        """
         import random
         if not text:
             return text
         model, tok = self._get_llm()
         
+        # Prompt and temperature based on mode
+        if mode == "question":
+            instruction = "Ask a short question that can be answered by this sentence. Only output the question, nothing else."
+            temp = 0.5  # Lower temp for question mode to reduce hallucination
+            max_new_tokens = 32
+        else:  # rephrase
+            instruction = "Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else."
+            temp = 1.5
+            max_new_tokens = 64
+        
         for attempt in range(3):
             candidates = []
             for c in range(self.n_chain):
                 prev = candidates[-1] if candidates else text
-                messages = [{"role": "user", "content": f"Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else.\n\n{prev}"}]
+                messages = [{"role": "user", "content": f"{instruction}\n\n{prev}"}]
                 prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                 inputs = tok(prompt, return_tensors="pt").to(model.device)
                 with torch.no_grad():
                     out_ids = model.generate(
-                        **inputs, max_new_tokens=64, temperature=self.temp,
+                        **inputs, max_new_tokens=max_new_tokens, temperature=temp,
                         do_sample=True, pad_token_id=tok.eos_token_id
                     )
                 out = tok.decode(out_ids[0][inputs.input_ids.shape[1]:], skip_special_tokens=True).strip()
-                if out and out != text and len(out) > 5 and self._is_english(out):
-                    candidates.append(out)
+                # Validate output
+                if not out or out == text or len(out) < 5 or not self._is_english(out):
+                    continue
+                # For question mode, must end with ?
+                if mode == "question" and not out.endswith("?"):
+                    continue
+                candidates.append(out)
             if candidates:
                 break
         
         result = random.choice(candidates) if candidates else text
-        # print(f"[AUG] orig: {text!r}  ->  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
+        # print(f"[AUG] orig: {text!r}  ->  aug: {result!r}")  # DEBUG
         return result
 
     def question(self, q):
-        return self.rephrase(q)
+        """Rephrase a question (keeps question form)."""
+        aug_q = self.rephrase(q, mode="rephrase")
+        return aug_q
 
-    def rationale(self, sent):
-        return self.rephrase(sent)
+    def rationale(self, s):
+        """Augment a rationale sentence. "question" (turn statement into question)
+        """
+        n_chain_old = self.n_chain
+        self.n_chain = 1
+        aug_s = self.rephrase(s, mode="question")
+        self.n_chain = n_chain_old
+        return aug_s
     
     def visualize(self, img, text: str = None, use_mosaic: bool = True):
         """Visualize original vs augmented image (and text if provided)."""
@@ -470,7 +492,8 @@ class Augmenter:
         
         # Augment
         aug_img = self.image(img, use_mosaic=use_mosaic)
-        aug_text = self.rephrase(text) if text else None
+        aug_text = self.rephrase(text, mode="rephrase") if text else None
+        aug_question = self.rephrase(text, mode="question") if text else None
         
         # Plot
         fig, axes = plt.subplots(1, 2, figsize=(8, 4))
@@ -485,13 +508,17 @@ class Augmenter:
         # Show text if provided
         if text:
             fig.suptitle(f"Text: {text[:60]}..." if len(text) > 60 else f"Text: {text}", fontsize=9)
+            y_pos = 0.02
             if aug_text and aug_text != text:
-                fig.text(0.5, 0.02, f"Aug: {aug_text[:80]}...", ha='center', fontsize=8, style='italic')
+                fig.text(0.5, y_pos, f"Rephrase: {aug_text[:70]}...", ha='center', fontsize=8, style='italic')
+                y_pos += 0.04
+            if aug_question and aug_question != text:
+                fig.text(0.5, y_pos, f"Question: {aug_question[:70]}...", ha='center', fontsize=8, style='italic', color='blue')
         
         plt.tight_layout()
         plt.show()
         
-        return aug_img, aug_text
+        return aug_img, aug_text, aug_question
 
 
 def get_inner_params(named_parameters, inner_names):
