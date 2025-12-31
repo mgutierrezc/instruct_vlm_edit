@@ -20,6 +20,13 @@ class VQADataset(Dataset):
         return self.data[idx]
     
     def load_df(self):
+        # Local dataset: midas (medical data, not from HF)
+        if self.config.experiment.dataset_name == "midas":
+            df = pd.read_parquet("./data_raw/midas/midas_share.parquet")
+            df["uid"] = df["uid"].astype(str)
+            df["cot"] = df["rationale"]
+            return df
+        
         if self.config.experiment.dataset_name == "fvqa":
             path_in_repo = "FVQA"
         elif self.config.experiment.dataset_name == "aokvqa":

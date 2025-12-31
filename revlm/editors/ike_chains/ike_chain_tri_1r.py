@@ -51,7 +51,8 @@ class IKE_CHAIN(nn.Module):
         self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit # 1 
         self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit # 1
         needs_aug = self.n_aug_entry > 0 or self.n_aug_sent > 0 or self.auto_k_method == "radius"
-        self.augmenter = Augmenter(self.wrapper) if needs_aug else None
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name) if needs_aug else None
         
         # Switch: set to True to plot score distributions in apply_to_dataset
         self.plot_k_dist = False

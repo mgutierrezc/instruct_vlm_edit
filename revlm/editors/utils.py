@@ -102,6 +102,68 @@ def get_bg_cache() -> BackgroundCache:
     return _bg_cache
 
 
+class MidasBackgroundCache:
+    """Pre-generate mosaic backgrounds from MIDAS skin edge crops."""
+    
+    MIDAS_DIR = Path("data/images/midas")
+    
+    def __init__(self, n_backgrounds: int = 50, bg_size: int = 600, n_tiles: int = 4):
+        self._backgrounds = []
+        self.n_backgrounds = n_backgrounds
+        self.bg_size = bg_size
+        self.n_tiles = n_tiles  # 4x4 tiles by default (matches pad_with_mosaic)
+    
+    def _generate_backgrounds(self):
+        """Generate mosaic backgrounds once on first use."""
+        paths = list(self.MIDAS_DIR.glob("*.jpg")) if self.MIDAS_DIR.exists() else []
+        if not paths:
+            return
+        
+        print(f"[MidasBackgroundCache] Generating {self.n_backgrounds} backgrounds ({self.n_tiles}x{self.n_tiles} tiles)...")
+        tile_size = self.bg_size // self.n_tiles
+        for _ in range(self.n_backgrounds):
+            canvas = PILImage.new("RGB", (self.bg_size, self.bg_size))
+            for y in range(0, self.bg_size, tile_size):
+                for x in range(0, self.bg_size, tile_size):
+                    # 20% noise, 80% skin edge crop
+                    if random.random() < 0.2:
+                        tile = PILImage.fromarray(np.random.normal(128, 50, (tile_size, tile_size, 3)).clip(0, 255).astype(np.uint8))
+                    else:
+                        try:
+                            img = PILImage.open(random.choice(paths)).convert("RGB")
+                            w, h = img.size
+                            strip = int(min(w, h) * 0.4)
+                            edge = random.randint(0, 3)
+                            if edge == 0:    crop = img.crop((0, 0, w, strip))
+                            elif edge == 1:  crop = img.crop((0, h - strip, w, h))
+                            elif edge == 2:  crop = img.crop((0, 0, strip, h))
+                            else:            crop = img.crop((w - strip, 0, w, h))
+                            tile = crop.resize((tile_size, tile_size), PILImage.Resampling.BILINEAR)
+                        except:
+                            tile = PILImage.fromarray(np.random.randint(0, 256, (tile_size, tile_size, 3), dtype=np.uint8))
+                    canvas.paste(tile, (x, y))
+            self._backgrounds.append(canvas)
+        print(f"[MidasBackgroundCache] Done.")
+    
+    def get_background(self, size: Tuple[int, int]) -> PILImage.Image:
+        """Get a random pre-generated background, resized to needed size."""
+        if not self._backgrounds:
+            self._generate_backgrounds()
+        if not self._backgrounds:
+            return PILImage.fromarray(np.random.randint(0, 256, (size[1], size[0], 3), dtype=np.uint8))
+        bg = random.choice(self._backgrounds)
+        return bg.resize(size, PILImage.Resampling.BILINEAR)
+
+
+_midas_cache = None
+
+def get_midas_cache() -> MidasBackgroundCache:
+    global _midas_cache
+    if _midas_cache is None:
+        _midas_cache = MidasBackgroundCache()
+    return _midas_cache
+
+
 def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_prob: float = 0.2) -> PILImage.Image:
     """Create a mosaic background from cached images and noise.
     
@@ -187,6 +249,29 @@ def pad_with_mosaic(img, area_pct: float = 0.25, max_size: int = None, n_tiles: 
     return canvas
 
 
+def pad_with_midas_mosaic(img, area_pct: float = 0.5) -> PILImage.Image:
+    """Pad image with pre-cached MIDAS skin mosaic background."""
+    if isinstance(img, str):
+        img = PILImage.open(img).convert("RGB")
+    elif hasattr(img, "convert"):
+        img = img.convert("RGB")
+    
+    orig_w, orig_h = img.size
+    area_pct = max(0.01, min(1.0, area_pct))
+    pad_ratio = (1.0 / area_pct) ** 0.5 - 1.0
+    new_w, new_h = int(orig_w * (1 + pad_ratio)), int(orig_h * (1 + pad_ratio))
+    
+    # Get pre-cached background, resize to canvas size
+    canvas = get_midas_cache().get_background((new_w, new_h))
+    
+    # Paste original image at random position
+    x = random.randint(0, max(0, new_w - orig_w))
+    y = random.randint(0, max(0, new_h - orig_h))
+    canvas.paste(img, (x, y))
+    
+    return canvas
+
+
 class ImagePatchifier:
     """3×3 grid patchifier: generates 36 patches using all kernel sizes.
     
@@ -232,12 +317,15 @@ class ImagePatchifier:
         """
         self.output_size = output_size
     
-    def _load_image(self, img) -> PILImage.Image:
-        """Ensure image is PIL Image in RGB."""
+    def _load_image(self, img, max_size: int = 512) -> PILImage.Image:
+        """Ensure image is PIL Image in RGB, resized if too large."""
         if isinstance(img, str):
-            return PILImage.open(img).convert("RGB")
+            img = PILImage.open(img).convert("RGB")
         elif hasattr(img, "convert"):
-            return img.convert("RGB")
+            img = img.convert("RGB")
+        # Resize large images for faster processing
+        if max(img.size) > max_size:
+            img.thumbnail((max_size, max_size), PILImage.Resampling.LANCZOS)
         return img
     
     def _crop_region(self, img: PILImage.Image, row_start: int, col_start: int,
@@ -365,10 +453,11 @@ class ImagePatchifier:
 class Augmenter:
     """Online augmentation using small LLM for text, torchvision for images."""
 
-    def __init__(self, wrapper=None, mosaic_prob: float = 0.5, seed: int = None):
+    def __init__(self, wrapper=None, mosaic_prob: float = 0.5, seed: int = None, dataset_name: str = None):
         self.wrapper = wrapper
         self.mosaic_prob = mosaic_prob  # probability of applying mosaic padding
         self.seed = seed
+        self.dataset_name = dataset_name  # "midas" uses skin edge crops instead of natural images
         if seed is not None:
             set_seed(seed)
         self.img_aug = T.Compose([
@@ -394,22 +483,30 @@ class Augmenter:
             self._llm.eval()
         return self._llm, self._llm_tok
 
-    def image(self, img, use_mosaic: bool = None):
+    def image(self, img, use_mosaic: bool = None, max_size: int = 512):
         """Apply random image augmentations.
         
         Args:
             img: Input image (path or PIL Image)
             use_mosaic: Force mosaic on/off. None = random based on mosaic_prob
+            max_size: Resize large images to this max dimension for speed
         """
         if isinstance(img, str):
             img = PILImage.open(img).convert("RGB")
         elif hasattr(img, "convert"):
             img = img.convert("RGB")
         
+        # Resize large images for faster processing
+        if max(img.size) > max_size:
+            img.thumbnail((max_size, max_size), PILImage.Resampling.LANCZOS)
+        
         # Optionally apply mosaic padding first
         apply_mosaic = use_mosaic if use_mosaic is not None else (random.random() < self.mosaic_prob)
         if apply_mosaic:
-            img = pad_with_mosaic(img)
+            if self.dataset_name == "midas":
+                img = pad_with_midas_mosaic(img)  # Use skin edge crops for medical data
+            else:
+                img = pad_with_mosaic(img)  # Use natural images
         
         return self.img_aug(img)
 

@@ -66,7 +66,8 @@ class IKE_TUPLE(nn.Module):
         self.num_counterfacts = int(getattr(cfg, "num_counterfacts", 3))  # per sentence
 
         # Augmenter (online, per-batch)
-        self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name) if self.use_augment else None
 
         # Sentence model
         self.sentence_model = SentenceTransformer(

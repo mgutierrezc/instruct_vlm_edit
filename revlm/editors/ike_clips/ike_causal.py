@@ -67,7 +67,8 @@ class IKE_CAUSAL(nn.Module):
         self.distance = getattr(cfg, "distance", "l2")  # "l2" (default) or "cosine"
 
         self.use_augment = bool(getattr(cfg, "use_augment", True))
-        self.augmenter = Augmenter(self.wrapper) if self.use_augment else None
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name) if self.use_augment else None
 
         # Hook for VLM activations
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])

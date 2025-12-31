@@ -35,7 +35,8 @@ class IKE_PROTO:
         self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 10))
 
         # Augmenter
-        self.augmenter = Augmenter(self.wrapper)
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name)
 
         # Hook setup for VLM hidden states
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])

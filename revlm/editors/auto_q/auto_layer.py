@@ -413,7 +413,7 @@ class AutoLayer(ModularityCore):
         # Forward count
         n_entangled = n * n
         n_pure_per = n * (1 + n_aug)
-        n_bimodal = n * (1 + n_aug) + n * (n - 1)  # anchors+augs + cross-combos
+        n_bimodal = n * (1 + n_aug) + n * (n - 1) * (1 + n_aug)  # anchors+augs + cross-combos with augs
         n_forwards = n_entangled + 2 * n_pure_per + n_bimodal
         
         if verbose:
@@ -421,7 +421,7 @@ class AutoLayer(ModularityCore):
             print(f"            Entangled: {n}×{n} = {n_entangled} pairs")
             print(f"            Pure Vision: {n} × (1 + {n_aug}) = {n_pure_per}")
             print(f"            Pure Language: {n} × (1 + {n_aug}) = {n_pure_per}")
-            print(f"            Bi-modality: {n}×(1+{n_aug}) + {n}×{n-1} = {n_bimodal}")
+            print(f"            Bi-modality: {n}×(1+{n_aug}) + {n}×{n-1}×(1+{n_aug}) = {n_bimodal}")
             print(f"            Total: {n_forwards} forwards")
         
         # Hook all layers

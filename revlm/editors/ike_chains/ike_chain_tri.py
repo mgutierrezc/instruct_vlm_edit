@@ -44,7 +44,8 @@ class IKE_CHAIN(nn.Module):
         # Augmentation config
         self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 1))
         self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 1))
-        self.augmenter = Augmenter(self.wrapper)  # Always needed for radius estimation
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name)  # Always needed for radius estimation
         
         # Switch for plotting
         self.plot_k_dist = False

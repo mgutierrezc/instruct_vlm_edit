@@ -71,7 +71,8 @@ class IKE_CHAIN(nn.Module):
         
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
-        self.augmenter = Augmenter(self.wrapper, seed=self.seed)
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, seed=self.seed, dataset_name=dataset_name)
         
         # Prompt for patch selection
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")

@@ -29,7 +29,8 @@ class IKE_PROTO:
         self.subset_sentences = getattr(cfg, "subset_sentences", False)  # True=subset-specific, False=all sentences
 
         # Augmenter
-        self.augmenter = Augmenter(self.wrapper)
+        dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
+        self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name)
 
         # Hook setup for VLM hidden states
         inner_params = getattr(getattr(config, "model", config), "inner_params", [])
