@@ -135,7 +135,7 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
     return canvas
 
 
-def pad_with_mosaic(img, pad_ratio: float = 0.5, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, pad_ratio: float = 1.0, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:

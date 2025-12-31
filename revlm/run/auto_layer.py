@@ -85,8 +85,6 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="all", choices=["train", "test", "all"])
     
     # AutoLayer params
-    parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
-    parser.add_argument("--n_samples", type=int, default=10, help="Samples per run (n_aug = n_samples-1)")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
 
     args = parser.parse_args()
@@ -97,4 +95,4 @@ if __name__ == "__main__":
     
     config = configure_args(args, config_path=args.config)
 
-    run_auto_layer(config, n_runs=args.n_runs, n_samples=args.n_samples, overwrite=args.overwrite)
+    run_auto_layer(config, overwrite=args.overwrite)

@@ -58,14 +58,19 @@ class IKE_CHAIN(nn.Module):
             self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
         
         # Radius estimation config
-        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "single_aug", or "augment"
+        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "single_aug", "augment", or "balance"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
+        # "single_aug": radius based on one aggressive augmentation (image + text)
         self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))  # scale factor for single_aug
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 5))
-        self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
+        # "augment": radius based on percentile of augmented image distances
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 1))
+        self.radius_percentile = float(getattr(cfg, "radius_percentile", 50)) # 99
+        # "balance": radius based on positive (augmented image+text) and negative (blank image) samples
+        self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
+        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", ["2x2", "3x3"])
+        self.query_kernels = getattr(cfg, "query_kernels", None) #["2x2", "3x3"]
         
         # Seed for reproducibility
         self.seed = getattr(cfg, "seed", None)
@@ -89,7 +94,7 @@ class IKE_CHAIN(nn.Module):
         
         self._vision_act = None
         self._lang_act = None
-        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128)) if (self.dual_layer and self.lang_encoder == "internal") else None
+        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))  # used by dual_layer internal and balance radius
         self._sbert = None  # lazy loaded
         
         def _setup_hook(param_name, attr_name):
@@ -238,6 +243,23 @@ class IKE_CHAIN(nn.Module):
         return [patches[i] for i in top_k_idx]
 
     @torch.no_grad()
+    def _estimate_radius_balance(self, key_emb: torch.Tensor, img, text: str) -> float:
+        """Estimate radius via positive (augmented image+text) and negative (blank image) samples."""
+        # Positive: augmented image + augmented text
+        pos_dists = []
+        for _ in range(self.n_positive_samples):
+            aug_img = self.augmenter.image(img)
+            aug_text = self.augmenter.question(text) if text else ""
+            pos_emb = self._encode_vlm([aug_img], [aug_text])
+            pos_dists.append(float(torch.norm(pos_emb.cpu() - key_emb.cpu())))
+        d_pos = float(np.median(pos_dists)) if pos_dists else 0.0
+        # Negative: blank image, same text
+        neg_emb = self._encode_vlm([self._blank_image], [text])
+        d_neg = float(torch.norm(neg_emb.cpu() - key_emb.cpu()))
+        # Combined: ε = (1 - α) * d(Pos, k) + α * d(Neg, k)
+        return (1 - self.balance_alpha) * d_pos + self.balance_alpha * d_neg
+
+    @torch.no_grad()
     def _estimate_radius(self, key_emb: torch.Tensor, img, text: str) -> float:
         """Estimate radius.
         
@@ -245,6 +267,7 @@ class IKE_CHAIN(nn.Module):
         - 'fixed': constant radius (fastest, no forward pass)
         - 'single_aug': one aggressive augmentation × scale factor (1 forward pass)
         - 'augment': 99th percentile of n augmented samples (n forward passes)
+        - 'balance': positive (augmented) and negative (blank image) samples
         """
         if self.radius_method == "fixed":
             return self.fixed_radius
@@ -256,6 +279,9 @@ class IKE_CHAIN(nn.Module):
             aug_emb = self._encode_vlm([aug_img], [aug_text])
             dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
             return dist * self.single_aug_scale
+        
+        if self.radius_method == "balance":
+            return self._estimate_radius_balance(key_emb, img, text)
         
         # Default: multiple augmentations, take percentile
         aug_dists = []
@@ -321,11 +347,19 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             new_embs = F.normalize(new_embs, dim=-1)
         
-        # Compute radii
+        # Compute radii - one per source image, shared across its keys
+        # Keys per source: 1 (question) + len(rationale_sents)
+        keys_per_src = 1 + len(rationale_sents)
+        src_radii = []
+        for src_idx, src_img in enumerate(image_sources):
+            # Use first key (question key) as representative for radius
+            key_idx = src_idx * keys_per_src
+            r = self._estimate_radius(new_embs[key_idx:key_idx+1], src_img, question)
+            src_radii.append(r)
+        # Expand to all keys
         new_radii = []
-        for i, (im, tx) in enumerate(zip(new_imgs, new_texts)):
-            r = self._estimate_radius(new_embs[i:i+1], im, tx)
-            new_radii.append(r)
+        for r in src_radii:
+            new_radii.extend([r] * keys_per_src)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         
         # Move to CPU to save GPU memory (only used for retrieval)
@@ -455,6 +489,8 @@ class IKE_CHAIN(nn.Module):
             r_info = f"fixed={self.fixed_radius}"
         elif self.radius_method == "single_aug":
             r_info = f"single_aug(×{self.single_aug_scale})"
+        elif self.radius_method == "balance":
+            r_info = f"balance(n={self.n_positive_samples},α={self.balance_alpha})"
         else:
             r_info = f"augment(n={self.n_radius_samples})"
         print(f"[IKE_PATCH] +{added} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
