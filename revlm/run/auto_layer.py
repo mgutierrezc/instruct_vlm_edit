@@ -24,7 +24,7 @@ from revlm.config_utils import configure_args
 from revlm.editors import AutoLayer
 
 
-def run_auto_layer(config, n_runs=10, n_samples=10, overwrite=False):
+def run_auto_layer(config, n_runs=10, n_samples=50, overwrite=False):
     """Run AutoLayer analysis k times for error bars.
     
     Args:

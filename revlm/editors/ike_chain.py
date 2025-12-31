@@ -46,7 +46,7 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
-        self.cap_k = int(getattr(cfg, "cap_k", 10))  # k closest keys to retrieve among all matching keys
+        self.cap_k = int(getattr(cfg, "cap_k", 5))  # k closest keys to retrieve among all matching keys
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
         self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
@@ -58,10 +58,8 @@ class IKE_CHAIN(nn.Module):
             self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
         
         # Radius estimation config
-        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "single_aug", "augment", or "balance"
+        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
-        # "single_aug": radius based on one aggressive augmentation (image + text)
-        self.single_aug_scale = float(getattr(cfg, "single_aug_scale", 1.0))  # scale factor for single_aug
         # "augment": radius based on percentile of augmented image distances
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 1))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50)) # 99
@@ -77,7 +75,7 @@ class IKE_CHAIN(nn.Module):
         
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
-        self.augmenter = Augmenter(self.wrapper, seed=self.seed)
+        self.augmenter = Augmenter(self.wrapper, seed=self.seed, mosaic_prob=1.0)
         
         # Prompt for patch selection
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
@@ -265,20 +263,11 @@ class IKE_CHAIN(nn.Module):
         
         Methods:
         - 'fixed': constant radius (fastest, no forward pass)
-        - 'single_aug': one aggressive augmentation × scale factor (1 forward pass)
-        - 'augment': 99th percentile of n augmented samples (n forward passes)
+        - 'augment': percentile of n augmented samples (n forward passes)
         - 'balance': positive (augmented) and negative (blank image) samples
         """
         if self.radius_method == "fixed":
             return self.fixed_radius
-        
-        if self.radius_method == "single_aug":
-            # One augmentation (image + text), scaled up. Always use mosaic for aggressive aug.
-            aug_img = self.augmenter.image(img, use_mosaic=True)
-            aug_text = self.augmenter.question(text) if text else ""
-            aug_emb = self._encode_vlm([aug_img], [aug_text])
-            dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
-            return dist * self.single_aug_scale
         
         if self.radius_method == "balance":
             return self._estimate_radius_balance(key_emb, img, text)
@@ -487,8 +476,6 @@ class IKE_CHAIN(nn.Module):
         mem_mb = self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0
         if self.radius_method == "fixed":
             r_info = f"fixed={self.fixed_radius}"
-        elif self.radius_method == "single_aug":
-            r_info = f"single_aug(×{self.single_aug_scale})"
         elif self.radius_method == "balance":
             r_info = f"balance(n={self.n_positive_samples},α={self.balance_alpha})"
         else:

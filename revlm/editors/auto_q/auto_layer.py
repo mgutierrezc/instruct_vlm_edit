@@ -24,7 +24,7 @@ EXCLUDE_PATTERNS = [
     "post_attention_layernorm", "pre_layrnorm", "post_layernorm",
     "q_norm", "k_norm", "norm1", "norm2", ".norm.",
     "lm_head", "crossattention",
-    "q_proj", "k_proj", "v_proj", "qkv", "o_proj", "attn.proj",
+    "q_proj", "k_proj", "v_proj", "qkv", "o_proj", "attn.proj", "self_attn",
     "rotary", "rope", "attention.attention",
     "qformer", "intermediate", "up_proj", "down_proj"
 ]

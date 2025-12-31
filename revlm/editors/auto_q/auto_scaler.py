@@ -147,7 +147,7 @@ class AutoScaler(ModularityCore):
         same_text = (text_labels.unsqueeze(0) == text_labels.unsqueeze(1))
         
         if mode == "and":
-            target = (same_img & same_text).float() * 2  # Weight 2 for strict AND
+            target = (same_img & same_text).float() * 5  # Weight 2 for strict AND
         elif mode == "or":
             target = (same_img | same_text).float()
         elif mode == "and_or":
@@ -481,7 +481,8 @@ class AutoScaler(ModularityCore):
         
         # Get all scalers from first run
         scaler_keys = list(all_results[0]["scalers"].keys())
-        metrics = ["vision_Q", "language_Q", "harmonic"]
+        metrics = ["vision_Q", "language_Q", "harmonic", 
+                   "bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"]
         
         # Aggregate scalers
         agg_scalers = {}
@@ -491,12 +492,13 @@ class AutoScaler(ModularityCore):
                 vals = [r["scalers"][s][m] for r in all_results if s in r["scalers"]]
                 agg_scalers[s][m] = {"mean": np.mean(vals), "std": np.std(vals)}
         
-        # Aggregate baselines
+        # Aggregate baselines (only core metrics, baselines don't have bimodal)
         agg_baselines = {}
+        baseline_metrics = ["vision_Q", "language_Q", "harmonic"]
         for bl_key in ["vision_layer", "lang_layer"]:
             if bl_key in all_results[0]["baselines"]:
                 agg_baselines[bl_key] = {}
-                for m in metrics:
+                for m in baseline_metrics:
                     vals = [r["baselines"][bl_key][m] for r in all_results if bl_key in r["baselines"]]
                     agg_baselines[bl_key][m] = {"mean": np.mean(vals), "std": np.std(vals)}
         
