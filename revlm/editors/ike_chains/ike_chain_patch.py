@@ -77,6 +77,10 @@ class IKE_CHAIN(nn.Module):
         # Seed for reproducibility
         self.seed = getattr(cfg, "seed", None)
         
+        # Key merging: merge keys with same key_text if candidate falls within radius
+        self.merge_keys = getattr(cfg, "merge_keys", False)
+        self.merge_radius_factor = float(getattr(cfg, "merge_radius_factor", 0.25))  # merge if dist < factor * radius
+        
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
         dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
@@ -291,6 +295,40 @@ class IKE_CHAIN(nn.Module):
         
         return float(np.percentile(aug_dists, self.radius_percentile))
 
+    def _try_merge_key(self, emb: torch.Tensor, radius: float, key_text: str) -> bool:
+        """Try to merge a new key into an existing one with same key_text.
+        
+        Merge condition: same key_text AND dist < existing_r * merge_radius_factor.
+        Merge result: existing key stays, radius extends if candidate sticks out.
+        
+        Returns True if merged, False if should add as new key.
+        """
+        if self.key_embs is None or not key_text:
+            return False
+        
+        # Find candidates with same key_text
+        candidates = [i for i, e in enumerate(self.codebook) if e.get("key_text") == key_text]
+        if not candidates:
+            return False
+        
+        # Check if new key falls within any existing key's radius
+        emb_cpu = emb.cpu().squeeze(0) if emb.dim() > 1 else emb.cpu()
+        for idx in candidates:
+            existing_emb = self.key_embs[idx]
+            existing_r = float(self.key_radii[idx])
+            dist = float(torch.norm(emb_cpu - existing_emb))
+            
+            if dist < existing_r * self.merge_radius_factor:  # Candidate must be deep inside
+                # Extend radius if candidate's coverage sticks out
+                new_r = max(existing_r, dist + radius)
+                
+                # Update radius only (embedding stays)
+                self.key_radii[idx] = new_r
+                self.codebook[idx]["is_merged"] = True
+                return True
+        
+        return False
+
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
         """Add keys for one edit.
@@ -379,15 +417,23 @@ class IKE_CHAIN(nn.Module):
         # Move to CPU to save GPU memory (only used for retrieval)
         new_embs = new_embs.cpu()
         
-        # Append to codebook
-        self.codebook.extend(new_entries)
-        
-        if self.key_embs is None:
-            self.key_embs = new_embs
-            self.key_radii = new_radii
-        else:
-            self.key_embs = torch.cat([self.key_embs, new_embs], dim=0)
-            self.key_radii = torch.cat([self.key_radii, new_radii])
+        # Add keys to codebook (with optional merging)
+        for i, entry in enumerate(new_entries):
+            emb, radius = new_embs[i:i+1], float(new_radii[i])
+            key_text = entry.get("key_text", "")
+            
+            # Try merge if enabled, otherwise add as new
+            if self.merge_keys and self._try_merge_key(emb, radius, key_text):
+                continue  # Merged into existing key
+            
+            # Add as new key
+            self.codebook.append(entry)
+            if self.key_embs is None:
+                self.key_embs = emb
+                self.key_radii = torch.tensor([radius])
+            else:
+                self.key_embs = torch.cat([self.key_embs, emb], dim=0)
+                self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
         
         # Clear CUDA cache
         if torch.cuda.is_available():
@@ -697,16 +743,19 @@ class IKE_CHAIN(nn.Module):
         n_image_only = sum(1 for e in self.codebook if e.get("is_image_only", False))
         n_question_keys = sum(1 for e in self.codebook if e.get("is_question", False))
         n_rationale_keys = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
+        n_merged_keys = sum(1 for e in self.codebook if e.get("is_merged", False))
         
         stats = {
             "num_keys": len(self.codebook),
             "num_orig_keys": n_orig_keys,
             "num_patch_keys": n_patch_keys,
+            "num_merged_keys": n_merged_keys,
             "num_question_keys": n_question_keys,
             "num_rationale_keys": n_rationale_keys,
             "num_image_only_keys": n_image_only,
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
+            "merge_keys": self.merge_keys,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
@@ -866,15 +915,22 @@ class IKE_CHAIN(nn.Module):
         edit_to_color = {e: i for i, e in enumerate(edit_list)}
         cmap = plt.cm.get_cmap('tab20', max(len(edit_list), 1))
         
-        # Draw nodes
-        for is_patch, size in [(False, 60), (True, 15)]:
-            nodelist = [i for i in range(n_keys) if self.codebook[indices[i]].get("is_patch", False) == is_patch]
+        # Draw nodes: original (large circle), patch (small circle), merged (small square)
+        for node_type, size, marker in [("original", 60, 'o'), ("patch", 15, 'o'), ("merged", 20, 's')]:
+            if node_type == "merged":
+                nodelist = [i for i in range(n_keys) if self.codebook[indices[i]].get("is_merged", False)]
+            elif node_type == "original":
+                nodelist = [i for i in range(n_keys) if not self.codebook[indices[i]].get("is_patch", False) 
+                           and not self.codebook[indices[i]].get("is_merged", False)]
+            else:  # patch
+                nodelist = [i for i in range(n_keys) if self.codebook[indices[i]].get("is_patch", False)
+                           and not self.codebook[indices[i]].get("is_merged", False)]
             if not nodelist:
                 continue
             colors = [cmap(edit_to_color[self.codebook[indices[i]].get("edit_idx", 0)]) for i in nodelist]
             edgecolors = ['black' if i in text_local else 'red' if i in img_local else 'none' for i in nodelist]
             linewidths = [1.5 if i in text_local or i in img_local else 0 for i in nodelist]
-            nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color=colors,
+            nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color=colors, node_shape=marker,
                                    node_size=size, alpha=0.8, ax=ax, edgecolors=edgecolors, linewidths=linewidths)
         
         # Draw query as black star
@@ -884,6 +940,7 @@ class IKE_CHAIN(nn.Module):
         # Legend
         ax.scatter([], [], c='gray', s=40, marker='o', label='original')
         ax.scatter([], [], c='gray', s=12, marker='o', label='patch')
+        ax.scatter([], [], c='gray', s=15, marker='s', label='merged')
         if q_node is not None:
             ax.scatter([], [], c='black', s=40, marker='*', label='query')
         if text_local:

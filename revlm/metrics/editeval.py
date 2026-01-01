@@ -72,8 +72,8 @@ def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
 	return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
 
 
-def _subsample_gen_inputs(related_texts, related_images, related_r_gen_df, max_samples, seed=333):
-	"""Subsample generality inputs to max_samples total each."""
+def _subsample_gen_inputs(related_texts, related_images, max_samples, seed=333):
+	"""Subsample text/image generality inputs to max_samples total each."""
 	rng = random.Random(seed)
 	
 	# Subsample related_texts: flatten, sample, rebuild dict
@@ -92,11 +92,7 @@ def _subsample_gen_inputs(related_texts, related_images, related_r_gen_df, max_s
 	for k, v in flat_i:
 		new_images.setdefault(k, []).append(v)
 	
-	# Subsample related_r_gen_df
-	if len(related_r_gen_df) > max_samples:
-		related_r_gen_df = related_r_gen_df.sample(n=max_samples, random_state=seed)
-	
-	return new_texts, new_images, related_r_gen_df
+	return new_texts, new_images
 
 
 def editeval(
@@ -125,10 +121,10 @@ def editeval(
 	if hasattr(editor, "plot_codebook"):
 		editor.plot_codebook()
 
-	# Subsample generality inputs if requested
+	# Subsample generality inputs if requested (skip rationale_df - it's UID-filtered inside)
 	if gen_subsample_size is not None:
-		related_texts, related_images, related_r_gen_df = _subsample_gen_inputs(
-			related_texts, related_images, related_r_gen_df, gen_subsample_size
+		related_texts, related_images = _subsample_gen_inputs(
+			related_texts, related_images, gen_subsample_size
 		)
 
 	t_rel = time.time()
