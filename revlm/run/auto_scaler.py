@@ -24,7 +24,7 @@ from revlm.config_utils import configure_args
 from revlm.editors import AutoScaler
 
 
-def run_auto_scaler(config, n_runs=10, n_samples=5, lang_scalers=None, overwrite=False):
+def run_auto_scaler(config, n_runs=10, n_samples=10, lang_scalers=None, overwrite=False):
     """Run AutoScaler analysis k times for error bars.
     
     Args:

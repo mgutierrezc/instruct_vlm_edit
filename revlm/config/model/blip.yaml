@@ -2,8 +2,8 @@ name: "Salesforce/instructblip-vicuna-7b"
 class_name: VQAModel
 pt: null
 inner_params: ["language_model.model.layers.31.mlp.gate_proj.weight"] # conventional layer
-inner_params_vision: ["vision_model.encoder.layers.36.mlp.fc1.weight"] # vision layer
-inner_params_lang: ["language_model.model.layers.31.mlp.gate_proj.weight"] # langauge layer
+inner_params_vision: ["vision_model.encoder.layers.38.mlp.fc1.weight"] # vision layer
+inner_params_lang: ["language_model.model.layers.14.mlp.gate_proj.weight"] # langauge layer
 lang_scaler: 30  # for dual-layer embedding: concat(vis_layer, scaler * lang_layer)
 processor_class: null
 tokenizer_class: null
