@@ -189,11 +189,13 @@ class BalancEdit(torch.nn.Module):
         """Edit a single layer: learn local correction + optional epsilon (radius)."""
         layer_module = self._get_layer_module(self.layer)
 
-        # Find the last non-masked token position (end of answer)
+        # Find the prompt-end position (last -100 in labels, just before first answer token)
+        # This ensures keys are invariant to target length (answer vs answer+COT)
         labels = tokens["labels"]
-        non_masked = (labels != -100)
-        if non_masked.any():
-            key_id = non_masked.sum(dim=1).max().item() - 1
+        masked = (labels == -100)
+        if masked.any():
+            key_id = masked.sum(dim=-1).min().item() - 1
+            key_id = max(0, key_id)  # Ensure non-negative
         else:
             key_id = labels.shape[1] - 1
 

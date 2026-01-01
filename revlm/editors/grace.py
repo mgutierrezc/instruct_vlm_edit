@@ -96,8 +96,13 @@ class GRACE(torch.nn.Module):
         return self.model.generate(*args, **kwargs)
         
     def edit(self, config, tokens, batch_history):
-        if hasattr(config, 'task') and config.task == "hallucination":
-            key_id = (tokens.get("labels", torch.tensor([])) == -100).sum() - 1
+        # Always compute key_id at prompt-end position (last -100 in labels)
+        # This ensures keys are invariant to target length (answer vs answer+COT)
+        labels = tokens.get("labels", None)
+        if labels is not None:
+            # key_id = position of last prompt token (just before first answer token)
+            key_id = (labels == -100).sum(dim=-1).min().item() - 1
+            key_id = max(0, key_id)  # Ensure non-negative
             setattr(self.target_layer, "key_id", key_id)
         
         setattr(self.target_layer, "training", True)

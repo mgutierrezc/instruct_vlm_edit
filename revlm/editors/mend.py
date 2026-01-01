@@ -125,10 +125,10 @@ class MEND(torch.nn.Module):
 
     def edit(self, config, tokens, batch_history):
         """
-        Online training of the MEND hypernetwork on a single edit example.
-
-        Exactly the GRACE-style inner loop, but using revlm's `config.edit_lr`
-        and `config.n_iter` instead of Hydra dicts.
+        Memory-efficient MEND training for large VLMs.
+        
+        Uses gradient matching: train hypernetwork to produce updates that
+        align with the direction that reduces loss on the edit example.
         """
         del batch_history  # not used in this simple variant
 
@@ -137,7 +137,6 @@ class MEND(torch.nn.Module):
         n_iter = int(getattr(editor_config, 'n_iter', config.n_iter))
         early_stop_patience = editor_config.early_stop_patience
         
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=max(1, n_iter))
         self.losses = []
         self._key_idx = self._compute_key_idx(tokens)
         
@@ -145,32 +144,97 @@ class MEND(torch.nn.Module):
         patience_counter = 0
 
         for i in range(n_iter):
-            self.edit_step(tokens)
-
+            opt.zero_grad()
+            
+            # Step 1: Forward + backward to populate hooks and get base gradients
             outputs = self.model(**tokens)
-            loss = outputs.loss if hasattr(outputs, "loss") else None
-
-            if loss is None:
+            base_loss = outputs.loss if hasattr(outputs, "loss") else None
+            if base_loss is None:
                 logits = outputs.logits if hasattr(outputs, "logits") else outputs
                 if "labels" in tokens:
-                    loss = F.cross_entropy(
+                    base_loss = F.cross_entropy(
                         logits.view(-1, logits.size(-1)),
                         tokens["labels"].view(-1),
                         ignore_index=-100,
                     )
                 else:
                     break
-
-            loss_value = loss.detach().cpu().item()
-            self.losses.append(loss_value)
-            self.loss = loss
-
-            self.loss.backward()
-            opt.step()
-            opt.zero_grad()
-            scheduler.step()
             
-            # Early stopping: check if loss improved
+            base_loss.backward()  # Populates __x__, __delta__ via hooks
+            
+            # Step 2: Transform gradients with hypernetwork (KEEPS GRADIENT FLOW!)
+            transformed_factors = {}
+            target_grads = {}  # Store the actual gradients as targets
+            for n, p in get_inner_params(self.model.named_parameters(), self.pnames):
+                x = self._select_token(p.__x__)
+                delta = self._select_token(p.__delta__)
+                transformed_factors[n] = self.mend[n.replace(".", "#")](x, delta)
+                # Target: the actual gradient scaled for this loss
+                if p.grad is not None:
+                    target_grads[n] = p.grad.detach().clone()
+            
+            # Step 3: Build updates from hypernetwork output
+            updates = {}
+            for n, (x_t, delta_t) in transformed_factors.items():
+                updates[n] = torch.matmul(delta_t.view(-1, 1), x_t.view(1, -1))
+            
+            # Step 4: Compute hypernetwork loss - match transformed update to target direction
+            # This trains the hypernetwork to produce updates aligned with loss reduction
+            hypernet_loss = torch.tensor(0.0, device=self.device)
+            for n in updates:
+                upd = updates[n].T if self._transpose else updates[n]
+                upd = upd.to(target_grads[n].dtype)
+                # Negative cosine similarity: we want update to align with negative gradient
+                # (gradient points uphill, we want to go downhill)
+                target = -target_grads[n]  # Negative gradient = direction of steepest descent
+                cos_sim = F.cosine_similarity(upd.view(1, -1), target.view(1, -1))
+                hypernet_loss = hypernet_loss - cos_sim  # Minimize negative cosine = maximize alignment
+                
+                # Also add magnitude matching term
+                mag_loss = (upd.norm() - target.norm()).abs() * 0.1
+                hypernet_loss = hypernet_loss + mag_loss
+            
+            # Step 5: Backprop to train hypernetwork
+            hypernet_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.outer_parameters(), max_norm=1.0)
+            opt.step()
+            
+            # Step 6: Apply updates to model weights (no grad needed)
+            self.model.zero_grad()
+            param_dict = dict(self.model.named_parameters())
+            with torch.no_grad():
+                for n in updates:
+                    upd = updates[n].T if self._transpose else updates[n]
+                    param_dict[n].add_(upd.to(param_dict[n].dtype))
+                    # Handle bias if present
+                    if n in self.bias_map:
+                        bias_name = self.bias_map[n]
+                        _, delta_t = transformed_factors[n]
+                        b_upd = delta_t.mean(dim=0) if delta_t.dim() == 2 else delta_t
+                        param_dict[bias_name].add_(b_upd.to(param_dict[bias_name].dtype))
+            
+            # Step 7: Evaluate post-edit loss for logging/early stopping
+            with torch.no_grad():
+                outputs = self.model(**tokens)
+                post_loss = outputs.loss if hasattr(outputs, "loss") else None
+                if post_loss is None:
+                    logits = outputs.logits if hasattr(outputs, "logits") else outputs
+                    if "labels" in tokens:
+                        post_loss = F.cross_entropy(
+                            logits.view(-1, logits.size(-1)),
+                            tokens["labels"].view(-1),
+                            ignore_index=-100,
+                        )
+            
+            loss_value = post_loss.cpu().item() if post_loss is not None else base_loss.detach().cpu().item()
+            self.losses.append(loss_value)
+            self.loss = post_loss if post_loss is not None else base_loss.detach()
+            
+            # Clear CUDA cache periodically
+            if i % 10 == 0:
+                torch.cuda.empty_cache()
+            
+            # Early stopping
             if loss_value < best_loss:
                 best_loss = loss_value
                 patience_counter = 0
@@ -179,76 +243,12 @@ class MEND(torch.nn.Module):
                 if patience_counter >= early_stop_patience:
                     break
             
-            # Print loss every 10 iterations or on first/last iteration
+            # Print loss
             if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
                 print(f"[mend] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
 
         return self.model
 
-    def edit_step(self, batch):
-        """
-        Single inner step:
-        - run base model on the edit batch to obtain gradients & hooks (x, δ),
-        - pass (x, δ) through GradientTransform,
-        - form low-rank updates and apply them via a functional copy.
-        """
-        outputs = self.model(**batch)
-        logits = outputs.logits if hasattr(outputs, "logits") else outputs
-        loss = outputs.loss if hasattr(outputs, "loss") else None
-
-        if loss is None:
-            if "labels" in batch:
-                loss = F.cross_entropy(
-                    logits.view(-1, logits.size(-1)),
-                    batch["labels"].view(-1),
-                    ignore_index=-100,
-                )
-            else:
-                return self.model
-
-        # Backprop once to populate p.weight.__x__ and p.weight.__delta__ via hooks
-        loss.backward()
-
-        # Use hypernetwork to transform (x, δ) into update factors
-        transformed_factors = {}
-        for n, p in get_inner_params(self.model.named_parameters(), self.pnames):
-            x = self._select_token(p.__x__)
-            delta = self._select_token(p.__delta__)
-            transformed_factors[n] = self.mend[n.replace(".", "#")](x, delta)
-
-        # Build low-rank update (outer product) per parameter
-        mean_grads = {
-            n: torch.matmul(delta.view(-1, 1), x.view(1, -1))
-            for n, (x, delta) in transformed_factors.items()
-        }
-
-        # Clear gradients on base model before constructing functional version
-        self.model.zero_grad()
-
-        updates = mean_grads
-        bias_updates = {
-            n: delta.mean(dim=0) if delta.dim() > 1 else delta
-            for n, (_, delta) in transformed_factors.items()
-        }
-
-        param_dict = dict(self.model.named_parameters())
-
-        with torch.no_grad():
-            for n, p in param_dict.items():
-                if n in updates:
-                    upd = updates[n].T if self._transpose else updates[n]
-                    upd = upd.to(p.dtype)
-                    p.add_(upd)
-                    if n in self.bias_map:
-                        bias_name = self.bias_map[n]
-                        bias_param = param_dict[bias_name]
-                        b_upd = bias_updates[n]
-                        if b_upd.dim() == 2:
-                            b_upd = b_upd.mean(dim=0)
-                        b_upd = b_upd.to(bias_param.dtype)
-                        bias_param.add_(b_upd)
-
-        loss.detach()
 
     def _select_token(self, tensor):
         if tensor.dim() == 3:
