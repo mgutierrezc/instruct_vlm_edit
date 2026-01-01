@@ -46,7 +46,7 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
-        self.cap_k = int(getattr(cfg, "cap_k", 5))  # k closest keys to retrieve among all matching keys
+        self.cap_k = int(getattr(cfg, "cap_k", 3))  # k closest keys to retrieve among all matching keys
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
         self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
@@ -68,7 +68,7 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", None) #["2x2", "3x3"]
+        self.query_kernels = getattr(cfg, "query_kernels", None)
         
         # Image-only fallback retrieval
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -604,7 +604,11 @@ class IKE_CHAIN(nn.Module):
             else:
                 dm = torch.cdist(q_embs.float(), self.key_embs[idx_t].float(), p=2)
             matched = dm <= self.key_radii[idx_t]
-            text_matched = set(text_indices[i] for i in torch.where(matched.any(dim=0))[0].tolist())
+            matched_local = torch.where(matched.any(dim=0))[0]
+            if matched_local.numel() > 0:
+                min_dists = dm[:, matched_local].min(dim=0).values
+                top_k = matched_local[min_dists.argsort()][:self.cap_k]
+                text_matched = set(text_indices[i.item()] for i in top_k)
         
         if text_matched or not self.image_only_retrieval:
             return text_matched, img_matched
@@ -645,8 +649,12 @@ class IKE_CHAIN(nn.Module):
                     dm = 1 - (q_t @ self.key_embs[idx_t].t())
                 else:
                     dm = torch.cdist(q_t.float(), self.key_embs[idx_t].float(), p=2)
-                if (dm <= self.key_radii[idx_t]).any():
-                    img_matched.update(t_idx[i] for i in torch.where((dm <= self.key_radii[idx_t]).any(dim=0))[0].tolist())
+                matched = dm <= self.key_radii[idx_t]
+                matched_local = torch.where(matched.any(dim=0))[0]
+                if matched_local.numel() > 0:
+                    min_dists = dm[:, matched_local].min(dim=0).values
+                    top_k = matched_local[min_dists.argsort()][:self.cap_k]
+                    img_matched.update(t_idx[i.item()] for i in top_k)
         
         return text_matched, img_matched
 
@@ -888,7 +896,7 @@ class IKE_CHAIN(nn.Module):
         sims = 1 / (1 + dists)
         G = nx.Graph()
         G.add_nodes_from(range(n_keys))
-        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 75) if n_keys > 1 else 0
+        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 90) if n_keys > 1 else 0
         for i in range(n_keys):
             for j in range(i + 1, n_keys):
                 if sims[i, j] > thresh:
