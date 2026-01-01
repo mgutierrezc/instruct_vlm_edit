@@ -72,6 +72,33 @@ def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
 	return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
 
 
+def _subsample_gen_inputs(related_texts, related_images, related_r_gen_df, max_samples, seed=333):
+	"""Subsample generality inputs to max_samples total each."""
+	rng = random.Random(seed)
+	
+	# Subsample related_texts: flatten, sample, rebuild dict
+	flat_t = [(k, v) for k, lst in related_texts.items() for v in lst]
+	if len(flat_t) > max_samples:
+		flat_t = rng.sample(flat_t, max_samples)
+	new_texts = {}
+	for k, v in flat_t:
+		new_texts.setdefault(k, []).append(v)
+	
+	# Subsample related_images
+	flat_i = [(k, v) for k, lst in related_images.items() for v in lst]
+	if len(flat_i) > max_samples:
+		flat_i = rng.sample(flat_i, max_samples)
+	new_images = {}
+	for k, v in flat_i:
+		new_images.setdefault(k, []).append(v)
+	
+	# Subsample related_r_gen_df
+	if len(related_r_gen_df) > max_samples:
+		related_r_gen_df = related_r_gen_df.sample(n=max_samples, random_state=seed)
+	
+	return new_texts, new_images, related_r_gen_df
+
+
 def editeval(
 		model_old: Any,
 		model_new: Any,
@@ -86,15 +113,23 @@ def editeval(
 		lambda_gen: float = 1.0,
 		lambda_loc: float = 1.0,
 		gen_agg: str = "harmonic",
+		gen_subsample_size: int = None,
 	) -> Dict[str, float]:
 	"""Combined metric: rel + λ_gen * gen + λ_loc * loc.
 	
 	gen can be mean or harmonic of text/image generality.
 	use_hard_locality: if True, also compute hard_locality (top-k similar unrelated questions).
+	gen_subsample_size: if set, cap generality eval samples (for intermediate checkpoints).
 	"""
 
 	if hasattr(editor, "plot_codebook"):
 		editor.plot_codebook()
+
+	# Subsample generality inputs if requested
+	if gen_subsample_size is not None:
+		related_texts, related_images, related_r_gen_df = _subsample_gen_inputs(
+			related_texts, related_images, related_r_gen_df, gen_subsample_size
+		)
 
 	t_rel = time.time()
 	rel = reliability(model_new, edit_ds)
@@ -247,21 +282,35 @@ def locality(
     move_model_device(model_old, "cpu")
     cuda_gc()
     
-    # Evaluate model_new: move to GPU, generate, then move back to CPU
+    # Filter to samples where old model is correct
+    correct_indices, targets = _filter_correct(pairs_old)
+    if not correct_indices:
+        move_model_device(model_new, target_device)
+        return 0.0
+    ds_new.data = [ds_new.data[i] for i in correct_indices]
+    ds_new.set_dataloader(shuffle_choices=False)
+    
+    # Evaluate model_new: move to GPU, generate on filtered samples
     move_model_device(model_new, target_device)
     pairs_new = generation(model_new, ds_new)
     move_model_device(model_new, "cpu")
     cuda_gc()
     
-    preds_old = [p for _, p in pairs_old]
+    # Locality = how many does new model still get correct
     preds_new = [p for _, p in pairs_new]
-    # Case-insensitive comparison: normalize both strings to lowercase and strip whitespace
-    correct = sum(1 for a, b in zip(preds_old, preds_new) if str(a).strip().lower() == str(b).strip().lower())
-    loc = correct / len(preds_old)
+    correct = sum(1 for t, p in zip(targets, preds_new) if str(t).strip().lower() == str(p).strip().lower())
+    loc = correct / len(correct_indices)
 
     # Restore model_new to GPU for any downstream use after locality().
     move_model_device(model_new, target_device)
     return loc
+
+
+def _filter_correct(pairs: List[Tuple[str, str]]) -> Tuple[List[int], List[str]]:
+    """Filter to indices where prediction matches target. Returns (indices, targets)."""
+    indices = [i for i, (t, p) in enumerate(pairs) if str(t).strip().lower() == str(p).strip().lower()]
+    targets = [pairs[i][0] for i in indices]
+    return indices, targets
 
 
 def _tokenize(text: str) -> set:
@@ -320,18 +369,29 @@ def hard_locality(
     ds_old, ds_new = copy.deepcopy(hard_ds), copy.deepcopy(hard_ds)
     _maybe_apply_ike(editor, ds_new, edit_ds)
     
-    # Evaluate both models
+    # Evaluate model_old
     target = getattr(edit_ds.config, "device", "cuda")
     target = torch.device(target) if isinstance(target, str) else target
     move_model_device(model_new, "cpu"); cuda_gc()
     move_model_device(model_old, target)
     pairs_old = generation(model_old, ds_old)
     move_model_device(model_old, "cpu"); cuda_gc()
+    
+    # Filter to samples where old model is correct
+    correct_indices, targets = _filter_correct(pairs_old)
+    if not correct_indices:
+        move_model_device(model_new, target)
+        return 0.0
+    ds_new.data = [ds_new.data[i] for i in correct_indices]
+    ds_new.set_dataloader(shuffle_choices=False)
+    
+    # Evaluate model_new on filtered samples
     move_model_device(model_new, target)
     pairs_new = generation(model_new, ds_new)
     
-    preds_old, preds_new = [p for _, p in pairs_old], [p for _, p in pairs_new]
-    return sum(str(a).strip().lower() == str(b).strip().lower() for a, b in zip(preds_old, preds_new)) / len(preds_old) if preds_old else 0.0
+    # Hard locality = how many does new model still get correct
+    preds_new = [p for _, p in pairs_new]
+    return sum(1 for t, p in zip(targets, preds_new) if str(t).strip().lower() == str(p).strip().lower()) / len(correct_indices)
 
 
 def hard_locality_sentence_bert(
