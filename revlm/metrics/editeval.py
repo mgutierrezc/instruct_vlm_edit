@@ -72,29 +72,6 @@ def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
 	return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
 
 
-def _subsample_gen_inputs(related_texts, related_images, max_samples, seed=333):
-	"""Subsample text/image generality inputs to max_samples total each."""
-	rng = random.Random(seed)
-	
-	# Subsample related_texts: flatten, sample, rebuild dict
-	flat_t = [(k, v) for k, lst in related_texts.items() for v in lst]
-	if len(flat_t) > max_samples:
-		flat_t = rng.sample(flat_t, max_samples)
-	new_texts = {}
-	for k, v in flat_t:
-		new_texts.setdefault(k, []).append(v)
-	
-	# Subsample related_images
-	flat_i = [(k, v) for k, lst in related_images.items() for v in lst]
-	if len(flat_i) > max_samples:
-		flat_i = rng.sample(flat_i, max_samples)
-	new_images = {}
-	for k, v in flat_i:
-		new_images.setdefault(k, []).append(v)
-	
-	return new_texts, new_images
-
-
 def editeval(
 		model_old: Any,
 		model_new: Any,
@@ -109,23 +86,28 @@ def editeval(
 		lambda_gen: float = 1.0,
 		lambda_loc: float = 1.0,
 		gen_agg: str = "harmonic",
-		gen_subsample_size: int = None,
+		edit_subsample_size: int = None,
 	) -> Dict[str, float]:
 	"""Combined metric: rel + λ_gen * gen + λ_loc * loc.
 	
 	gen can be mean or harmonic of text/image generality.
 	use_hard_locality: if True, also compute hard_locality (top-k similar unrelated questions).
-	gen_subsample_size: if set, cap generality eval samples (for intermediate checkpoints).
+	edit_subsample_size: if set, cap edit_ds to this many samples (for intermediate checkpoints).
 	"""
 
 	if hasattr(editor, "plot_codebook"):
 		editor.plot_codebook()
 
-	# Subsample generality inputs if requested (skip rationale_df - it's UID-filtered inside)
-	if gen_subsample_size is not None:
-		related_texts, related_images = _subsample_gen_inputs(
-			related_texts, related_images, gen_subsample_size
-		)
+	# Subsample edit_ds for faster intermediate evals
+	if edit_subsample_size is not None and len(edit_ds.data) > edit_subsample_size:
+		edit_ds = copy.deepcopy(edit_ds)
+		rng = random.Random(333)
+		edit_ds.data = rng.sample(edit_ds.data, edit_subsample_size)
+		edit_ds.set_dataloader()
+		# Filter related inputs to subsampled UIDs
+		uids = {str(ex["uid"]) for ex in edit_ds.data}
+		related_texts = {k: v for k, v in related_texts.items() if str(k) in uids}
+		related_images = {k: v for k, v in related_images.items() if str(k) in uids}
 
 	t_rel = time.time()
 	rel = reliability(model_new, edit_ds)

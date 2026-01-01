@@ -365,7 +365,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             batch_out_dict = editeval(
                 model_old, model, edit_ds_sofar, editor,
                 related_texts, related_images, related_r_gen_df,
-                gen_subsample_size=None if is_last else 200,
+                edit_subsample_size=None if is_last else 20,
             )
             batch_out_dict['batch_idx'] = batch_idx + 1
             batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())

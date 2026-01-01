@@ -584,7 +584,7 @@ class IKE_CHAIN(nn.Module):
         return list(retrieved)
 
     @torch.no_grad()
-    def _get_matched_indices(self, image, question: str) -> Tuple[set, set]:
+    def _get_matched_indices(self, image, question: str, apply_cap_k: bool = True) -> Tuple[set, set]:
         """Get matched key indices for plotting. Returns (text_matched, img_fallback_matched)."""
         text_matched, img_matched = set(), set()
         if self.key_embs is None or len(self.codebook) == 0:
@@ -607,7 +607,9 @@ class IKE_CHAIN(nn.Module):
             matched_local = torch.where(matched.any(dim=0))[0]
             if matched_local.numel() > 0:
                 min_dists = dm[:, matched_local].min(dim=0).values
-                top_k = matched_local[min_dists.argsort()][:self.cap_k]
+                top_k = matched_local[min_dists.argsort()]
+                if apply_cap_k:
+                    top_k = top_k[:self.cap_k]
                 text_matched = set(text_indices[i.item()] for i in top_k)
         
         if text_matched or not self.image_only_retrieval:
@@ -653,7 +655,9 @@ class IKE_CHAIN(nn.Module):
                 matched_local = torch.where(matched.any(dim=0))[0]
                 if matched_local.numel() > 0:
                     min_dists = dm[:, matched_local].min(dim=0).values
-                    top_k = matched_local[min_dists.argsort()][:self.cap_k]
+                    top_k = matched_local[min_dists.argsort()]
+                    if apply_cap_k:
+                        top_k = top_k[:self.cap_k]
                     img_matched.update(t_idx[i.item()] for i in top_k)
         
         return text_matched, img_matched
@@ -850,7 +854,7 @@ class IKE_CHAIN(nn.Module):
         plt.show()
 
     @torch.no_grad()
-    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None):
+    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None, apply_cap_k=True):
         """Plot force-directed network of keys.
         
         Color by edit_idx, size by is_patch (original=large, patch=small).
@@ -881,7 +885,7 @@ class IKE_CHAIN(nn.Module):
         text_global, img_global = set(), set()
         q_emb = None
         if query_img is not None and query_text is not None:
-            text_global, img_global = self._get_matched_indices(query_img, query_text)
+            text_global, img_global = self._get_matched_indices(query_img, query_text, apply_cap_k=apply_cap_k)
             # Get query embedding for plotting
             query_patches = self.patchifier.patchify(query_img, kernels=self.query_kernels)
             q_embs = self._encode_vlm(query_patches, [query_text] * len(query_patches)).cpu()
