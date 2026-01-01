@@ -423,7 +423,17 @@ class BalancEditAdapter(torch.nn.Module):
     def forward(self, *args):
         """Forward pass with key-value retrieval"""
         args_shape = args[0].shape
-        token_to_edit = -self.key_id - 1
+        
+        # Compute safe token_to_edit with bounds checking
+        if len(args_shape) == 3:
+            seq_len = args_shape[1]
+            # key_id is prompt-end position; clamp to valid range
+            safe_key_id = min(self.key_id, seq_len - 1) if self.key_id >= 0 else max(-seq_len, self.key_id)
+            token_to_edit = -safe_key_id - 1
+            # Ensure token_to_edit is valid for negative indexing
+            token_to_edit = max(-seq_len, min(-1, token_to_edit))
+        else:
+            token_to_edit = -self.key_id - 1
 
         # Phase 1: learn locality key (negative sample)
         if self.calculate_eps:

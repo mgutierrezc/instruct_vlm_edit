@@ -228,6 +228,13 @@ class GRACEAdaptor(torch.nn.Module):
     def forward(self, *args):
         layer_out = self.layer(*args)
         
+        # Clamp key_id to valid bounds for current sequence length
+        if args[0].dim() == 3:
+            seq_len = args[0].shape[1]
+            safe_key_id = min(self.key_id, seq_len - 1) if self.key_id >= 0 else max(-seq_len, self.key_id)
+        else:
+            safe_key_id = self.key_id
+        
         # If we have never initialized keys:
         if not hasattr(self, "keys"):
             # No keys and not in training mode → behave as identity (no GRACE effect before editing)
@@ -236,11 +243,11 @@ class GRACEAdaptor(torch.nn.Module):
 
             # Initialize on first forward pass during training (GRACE.edit sets edit_label & key_id)
             if args[0].dim() == 3:
-                init_query = args[0][:, self.key_id, :]
+                init_query = args[0][:, safe_key_id, :]
             else:
                 init_query = args[0].mean(dim=0, keepdim=True)
             if len(layer_out.shape) == 3:
-                init_value_out = layer_out[:, self.key_id, :]
+                init_value_out = layer_out[:, safe_key_id, :]
             else:
                 init_value_out = layer_out
 
@@ -252,7 +259,7 @@ class GRACEAdaptor(torch.nn.Module):
 
         # Compute query for retrieval (handles both 2D and 3D activations)
         if args[0].dim() == 3:
-            query = args[0][:, self.key_id, :]
+            query = args[0][:, safe_key_id, :]
         else:
             query = args[0].mean(dim=0, keepdim=True)
         
@@ -272,7 +279,7 @@ class GRACEAdaptor(torch.nn.Module):
             if smallest_distance > (self.init_epsilon + self.epsilons[nearest_key]):
                 # No close key → make a new key
                 if len(layer_out.shape) == 3:
-                    value_out = layer_out[:, self.key_id, :]
+                    value_out = layer_out[:, safe_key_id, :]
                 else:
                     value_out = layer_out
                 self.keys, self.values, self.epsilons, self.key_labels = self.add_key(query, value_out)
@@ -281,7 +288,7 @@ class GRACEAdaptor(torch.nn.Module):
                 # Handle conflicts with nearest key
                 if not self.label_match(self.edit_label, self.key_labels[nearest_key]):
                     if len(layer_out.shape) == 3:
-                        value_out = layer_out[:, self.key_id, :]
+                        value_out = layer_out[:, safe_key_id, :]
                     else:
                         value_out = layer_out
                     self.keys, self.values, self.epsilons, self.key_labels = self.add_key(query, value_out)
@@ -319,7 +326,7 @@ class GRACEAdaptor(torch.nn.Module):
 
         # --- apply replacement policy ---
         if len(layer_out.shape) == 3:
-            token_to_edit = min(self.key_id, layer_out.shape[1] - 1)
+            token_to_edit = safe_key_id
             # Ensure chosen_value is [1, H] for broadcasting
             if chosen_value.dim() == 1:
                 chosen_value_b = chosen_value.unsqueeze(0)  # [1, H]
@@ -350,7 +357,7 @@ class GRACEAdaptor(torch.nn.Module):
                     )
         else:
             # 2D activations (e.g., vision patches) – apply a simplified replacement
-            token_to_edit = min(self.key_id if self.key_id >= 0 else layer_out.shape[0] - 1,
+            token_to_edit = min(safe_key_id if safe_key_id >= 0 else layer_out.shape[0] - 1,
                                 layer_out.shape[0] - 1)
             if self.replacement == "replace_all":
                 layer_out = torch.where(
