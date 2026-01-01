@@ -248,6 +248,10 @@ def get_i_gen_input(dataset_name: str, edit_ds, k_per_model: int = 2) -> Dict[st
     )
     i_gen = pd.read_parquet(os.path.join(local_root, "i_gen", f"{dataset_name}.parquet"))
     i_gen = i_gen[i_gen["image_path"].isin(edit_image_paths)]
+    
+    # Deduplicate: keep only FIRST entry per image_path to avoid explosion
+    # (some images have 45+ caption variants, each generating separate images)
+    i_gen = i_gen.drop_duplicates(subset=["image_path"], keep="first")
 
     related_images: Dict[str, List[str]] = {}
     base_dir = Path("data/related_image") / dataset_name

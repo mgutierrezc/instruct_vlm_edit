@@ -238,13 +238,13 @@ class BalancEdit(torch.nn.Module):
             
             scheduler.step()
             
-            # Early stopping
+            # Early stopping (only after 100 iterations)
             if loss_value < best_loss:
                 best_loss = loss_value
                 patience_counter = 0
             else:
                 patience_counter += 1
-                if patience_counter >= early_stop_patience:
+                if i >= 100 and patience_counter >= early_stop_patience:
                     break
             
             # Print loss every 10 iterations or on first/last iteration
@@ -282,13 +282,13 @@ class BalancEdit(torch.nn.Module):
                 
                 scheduler_eps.step()
                 
-                # Early stopping
+                # Early stopping (only after 100 iterations)
                 if loss_value_eps < best_loss_eps:
                     best_loss_eps = loss_value_eps
                     patience_counter_eps = 0
                 else:
                     patience_counter_eps += 1
-                    if patience_counter_eps >= early_stop_patience:
+                    if i >= 100 and patience_counter_eps >= early_stop_patience:
                         break
                 
                 # Print loss every 10 iterations or on first/last iteration
@@ -315,6 +315,22 @@ class BalancEdit(torch.nn.Module):
 
         self.log_dict["chosen_key"] = chosen_key
         self.log_dict["nkeys"] = nkeys
+
+    def reset_counters(self):
+        """Reset edit application counters for all layers."""
+        for layer in self.layers:
+            layer_module = self._get_layer_module(layer)
+            layer_module._edit_applied_count = 0
+            layer_module._total_forward_count = 0
+
+    def print_stats(self):
+        """Print edit application stats (call after running inference)."""
+        applied = sum(getattr(self._get_layer_module(l), "_edit_applied_count", 0) for l in self.layers)
+        total = sum(getattr(self._get_layer_module(l), "_total_forward_count", 0) for l in self.layers)
+        n = len(self.layers)
+        if n > 0:
+            applied, total = applied // n, total // n
+        print(f"[BalancEdit] applied weight update to {applied}/{total} examples", flush=True)
 
 
 class BalancEditAdapter(torch.nn.Module):
@@ -357,6 +373,10 @@ class BalancEditAdapter(torch.nn.Module):
         self.new_locality_key = None
         self.cal_rephrase_eps = False
         self.rephrase_key = None
+        
+        # Tracking counters for edit application
+        self._edit_applied_count = 0
+        self._total_forward_count = 0
 
     def add_key(self, new_key, new_value):
         """Add new key-value pair"""
@@ -498,6 +518,12 @@ class BalancEditAdapter(torch.nn.Module):
         chosen_value = self.values[self.chosen_key]
         eps = self.epsilons[self.chosen_key].view(-1, 1)
 
+        # Track edit application (only during inference, not training)
+        if not self.training and not self.other_is_training:
+            self._total_forward_count += 1
+            if smallest_dist <= eps:
+                self._edit_applied_count += 1
+        
         if smallest_dist <= eps:
             layer_out = self.layer_edit(*args)
         else:

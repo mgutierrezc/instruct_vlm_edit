@@ -347,6 +347,11 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             if hasattr(model, "model"):
                 model.model.eval()
             edit_ds_sofar.task_generate(model, use_cache=False)
+            # Print edit application stats inline (for GRACE/BalancEdit)
+            if hasattr(editor, "print_stats"):
+                editor.print_stats()
+            if hasattr(editor, "reset_counters"):
+                editor.reset_counters()
             print10(edit_ds_sofar, label="model_new")
             print(f"Edit time: {time.time() - t2:.2f}s", flush=True)
 

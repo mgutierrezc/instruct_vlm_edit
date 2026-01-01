@@ -132,13 +132,13 @@ class GRACE(torch.nn.Module):
             optimizer.zero_grad()
             scheduler.step()
             
-            # Early stopping
+            # Early stopping (only after 100 iterations)
             if loss_value < best_loss:
                 best_loss = loss_value
                 patience_counter = 0
             else:
                 patience_counter += 1
-                if patience_counter >= early_stop_patience:
+                if i >= 100 and patience_counter >= early_stop_patience:
                     break
             
             # Print loss every 10 iterations or on first/last iteration
@@ -153,6 +153,17 @@ class GRACE(torch.nn.Module):
             self.log_dict["chosen_key"] = getattr(self.target_layer, "chosen_key")
         if hasattr(self.target_layer, "keys"):
             self.log_dict["nkeys"] = len(getattr(self.target_layer, "keys"))
+
+    def reset_counters(self):
+        """Reset edit application counters."""
+        self.target_layer._edit_applied_count = 0
+        self.target_layer._total_forward_count = 0
+
+    def print_stats(self):
+        """Print edit application stats (call after running inference)."""
+        applied = self.target_layer._edit_applied_count
+        total = self.target_layer._total_forward_count
+        print(f"[GRACE] applied weight update to {applied}/{total} examples", flush=True)
 
 
 class GRACEAdaptor(torch.nn.Module):
@@ -178,6 +189,10 @@ class GRACEAdaptor(torch.nn.Module):
             self.key_shape = layer.weight.shape[0]
             self.value_shape = layer.weight.shape[1]
         self.training = False
+        
+        # Tracking counters for edit application
+        self._edit_applied_count = 0
+        self._total_forward_count = 0
 
     def add_key(self, new_key, new_value):
         keys = torch.vstack([self.keys, new_key.detach()])
@@ -286,6 +301,12 @@ class GRACEAdaptor(torch.nn.Module):
         smallest_dist = smallest_distance.view(-1, 1)
         chosen_value = self.values[self.chosen_key]
         eps = self.epsilons[self.chosen_key].view(-1, 1)
+
+        # Track edit application (only during inference)
+        if not self.training:
+            self._total_forward_count += 1
+            if (smallest_dist <= eps).any():
+                self._edit_applied_count += 1
 
         # Optional adversarial value training (matches original GRACE config)
         if (self.val_train == "adv") and self.training:
