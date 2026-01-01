@@ -99,11 +99,14 @@ def editeval(
 		editor.plot_codebook()
 
 	# Subsample edit_ds for faster intermediate evals
+	train_ds = edit_ds
 	if edit_subsample_size is not None and len(edit_ds.data) > edit_subsample_size:
 		edit_ds = copy.deepcopy(edit_ds)
 		rng = random.Random(333)
 		edit_ds.data = rng.sample(edit_ds.data, edit_subsample_size)
 		edit_ds.set_dataloader()
+		# Re-apply to subsampled dataset (IKE retrieves from full train_ds)
+		_maybe_apply_ike(editor, edit_ds, train_ds)
 		# Filter related inputs to subsampled UIDs
 		uids = {str(ex["uid"]) for ex in edit_ds.data}
 		related_texts = {k: v for k, v in related_texts.items() if str(k) in uids}
