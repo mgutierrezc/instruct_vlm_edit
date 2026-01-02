@@ -87,7 +87,7 @@ class IKE_CHAIN(nn.Module):
         # Inner radius: two-tier retrieval (high-confidence inner, then fill with outer)
         self.use_inner_radius = getattr(cfg, "use_inner_radius", True)
         self.outer_area_pct = float(getattr(cfg, "outer_area_pct", 0.25))  # larger padding = larger radius
-        self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.5))   # smaller padding = smaller radius
+        self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.75))   # smaller padding = smaller radius
         
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
@@ -581,7 +581,7 @@ class IKE_CHAIN(nn.Module):
                                    key_idx_t: torch.Tensor, key_indices: List[int]) -> List[int]:
         """Two-tier selection: prioritize inner radius matches, then fill with closest outer.
         
-        1. Keep ALL keys where query falls within inner_radius
+        1. Take up to cap_k keys from inner_radius (sorted by distance)
         2. If < cap_k, fill remaining slots with closest outer matches
         """
         key_radii_inner = self.key_radii_inner[key_idx_t]
@@ -591,11 +591,11 @@ class IKE_CHAIN(nn.Module):
         in_inner = min_dists <= inner_radii_matched
         inner_local = matched_local[in_inner].tolist()
         
-        # If inner matches >= cap_k, return all inner (sorted by distance)
+        # If inner matches >= cap_k, return top cap_k inner (sorted by distance)
         if len(inner_local) >= self.cap_k:
             inner_dists = min_dists[in_inner]
             sorted_order = inner_dists.argsort()
-            return [inner_local[i] for i in sorted_order.tolist()]
+            return [inner_local[i] for i in sorted_order.tolist()[:self.cap_k]]
         
         # Otherwise, fill remaining slots with closest outer matches
         outer_only_mask = ~in_inner
