@@ -65,7 +65,7 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", None) # ['1x1', '2x2', '3x3']
+        self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3']) # ['1x1', '2x2', '3x3']
         
         # Image-only fallback retrieval
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -74,9 +74,9 @@ class IKE_CHAIN(nn.Module):
         # Seed for reproducibility
         self.seed = getattr(cfg, "seed", None)
         
-        # Key merging: merge keys with same key_text if candidate falls within radius
+        # Key merging: pure geographic - merge if new key falls within merge_ratio * radius
         self.merge_keys = getattr(cfg, "merge_keys", False)
-        self.merge_radius_factor = float(getattr(cfg, "merge_radius_factor", 0.25))  # merge if dist < factor * radius
+        self.merge_ratio = float(getattr(cfg, "merge_ratio", 0.1))  # merge if dist < radius * merge_ratio
         
         # Key shrinking: shrink high-overlap keys after each edit
         self.shrink_keys = getattr(cfg, "shrink_keys", False)
@@ -85,9 +85,9 @@ class IKE_CHAIN(nn.Module):
         self._shrink_count = 0  # Track number of shrink operations
         
         # Inner radius: two-tier retrieval (high-confidence inner, then fill with outer)
-        self.use_inner_radius = getattr(cfg, "use_inner_radius", True)
+        self.use_inner_radius = getattr(cfg, "use_inner_radius", False)
         self.outer_area_pct = float(getattr(cfg, "outer_area_pct", 0.25))  # larger padding = larger radius
-        self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.75))   # smaller padding = smaller radius
+        self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.95))   # smaller padding = smaller radius
         
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
@@ -302,39 +302,44 @@ class IKE_CHAIN(nn.Module):
         
         return float(np.percentile(aug_dists, self.radius_percentile))
 
-    def _try_merge_key(self, emb: torch.Tensor, radius: float, key_text: str) -> bool:
-        """Try to merge a new key into an existing one with same key_text.
+    def _try_merge_key(self, emb: torch.Tensor, radius: float, value: str) -> bool:
+        """Try to merge a new key into closest existing key (pure geographic).
         
-        Merge condition: same key_text AND dist < existing_r * merge_radius_factor.
-        Merge result: existing key stays, radius extends if candidate sticks out.
+        Merge condition: dist < existing_radius * merge_ratio
+        Merge with the CLOSEST such key.
         
         Returns True if merged, False if should add as new key.
         """
-        if self.key_embs is None or not key_text:
+        if self.key_embs is None or len(self.codebook) == 0:
             return False
         
-        # Find candidates with same key_text
-        candidates = [i for i, e in enumerate(self.codebook) if e.get("key_text") == key_text]
-        if not candidates:
-            return False
-        
-        # Check if new key falls within any existing key's radius
         emb_cpu = emb.cpu().squeeze(0) if emb.dim() > 1 else emb.cpu()
-        for idx in candidates:
-            existing_emb = self.key_embs[idx]
-            existing_r = float(self.key_radii[idx])
-            dist = float(torch.norm(emb_cpu - existing_emb))
-            
-            if dist < existing_r * self.merge_radius_factor:  # Candidate must be deep inside
-                # Extend radius if candidate's coverage sticks out
-                new_r = max(existing_r, dist + radius)
-                
-                # Update radius only (embedding stays)
-                self.key_radii[idx] = new_r
-                self.codebook[idx]["is_merged"] = True
-                return True
         
-        return False
+        # Compute distances to all existing keys
+        dists = torch.norm(self.key_embs - emb_cpu, dim=1)
+        merge_thresholds = self.key_radii * self.merge_ratio
+        
+        # Find keys where new key is within merge threshold
+        within_merge = dists < merge_thresholds
+        if not within_merge.any():
+            return False
+        
+        # Merge with closest
+        candidates = torch.where(within_merge)[0]
+        closest_idx = candidates[dists[candidates].argmin()].item()
+        dist = float(dists[closest_idx])
+        
+        # Extend radius if new key's coverage sticks out
+        self.key_radii[closest_idx] = max(float(self.key_radii[closest_idx]), dist + radius)
+        
+        # Combine values (append unique)
+        existing_value = self.codebook[closest_idx].get("value", "")
+        if value and value != existing_value and value not in existing_value:
+            self.codebook[closest_idx]["value"] = f"{existing_value} {value}".strip()
+        
+        self.codebook[closest_idx]["is_merged"] = True
+        self.codebook[closest_idx]["merge_count"] = self.codebook[closest_idx].get("merge_count", 1) + 1
+        return True
 
     def _shrink_high_overlap_keys(self):
         """Shrink keys that overlap with too many other keys.
@@ -465,10 +470,10 @@ class IKE_CHAIN(nn.Module):
         # Add keys to codebook (with optional merging/splitting)
         for i, entry in enumerate(new_entries):
             emb, radius, radius_inner = new_embs[i:i+1], float(new_radii[i]), float(new_radii_inner[i])
-            key_text = entry.get("key_text", "")
+            value = entry.get("value", "")
             
-            # Try merge if enabled
-            if self.merge_keys and self._try_merge_key(emb, radius, key_text):
+            # Try merge if enabled (pure geographic)
+            if self.merge_keys and self._try_merge_key(emb, radius, value):
                 continue  # Merged into existing key
             
             # Add as new key

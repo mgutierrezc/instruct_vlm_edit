@@ -288,8 +288,8 @@ class ImagePatchifier:
     - 1×1: 9 cells (idx 0-8)
     - 1×2: 6 horizontal pairs (idx 9-14)
     - 2×1: 6 vertical pairs (idx 15-20)
-    - 1×3: 3 horizontal strips (idx 21-23)
-    - 3×1: 3 vertical strips (idx 24-26)
+    # - 1×3: 3 horizontal strips (idx 21-23)
+    # - 3×1: 3 vertical strips (idx 24-26)
     - 2×2: 4 squares (idx 27-30)
     - 2×3: 2 wide rectangles (idx 31-32)
     - 3×2: 2 tall rectangles (idx 33-34)
@@ -301,14 +301,14 @@ class ImagePatchifier:
         "1x1": (1, 1, [(r, c) for r in range(3) for c in range(3)]),      # 9
         "1x2": (1, 2, [(r, c) for r in range(3) for c in range(2)]),      # 6
         "2x1": (2, 1, [(r, c) for r in range(2) for c in range(3)]),      # 6
-        "1x3": (1, 3, [(r, 0) for r in range(3)]),                         # 3
-        "3x1": (3, 1, [(0, c) for c in range(3)]),                         # 3
+        # "1x3": (1, 3, [(r, 0) for r in range(3)]),                         # 3
+        # "3x1": (3, 1, [(0, c) for c in range(3)]),                         # 3
         "2x2": (2, 2, [(r, c) for r in range(2) for c in range(2)]),      # 4
         "2x3": (2, 3, [(r, 0) for r in range(2)]),                         # 2
         "3x2": (3, 2, [(0, c) for c in range(2)]),                         # 2
         "3x3": (3, 3, [(0, 0)]),                                           # 1
     }
-    KERNEL_ORDER = ["1x1", "1x2", "1x3", "3x1", "2x1", "2x2", "2x3", "3x2", "3x3"]
+    KERNEL_ORDER = ["1x1", "1x2", "2x1", "2x2", "2x3", "3x2", "3x3"] #"1x3", "3x1", 
     
     def __init__(self, output_size: Tuple[int, int] = None):
         """
