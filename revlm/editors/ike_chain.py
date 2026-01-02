@@ -46,16 +46,13 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
-        self.cap_k = int(getattr(cfg, "cap_k", 3))  # k closest keys to retrieve among all matching keys
+        self.cap_k = int(getattr(cfg, "cap_k", 5))  # k closest keys to retrieve among all matching keys
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
         self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
         self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")  # "internal" or "sbert"
         # Use lang_scaler_sbert if sbert, else lang_scaler
-        if self.lang_encoder == "sbert":
-            self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0))
-        else:
-            self.lang_scaler = float(getattr(config.model, "lang_scaler", 30.0))
+        self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
         
         # Radius estimation config
         self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
@@ -68,7 +65,7 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", None)
+        self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
         
         # Image-only fallback retrieval
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -80,6 +77,17 @@ class IKE_CHAIN(nn.Module):
         # Key merging: merge keys with same key_text if candidate falls within radius
         self.merge_keys = getattr(cfg, "merge_keys", False)
         self.merge_radius_factor = float(getattr(cfg, "merge_radius_factor", 0.25))  # merge if dist < factor * radius
+        
+        # Key shrinking: shrink high-overlap keys after each edit
+        self.shrink_keys = getattr(cfg, "shrink_keys", False)
+        self.shrink_threshold = int(getattr(cfg, "shrink_threshold", 10))  # max overlaps before shrinking
+        self.shrink_factor = float(getattr(cfg, "shrink_factor", 0.95))  # shrink multiplier
+        self._shrink_count = 0  # Track number of shrink operations
+        
+        # Inner radius: two-tier retrieval (high-confidence inner, then fill with outer)
+        self.use_inner_radius = getattr(cfg, "use_inner_radius", True)
+        self.outer_area_pct = float(getattr(cfg, "outer_area_pct", 0.2))  # larger padding = larger radius
+        self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.5))   # smaller padding = smaller radius
         
         # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
@@ -98,12 +106,10 @@ class IKE_CHAIN(nn.Module):
         # inner_params_lang only required for dual_layer with internal encoder
         if self.dual_layer and self.lang_encoder == "internal" and not inner_params_lang:
             raise ValueError("dual_layer=True with lang_encoder='internal' requires config.model.inner_params_lang")
-        
         self._vision_act = None
         self._lang_act = None
         self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))  # used by dual_layer internal and balance radius
         self._sbert = None  # lazy loaded
-        
         def _setup_hook(param_name, attr_name):
             name = param_name.rsplit(".", 1)[0] if param_name.endswith((".weight", ".bias")) else param_name
             mod = parent_module(self.model, brackets_to_periods(name))
@@ -111,9 +117,7 @@ class IKE_CHAIN(nn.Module):
             return layer.register_forward_hook(
                 lambda m, i, o, an=attr_name: setattr(self, an, i[0].detach() if isinstance(i[0], torch.Tensor) else None)
             )
-        
         self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act")
-        # Lang hook only needed for internal encoder
         self._lang_hook = None
         if self.dual_layer and self.lang_encoder == "internal":
             self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act")
@@ -122,13 +126,15 @@ class IKE_CHAIN(nn.Module):
         self.codebook = []
         
         # Embeddings and radii
-        self.key_embs = None   # [N, hidden]
-        self.key_radii = None  # [N]
+        self.key_embs = None        # [N, hidden]
+        self.key_radii = None       # [N] outer radius
+        self.key_radii_inner = None # [N] inner radius (if use_inner_radius)
         
         # Tracking
         self._added_uids = set()
         self._edit_count = 0
         self.last_retrieval_log = None
+        self.plot_codebook_pct_threshold = 85
 
     def forward(self, *a, **kw):
         return self.model(*a, **kw)
@@ -267,7 +273,7 @@ class IKE_CHAIN(nn.Module):
         return (1 - self.balance_alpha) * d_pos + self.balance_alpha * d_neg
 
     @torch.no_grad()
-    def _estimate_radius(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True) -> float:
+    def _estimate_radius(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True, area_pct: float = None) -> float:
         """Estimate radius.
         
         Methods:
@@ -277,6 +283,7 @@ class IKE_CHAIN(nn.Module):
         
         Args:
             is_question: True for question text (rephrase), False for rationale (turn into question)
+            area_pct: Override area percentage for mosaic padding (smaller = tighter radius)
         """
         if self.radius_method == "fixed":
             return self.fixed_radius
@@ -287,7 +294,7 @@ class IKE_CHAIN(nn.Module):
         # Default: multiple augmentations, take percentile
         aug_dists = []
         for _ in range(self.n_radius_samples):
-            aug_img = self.augmenter.image(img)
+            aug_img = self.augmenter.image(img, area_pct=area_pct)
             aug_text = self.augmenter.question(text) if is_question else self.augmenter.rationale(text) if text else ""
             aug_emb = self._encode_vlm([aug_img], [aug_text])
             dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
@@ -328,6 +335,40 @@ class IKE_CHAIN(nn.Module):
                 return True
         
         return False
+
+    def _shrink_high_overlap_keys(self):
+        """Shrink keys that overlap with too many other keys.
+        
+        For each key, count how many other keys it overlaps with.
+        If count > shrink_threshold, shrink radius by shrink_factor.
+        
+        Overlap defined as: dist(i,j) < r_i + r_j
+        """
+        if self.key_embs is None or len(self.codebook) < 2:
+            return
+        
+        # Compute pairwise distances
+        dists = torch.cdist(self.key_embs.float(), self.key_embs.float())  # [N, N]
+        
+        # Overlap: dist < r_i + r_j
+        radii = self.key_radii
+        radii_sum = radii.unsqueeze(0) + radii.unsqueeze(1)  # [N, N]
+        overlap_matrix = dists < radii_sum
+        
+        # Exclude self (diagonal)
+        overlap_matrix.fill_diagonal_(False)
+        
+        # Count overlaps per key
+        overlap_counts = overlap_matrix.sum(dim=1)  # [N]
+        
+        # Shrink keys exceeding threshold
+        high_overlap = overlap_counts > self.shrink_threshold
+        if high_overlap.any():
+            high_idx = torch.where(high_overlap)[0]
+            self.key_radii[high_idx] = self.key_radii[high_idx] * self.shrink_factor
+            for idx in high_idx.tolist():
+                self.codebook[idx]["is_shrunk"] = True
+            self._shrink_count += len(high_idx)
 
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
@@ -382,7 +423,7 @@ class IKE_CHAIN(nn.Module):
                 new_texts.append(sent)
                 new_is_question.append(False)
             
-            # Key 5: <image, ""> -> "" (image-only gate key)
+            # Key 5: <image, ""> -> "" (image-only gate key, optional)
             if self.image_only_retrieval:
                 new_entries.append({
                     "value": "",
@@ -405,24 +446,28 @@ class IKE_CHAIN(nn.Module):
         
         # Compute radii per key, using appropriate augmentation
         new_radii = []
+        new_radii_inner = []
         for i, (src_img, text, is_q) in enumerate(zip(new_imgs, new_texts, new_is_question)):
             if not text:  # image-only key
-                # Use question radius for image-only keys
-                r = self._estimate_radius(new_embs[i:i+1], src_img, question, is_question=True)
+                r = self._estimate_radius(new_embs[i:i+1], src_img, question, is_question=True, area_pct=self.outer_area_pct)
+                r_inner = self._estimate_radius(new_embs[i:i+1], src_img, question, is_question=True, area_pct=self.inner_area_pct) if self.use_inner_radius else r
             else:
-                r = self._estimate_radius(new_embs[i:i+1], src_img, text, is_question=is_q)
+                r = self._estimate_radius(new_embs[i:i+1], src_img, text, is_question=is_q, area_pct=self.outer_area_pct)
+                r_inner = self._estimate_radius(new_embs[i:i+1], src_img, text, is_question=is_q, area_pct=self.inner_area_pct) if self.use_inner_radius else r
             new_radii.append(r)
+            new_radii_inner.append(r_inner)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
+        new_radii_inner = torch.tensor(new_radii_inner, dtype=torch.float32)
         
         # Move to CPU to save GPU memory (only used for retrieval)
         new_embs = new_embs.cpu()
         
-        # Add keys to codebook (with optional merging)
+        # Add keys to codebook (with optional merging/splitting)
         for i, entry in enumerate(new_entries):
-            emb, radius = new_embs[i:i+1], float(new_radii[i])
+            emb, radius, radius_inner = new_embs[i:i+1], float(new_radii[i]), float(new_radii_inner[i])
             key_text = entry.get("key_text", "")
             
-            # Try merge if enabled, otherwise add as new
+            # Try merge if enabled
             if self.merge_keys and self._try_merge_key(emb, radius, key_text):
                 continue  # Merged into existing key
             
@@ -431,9 +476,15 @@ class IKE_CHAIN(nn.Module):
             if self.key_embs is None:
                 self.key_embs = emb
                 self.key_radii = torch.tensor([radius])
+                self.key_radii_inner = torch.tensor([radius_inner])
             else:
                 self.key_embs = torch.cat([self.key_embs, emb], dim=0)
                 self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
+                self.key_radii_inner = torch.cat([self.key_radii_inner, torch.tensor([radius_inner])])
+        
+        # Shrink high-overlap keys after adding all keys for this edit
+        if self.shrink_keys:
+            self._shrink_high_overlap_keys()
         
         # Clear CUDA cache
         if torch.cuda.is_available():
@@ -495,28 +546,69 @@ class IKE_CHAIN(nn.Module):
         else:
             dist_matrix = torch.cdist(q_embs.float(), key_embs.float(), p=2)
         
-        # Check matches
+        # Check matches against outer radius
         in_radius = dist_matrix <= key_radii
         matched_mask = in_radius.any(dim=0)
         
         if not matched_mask.any():
             return []
         
-        # Get matched, sorted by min distance
+        # Get matched indices and their min distances
         matched_local = torch.where(matched_mask)[0]
         min_dists = dist_matrix[:, matched_local].min(dim=0).values
-        sorted_order = min_dists.argsort()
-        matched_local = matched_local[sorted_order].tolist()
+        
+        # Two-tier selection if inner radius enabled and too many matches
+        if self.use_inner_radius and len(matched_local) > self.cap_k:
+            selected_local = self._select_with_inner_radius(
+                matched_local, min_dists, key_idx_t, key_indices
+            )
+        else:
+            # Standard: sort by distance, take top cap_k
+            sorted_order = min_dists.argsort()
+            selected_local = matched_local[sorted_order].tolist()[:self.cap_k]
         
         # Collect values
         retrieved = set()
-        for local_i in matched_local[:self.cap_k]:
+        for local_i in selected_local:
             global_i = key_indices[local_i]
             value = self.codebook[global_i]["value"]
             if value:
                 retrieved.add(value)
         
         return list(retrieved)
+
+    def _select_with_inner_radius(self, matched_local: torch.Tensor, min_dists: torch.Tensor, 
+                                   key_idx_t: torch.Tensor, key_indices: List[int]) -> List[int]:
+        """Two-tier selection: prioritize inner radius matches, then fill with closest outer.
+        
+        1. Keep ALL keys where query falls within inner_radius
+        2. If < cap_k, fill remaining slots with closest outer matches
+        """
+        key_radii_inner = self.key_radii_inner[key_idx_t]
+        inner_radii_matched = key_radii_inner[matched_local]
+        
+        # Check which matches are within inner radius
+        in_inner = min_dists <= inner_radii_matched
+        inner_local = matched_local[in_inner].tolist()
+        
+        # If inner matches >= cap_k, return all inner (sorted by distance)
+        if len(inner_local) >= self.cap_k:
+            inner_dists = min_dists[in_inner]
+            sorted_order = inner_dists.argsort()
+            return [inner_local[i] for i in sorted_order.tolist()]
+        
+        # Otherwise, fill remaining slots with closest outer matches
+        outer_only_mask = ~in_inner
+        if outer_only_mask.any():
+            outer_local = matched_local[outer_only_mask]
+            outer_dists = min_dists[outer_only_mask]
+            sorted_order = outer_dists.argsort()
+            remaining = self.cap_k - len(inner_local)
+            outer_selected = [outer_local[i].item() for i in sorted_order[:remaining]]
+        else:
+            outer_selected = []
+        
+        return inner_local + outer_selected
 
     @torch.no_grad()
     def _retrieve_image_only_fallback(self, query_patches: List, question: str) -> List[str]:
@@ -732,12 +824,15 @@ class IKE_CHAIN(nn.Module):
     
     def save_index(self, path):
         """Save codebook, embeddings, and radii to disk."""
-        torch.save({
+        data = {
             "codebook": self.codebook,
             "key_embs": self.key_embs,
             "key_radii": self.key_radii,
             "top_k_patches": self.top_k_patches,
-        }, path)
+        }
+        if self.key_radii_inner is not None:
+            data["key_radii_inner"] = self.key_radii_inner
+        torch.save(data, path)
         print(f"[IKE_PATCH] saved {len(self.codebook)} keys to {path}", flush=True)
     
     def load_index(self, path):
@@ -746,6 +841,8 @@ class IKE_CHAIN(nn.Module):
         self.codebook = data["codebook"]
         self.key_embs = data["key_embs"].to(self.device)
         self.key_radii = data["key_radii"].to(self.device)
+        if "key_radii_inner" in data:
+            self.key_radii_inner = data["key_radii_inner"].to(self.device)
         print(f"[IKE_PATCH] loaded {len(self.codebook)} keys from {path}", flush=True)
 
     def get_stats(self) -> Dict:
@@ -756,18 +853,23 @@ class IKE_CHAIN(nn.Module):
         n_question_keys = sum(1 for e in self.codebook if e.get("is_question", False))
         n_rationale_keys = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
         n_merged_keys = sum(1 for e in self.codebook if e.get("is_merged", False))
+        n_shrunk_keys = sum(1 for e in self.codebook if e.get("is_shrunk", False))
         
         stats = {
             "num_keys": len(self.codebook),
             "num_orig_keys": n_orig_keys,
             "num_patch_keys": n_patch_keys,
             "num_merged_keys": n_merged_keys,
+            "num_shrunk_keys": n_shrunk_keys,
+            "num_shrink_ops": self._shrink_count,
             "num_question_keys": n_question_keys,
             "num_rationale_keys": n_rationale_keys,
             "num_image_only_keys": n_image_only,
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
+            "shrink_keys": self.shrink_keys,
+            "use_inner_radius": self.use_inner_radius,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
@@ -775,6 +877,10 @@ class IKE_CHAIN(nn.Module):
             stats["avg_radius"] = float(self.key_radii.mean())
             stats["min_radius"] = float(self.key_radii.min())
             stats["max_radius"] = float(self.key_radii.max())
+        if self.key_radii_inner is not None and self.use_inner_radius:
+            stats["avg_inner_radius"] = float(self.key_radii_inner.mean())
+            stats["min_inner_radius"] = float(self.key_radii_inner.min())
+            stats["max_inner_radius"] = float(self.key_radii_inner.max())
         return stats
 
     @torch.no_grad()
@@ -900,7 +1006,7 @@ class IKE_CHAIN(nn.Module):
         sims = 1 / (1 + dists)
         G = nx.Graph()
         G.add_nodes_from(range(n_keys))
-        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 90) if n_keys > 1 else 0
+        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], self.plot_codebook_pct_threshold) if n_keys > 1 else 0
         for i in range(n_keys):
             for j in range(i + 1, n_keys):
                 if sims[i, j] > thresh:

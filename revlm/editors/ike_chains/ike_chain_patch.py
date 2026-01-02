@@ -46,7 +46,7 @@ class IKE_CHAIN(nn.Module):
 
         # Hyperparams
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
-        self.cap_k = int(getattr(cfg, "cap_k", 5))  # k closest keys to retrieve among all matching keys
+        self.cap_k = int(getattr(cfg, "cap_k", 3))  # k closest keys to retrieve among all matching keys
         self.prefix = getattr(cfg, "cot_prefix", "")
         self.distance = getattr(cfg, "distance", "l2")
         self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
@@ -68,7 +68,7 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", None) #["2x2", "3x3"]
+        self.query_kernels = getattr(cfg, "query_kernels", None)
         
         # Image-only fallback retrieval
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -584,7 +584,7 @@ class IKE_CHAIN(nn.Module):
         return list(retrieved)
 
     @torch.no_grad()
-    def _get_matched_indices(self, image, question: str) -> Tuple[set, set]:
+    def _get_matched_indices(self, image, question: str, apply_cap_k: bool = True) -> Tuple[set, set]:
         """Get matched key indices for plotting. Returns (text_matched, img_fallback_matched)."""
         text_matched, img_matched = set(), set()
         if self.key_embs is None or len(self.codebook) == 0:
@@ -604,7 +604,13 @@ class IKE_CHAIN(nn.Module):
             else:
                 dm = torch.cdist(q_embs.float(), self.key_embs[idx_t].float(), p=2)
             matched = dm <= self.key_radii[idx_t]
-            text_matched = set(text_indices[i] for i in torch.where(matched.any(dim=0))[0].tolist())
+            matched_local = torch.where(matched.any(dim=0))[0]
+            if matched_local.numel() > 0:
+                min_dists = dm[:, matched_local].min(dim=0).values
+                top_k = matched_local[min_dists.argsort()]
+                if apply_cap_k:
+                    top_k = top_k[:self.cap_k]
+                text_matched = set(text_indices[i.item()] for i in top_k)
         
         if text_matched or not self.image_only_retrieval:
             return text_matched, img_matched
@@ -645,8 +651,14 @@ class IKE_CHAIN(nn.Module):
                     dm = 1 - (q_t @ self.key_embs[idx_t].t())
                 else:
                     dm = torch.cdist(q_t.float(), self.key_embs[idx_t].float(), p=2)
-                if (dm <= self.key_radii[idx_t]).any():
-                    img_matched.update(t_idx[i] for i in torch.where((dm <= self.key_radii[idx_t]).any(dim=0))[0].tolist())
+                matched = dm <= self.key_radii[idx_t]
+                matched_local = torch.where(matched.any(dim=0))[0]
+                if matched_local.numel() > 0:
+                    min_dists = dm[:, matched_local].min(dim=0).values
+                    top_k = matched_local[min_dists.argsort()]
+                    if apply_cap_k:
+                        top_k = top_k[:self.cap_k]
+                    img_matched.update(t_idx[i.item()] for i in top_k)
         
         return text_matched, img_matched
 
@@ -842,7 +854,7 @@ class IKE_CHAIN(nn.Module):
         plt.show()
 
     @torch.no_grad()
-    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None):
+    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None, apply_cap_k=True):
         """Plot force-directed network of keys.
         
         Color by edit_idx, size by is_patch (original=large, patch=small).
@@ -873,7 +885,7 @@ class IKE_CHAIN(nn.Module):
         text_global, img_global = set(), set()
         q_emb = None
         if query_img is not None and query_text is not None:
-            text_global, img_global = self._get_matched_indices(query_img, query_text)
+            text_global, img_global = self._get_matched_indices(query_img, query_text, apply_cap_k=apply_cap_k)
             # Get query embedding for plotting
             query_patches = self.patchifier.patchify(query_img, kernels=self.query_kernels)
             q_embs = self._encode_vlm(query_patches, [query_text] * len(query_patches)).cpu()
@@ -888,7 +900,7 @@ class IKE_CHAIN(nn.Module):
         sims = 1 / (1 + dists)
         G = nx.Graph()
         G.add_nodes_from(range(n_keys))
-        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 75) if n_keys > 1 else 0
+        thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], 90) if n_keys > 1 else 0
         for i in range(n_keys):
             for j in range(i + 1, n_keys):
                 if sims[i, j] > thresh:
