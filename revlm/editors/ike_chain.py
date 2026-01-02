@@ -65,7 +65,7 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
         
         # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
-        self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
+        self.query_kernels = getattr(cfg, "query_kernels", None) # ['1x1', '2x2', '3x3']
         
         # Image-only fallback retrieval
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -86,7 +86,7 @@ class IKE_CHAIN(nn.Module):
         
         # Inner radius: two-tier retrieval (high-confidence inner, then fill with outer)
         self.use_inner_radius = getattr(cfg, "use_inner_radius", True)
-        self.outer_area_pct = float(getattr(cfg, "outer_area_pct", 0.2))  # larger padding = larger radius
+        self.outer_area_pct = float(getattr(cfg, "outer_area_pct", 0.25))  # larger padding = larger radius
         self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.5))   # smaller padding = smaller radius
         
         # Patchifier and Augmenter
