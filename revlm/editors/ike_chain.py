@@ -75,10 +75,18 @@ class IKE_CHAIN(nn.Module):
 
         # ==================== Key Management (IoA-based) ====================
         self.merge_keys = getattr(cfg, "merge_keys", True)  # enable merge (both IoA > threshold)
-        self.shrink_keys = getattr(cfg, "shrink_keys", False)  # enable shrink (both IoA < threshold)
         self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
+        self.merge_keys_by_dist = getattr(cfg, "merge_keys_by_dist", True)# Distance-based merge: merge if dist < pct * both radii
+        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.05))  # 5%
+        self.shrink_keys = getattr(cfg, "shrink_keys", False)  # enable shrink (both IoA < threshold)
         self.shrink_ioa_threshold = float(getattr(cfg, "shrink_ioa_threshold", 0.0))
         self.min_radius = float(getattr(cfg, "min_radius", 1.0))
+        
+        
+        # Overlap-counting shrink (post-edit) - disabled by default, can be too aggressive
+        self.shrink_overlap_keys = getattr(cfg, "shrink_overlap_keys", False)
+        self.shrink_overlap_threshold = int(getattr(cfg, "shrink_overlap_threshold", 150))
+        self.shrink_overlap_factor = float(getattr(cfg, "shrink_overlap_factor", 0.95))
 
         # ==================== Image-Only Fallback ====================
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -87,6 +95,7 @@ class IKE_CHAIN(nn.Module):
         # ==================== Internal State ====================
         self._added_uids = set()
         self._edit_count = 0
+        self._shrink_count = 0  # Track overlap-based shrink operations
         self._vision_act = None
         self._lang_act = None
         self._sbert = None
@@ -355,7 +364,20 @@ class IKE_CHAIN(nn.Module):
         if len(overlapping) == 0:
             return False, radius
         
-        # Step 1: Check for merge (both IoA > merge_threshold)
+        # Step 1a: Distance-based merge (centers very close)
+        if self.merge_keys_by_dist:
+            for idx in overlapping:
+                d = dists[idx]
+                if d < self.merge_dist_pct * radius and d < self.merge_dist_pct * radii[idx]:
+                    self.key_radii[idx] = max(float(self.key_radii[idx]), d + radius)
+                    existing_value = self.codebook[idx].get("value", "")
+                    if value and value != existing_value and value not in existing_value:
+                        self.codebook[idx]["value"] = f"{existing_value} {value}".strip()
+                    self.codebook[idx]["is_merged"] = True
+                    self.codebook[idx]["merge_count"] = self.codebook[idx].get("merge_count", 1) + 1
+                    return True, radius
+        
+        # Step 1b: IoA-based merge (both IoA > threshold)
         if self.merge_keys:
             for idx in overlapping:
                 ioa_new, ioa_old = self._circle_ioa_pair(dists[idx], radius, radii[idx])
@@ -411,6 +433,59 @@ class IKE_CHAIN(nn.Module):
                 return True, current_radius
         
         return False, current_radius
+
+    def _shrink_high_overlap_keys(self):
+        """Shrink keys that overlap with too many other keys.
+        
+        For each key, count how many other keys it overlaps with.
+        If count > shrink_overlap_threshold, shrink radius by shrink_overlap_factor.
+        
+        Overlap defined as: dist(i,j) < r_i + r_j
+        
+        Called after each edit - overlap counts are recalculated fresh each time.
+        Keys may be shrunk multiple times if they continue to have high overlaps.
+        """
+        if self.key_embs is None or len(self.codebook) < 2:
+            return
+        
+        # Compute pairwise distances
+        dists = torch.cdist(self.key_embs.float(), self.key_embs.float())  # [N, N]
+        
+        # Overlap: dist < r_i + r_j
+        radii = self.key_radii
+        radii_sum = radii.unsqueeze(0) + radii.unsqueeze(1)  # [N, N]
+        overlap_matrix = dists < radii_sum
+        
+        # Exclude self (diagonal)
+        overlap_matrix.fill_diagonal_(False)
+        
+        # Count overlaps per key
+        overlap_counts = overlap_matrix.sum(dim=1)  # [N]
+        
+        # Debug: print radius and distance statistics
+        n_keys = len(self.codebook)
+        
+        # Get upper triangle (exclude diagonal) for inter-key distances
+        triu_mask = torch.triu(torch.ones(n_keys, n_keys, dtype=torch.bool), diagonal=1)
+        inter_dists = dists[triu_mask]
+        
+        print(f"[Radius] {n_keys} keys: min={float(radii.min()):.1f}, max={float(radii.max()):.1f}, mean={float(radii.mean()):.1f}")
+        print(f"[Dists]  inter-key: min={float(inter_dists.min()):.1f}, max={float(inter_dists.max()):.1f}, mean={float(inter_dists.mean()):.1f}")
+        
+        # Overlap stats
+        n_above = int((overlap_counts > self.shrink_overlap_threshold).sum())
+        print(f"[Overlap] {n_keys} keys: overlaps min={int(overlap_counts.min())}, max={int(overlap_counts.max())}, "
+              f"mean={float(overlap_counts.float().mean()):.1f}, >{self.shrink_overlap_threshold}={n_above}")
+        
+        # Shrink keys exceeding threshold
+        high_overlap = overlap_counts > self.shrink_overlap_threshold
+        if high_overlap.any():
+            high_idx = torch.where(high_overlap)[0]
+            self.key_radii[high_idx] = self.key_radii[high_idx] * self.shrink_overlap_factor
+            for idx in high_idx.tolist():
+                self.codebook[idx]["is_shrunk"] = True
+            self._shrink_count += len(high_idx)
+            print(f"[Overlap] Shrunk {len(high_idx)} keys by {self.shrink_overlap_factor}")
 
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
@@ -500,6 +575,8 @@ class IKE_CHAIN(nn.Module):
         new_embs = new_embs.cpu()
         
         # Add keys to codebook (with optional key management)
+        n_merged = 0
+        n_added = 0
         for i, entry in enumerate(new_entries):
             emb, radius = new_embs[i:i+1], float(new_radii[i])
             value = entry.get("value", "")
@@ -508,9 +585,11 @@ class IKE_CHAIN(nn.Module):
             if self.merge_keys or self.shrink_keys:
                 merged, radius = self._manage_new_key(emb, radius, value)
                 if merged:
+                    n_merged += 1
                     continue
             
             # Add as new key
+            n_added += 1
             self.codebook.append(entry)
             if self.key_embs is None:
                 self.key_embs = emb
@@ -518,6 +597,12 @@ class IKE_CHAIN(nn.Module):
             else:
                 self.key_embs = torch.cat([self.key_embs, emb], dim=0)
                 self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
+        
+        print(f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)")
+        
+        # Shrink high-overlap keys after adding all keys for this edit
+        if self.shrink_overlap_keys:
+            self._shrink_high_overlap_keys()
         
         # Clear CUDA cache
         if torch.cuda.is_available():
@@ -877,12 +962,15 @@ class IKE_CHAIN(nn.Module):
         n_question_keys = sum(1 for e in self.codebook if e.get("is_question", False))
         n_rationale_keys = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
         n_merged_keys = sum(1 for e in self.codebook if e.get("is_merged", False))
+        n_shrunk_keys = sum(1 for e in self.codebook if e.get("is_shrunk", False))
         
         stats = {
             "num_keys": len(self.codebook),
             "num_orig_keys": n_orig_keys,
             "num_patch_keys": n_patch_keys,
             "num_merged_keys": n_merged_keys,
+            "num_shrunk_keys": n_shrunk_keys,
+            "num_shrink_ops": self._shrink_count,
             "num_question_keys": n_question_keys,
             "num_rationale_keys": n_rationale_keys,
             "num_image_only_keys": n_image_only,
@@ -890,6 +978,7 @@ class IKE_CHAIN(nn.Module):
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
             "shrink_keys": self.shrink_keys,
+            "shrink_overlap_keys": self.shrink_overlap_keys,
             "retrieve_single_edit": self.retrieve_single_edit,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
