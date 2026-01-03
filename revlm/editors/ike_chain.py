@@ -76,7 +76,7 @@ class IKE_CHAIN(nn.Module):
         
         # Key merging: pure geographic - merge if new key falls within merge_ratio * radius
         self.merge_keys = getattr(cfg, "merge_keys", False)
-        self.merge_ratio = float(getattr(cfg, "merge_ratio", 0.1))  # merge if dist < radius * merge_ratio
+        self.merge_ratio = float(getattr(cfg, "merge_ratio", 0.25))  # merge if dist < radius * merge_ratio
         
         # Key shrinking: shrink high-overlap keys after each edit
         self.shrink_keys = getattr(cfg, "shrink_keys", False)
@@ -951,7 +951,7 @@ class IKE_CHAIN(nn.Module):
                 # Highlight top-k with green box
                 if idx in top_k_idx:
                     rect = Rectangle((0, 0), patch.width-1, patch.height-1, 
-                                      linewidth=4, edgecolor='limegreen', facecolor='none')
+                                      linewidth=8, edgecolor='limegreen', facecolor='none')
                     ax.add_patch(rect)
             ax.axis('off')
         
