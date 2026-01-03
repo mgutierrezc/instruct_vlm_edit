@@ -47,7 +47,7 @@ class IKE_CHAIN(nn.Module):
 
         # ==================== Core Retrieval ====================
         self.cap_k = int(getattr(cfg, "cap_k", 5))                              # max keys to retrieve
-        self.retrieve_single_edit = getattr(cfg, "retrieve_single_edit", True)  # only retrieve from winning edit
+        self.retrieve_single_edit = getattr(cfg, "retrieve_single_edit", False)  # only retrieve from winning edit
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.seed = getattr(cfg, "seed", None)
 
@@ -256,7 +256,7 @@ class IKE_CHAIN(nn.Module):
             # Numerically stable: P(yes) = 1 / (1 + exp(nll_yes - nll_no))
             p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
             yes_probs.append(p_yes)
-            if p_yes > 0.9:
+            if p_yes > 0.5:
                 verified.append(patch)
         
         # Fallback: if none passed, keep highest P("yes")
