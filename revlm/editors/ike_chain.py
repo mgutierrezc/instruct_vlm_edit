@@ -69,18 +69,18 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
 
         # ==================== Patchification ====================
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 2))  # patches to select per edit
         self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
         # ==================== Key Management ====================
-        # Merging: combine nearby keys
+        # Merging: combine overlapping keys (IoU-based)
         self.merge_keys = getattr(cfg, "merge_keys", False)
-        self.merge_ratio = float(getattr(cfg, "merge_ratio", 0.1))
+        self.merge_iou_threshold = float(getattr(cfg, "merge_iou_threshold", 0.8))
         # Shrinking: reduce radius of high-overlap keys
         self.shrink_keys = getattr(cfg, "shrink_keys", False)
         self.shrink_threshold = int(getattr(cfg, "shrink_threshold", 20))
-        self.shrink_factor = float(getattr(cfg, "shrink_factor", 0.9))
+        self.shrink_factor = float(getattr(cfg, "shrink_factor", 0.95))
 
         # ==================== Image-Only Fallback ====================
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -296,11 +296,26 @@ class IKE_CHAIN(nn.Module):
         
         return float(np.percentile(aug_dists, self.radius_percentile))
 
+    def _circle_iou(self, d: float, r1: float, r2: float) -> float:
+        """Compute IoU of two circles with distance d between centers."""
+        if d >= r1 + r2:  # No overlap
+            return 0.0
+        if d <= abs(r1 - r2):  # One inside the other
+            small, big = min(r1, r2), max(r1, r2)
+            return (small / big) ** 2
+        # Partial overlap: lens formula
+        part1 = r1**2 * np.arccos((d**2 + r1**2 - r2**2) / (2 * d * r1))
+        part2 = r2**2 * np.arccos((d**2 + r2**2 - r1**2) / (2 * d * r2))
+        part3 = 0.5 * np.sqrt((r1+r2-d) * (d+r1-r2) * (d-r1+r2) * (d+r1+r2))
+        intersection = part1 + part2 - part3
+        union = np.pi * (r1**2 + r2**2) - intersection
+        return intersection / union if union > 0 else 0.0
+
     def _try_merge_key(self, emb: torch.Tensor, radius: float, value: str) -> bool:
-        """Try to merge a new key into closest existing key (pure geographic).
+        """Try to merge a new key into existing key with high IoU overlap.
         
-        Merge condition: dist < existing_radius * merge_ratio
-        Merge with the CLOSEST such key.
+        Merge condition: IoU(circle_new, circle_existing) > merge_iou_threshold
+        Merge with the HIGHEST IoU key.
         
         Returns True if merged, False if should add as new key.
         """
@@ -308,31 +323,31 @@ class IKE_CHAIN(nn.Module):
             return False
         
         emb_cpu = emb.cpu().squeeze(0) if emb.dim() > 1 else emb.cpu()
+        dists = torch.norm(self.key_embs - emb_cpu, dim=1).numpy()
+        radii = self.key_radii.numpy()
         
-        # Compute distances to all existing keys
-        dists = torch.norm(self.key_embs - emb_cpu, dim=1)
-        merge_thresholds = self.key_radii * self.merge_ratio
+        # Compute IoU for each existing key
+        ious = np.array([self._circle_iou(d, radius, r) for d, r in zip(dists, radii)])
         
-        # Find keys where new key is within merge threshold
-        within_merge = dists < merge_thresholds
-        if not within_merge.any():
+        # Find keys exceeding threshold
+        above_thresh = ious > self.merge_iou_threshold
+        if not above_thresh.any():
             return False
         
-        # Merge with closest
-        candidates = torch.where(within_merge)[0]
-        closest_idx = candidates[dists[candidates].argmin()].item()
-        dist = float(dists[closest_idx])
+        # Merge with highest IoU
+        best_idx = int(np.argmax(ious))
+        dist = float(dists[best_idx])
         
-        # Extend radius if new key's coverage sticks out
-        self.key_radii[closest_idx] = max(float(self.key_radii[closest_idx]), dist + radius)
+        # Extend radius to cover both circles
+        self.key_radii[best_idx] = max(float(self.key_radii[best_idx]), dist + radius)
         
         # Combine values (append unique)
-        existing_value = self.codebook[closest_idx].get("value", "")
+        existing_value = self.codebook[best_idx].get("value", "")
         if value and value != existing_value and value not in existing_value:
-            self.codebook[closest_idx]["value"] = f"{existing_value} {value}".strip()
+            self.codebook[best_idx]["value"] = f"{existing_value} {value}".strip()
         
-        self.codebook[closest_idx]["is_merged"] = True
-        self.codebook[closest_idx]["merge_count"] = self.codebook[closest_idx].get("merge_count", 1) + 1
+        self.codebook[best_idx]["is_merged"] = True
+        self.codebook[best_idx]["merge_count"] = self.codebook[best_idx].get("merge_count", 1) + 1
         return True
 
     def _shrink_high_overlap_keys(self):
