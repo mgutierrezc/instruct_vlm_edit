@@ -69,25 +69,22 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
 
         # ==================== Patchification ====================
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 2))  # patches to select per edit
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
         self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
-        # ==================== Key Management ====================
-        # Merging: combine overlapping keys (IoU-based)
-        self.merge_keys = getattr(cfg, "merge_keys", False)
-        self.merge_iou_threshold = float(getattr(cfg, "merge_iou_threshold", 0.8))
-        # Shrinking: reduce radius of high-overlap keys
-        self.shrink_keys = getattr(cfg, "shrink_keys", False)
-        self.shrink_threshold = int(getattr(cfg, "shrink_threshold", 20))
-        self.shrink_factor = float(getattr(cfg, "shrink_factor", 0.95))
+        # ==================== Key Management (IoA-based) ====================
+        self.merge_keys = getattr(cfg, "merge_keys", True)  # enable merge (both IoA > threshold)
+        self.shrink_keys = getattr(cfg, "shrink_keys", False)  # enable shrink (both IoA < threshold)
+        self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
+        self.shrink_ioa_threshold = float(getattr(cfg, "shrink_ioa_threshold", 0.0))
+        self.min_radius = float(getattr(cfg, "min_radius", 1.0))
 
         # ==================== Image-Only Fallback ====================
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
         self.top_i_image_only = int(getattr(cfg, "top_i_image_only_entry", 1))
 
         # ==================== Internal State ====================
-        self._shrink_count = 0
         self._added_uids = set()
         self._edit_count = 0
         self._vision_act = None
@@ -234,21 +231,44 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _select_top_k_patches(self, image, s1: str) -> List[Image.Image]:
-        """Select top-k patches by log-likelihood of s1."""
+        """Select top-k patches by log-likelihood of s1, then VQA-verify."""
         patches = self.patchifier.patchify_exclude_full(image)  # 35 patches
         
+        # Stage 1: Rank by NLL of s1
         nlls = []
         for patch in patches:
             nll = self._get_nll(patch, self.patch_select_prompt, s1)
             nlls.append(nll)
         
+        nlls = np.array(nlls)
+        top_k_idx = np.argsort(nlls)[:self.top_k_patches]
+        candidates = [patches[i] for i in top_k_idx]
+        
+        # Stage 2: VQA verification - "Does {s1}?"
+        vqa_question = f"Does {s1.lower().replace('.', '?')}"
+        verified = []
+        yes_probs = []
+        
+        for patch in candidates:
+            nll_yes = self._get_nll(patch, vqa_question, "Yes")
+            nll_no = self._get_nll(patch, vqa_question, "No")
+            # Convert NLL to probability: P(yes) = exp(-nll_yes) / (exp(-nll_yes) + exp(-nll_no))
+            # Numerically stable: P(yes) = 1 / (1 + exp(nll_yes - nll_no))
+            p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
+            yes_probs.append(p_yes)
+            if p_yes > 0.9:
+                verified.append(patch)
+        
+        # Fallback: if none passed, keep highest P("yes")
+        if not verified:
+            best_idx = int(np.argmax(yes_probs))
+            verified = [candidates[best_idx]]
+        
         # Clear cache after many forward passes
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        nlls = np.array(nlls)
-        top_k_idx = np.argsort(nlls)[:self.top_k_patches]
-        return [patches[i] for i in top_k_idx]
+        return verified
 
     @torch.no_grad()
     def _estimate_radius_balance(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True) -> float:
@@ -296,93 +316,101 @@ class IKE_CHAIN(nn.Module):
         
         return float(np.percentile(aug_dists, self.radius_percentile))
 
-    def _circle_iou(self, d: float, r1: float, r2: float) -> float:
-        """Compute IoU of two circles with distance d between centers."""
-        if d >= r1 + r2:  # No overlap
+    def _circle_intersection(self, d: float, r1: float, r2: float) -> float:
+        """Compute intersection area of two circles."""
+        if d >= r1 + r2:
             return 0.0
-        if d <= abs(r1 - r2):  # One inside the other
-            small, big = min(r1, r2), max(r1, r2)
-            return (small / big) ** 2
-        # Partial overlap: lens formula
+        if d <= abs(r1 - r2):
+            return np.pi * min(r1, r2) ** 2
+        # Lens formula
         part1 = r1**2 * np.arccos((d**2 + r1**2 - r2**2) / (2 * d * r1))
         part2 = r2**2 * np.arccos((d**2 + r2**2 - r1**2) / (2 * d * r2))
         part3 = 0.5 * np.sqrt((r1+r2-d) * (d+r1-r2) * (d-r1+r2) * (d+r1+r2))
-        intersection = part1 + part2 - part3
-        union = np.pi * (r1**2 + r2**2) - intersection
-        return intersection / union if union > 0 else 0.0
+        return part1 + part2 - part3
 
-    def _try_merge_key(self, emb: torch.Tensor, radius: float, value: str) -> bool:
-        """Try to merge a new key into existing key with high IoU overlap.
+    def _circle_ioa_pair(self, d: float, r1: float, r2: float) -> Tuple[float, float]:
+        """Compute IoA pair: (intersection/area1, intersection/area2)."""
+        intersection = self._circle_intersection(d, r1, r2)
+        area1 = np.pi * r1 ** 2
+        area2 = np.pi * r2 ** 2
+        return (intersection / area1 if area1 > 0 else 0.0,
+                intersection / area2 if area2 > 0 else 0.0)
+
+    def _manage_new_key(self, emb: torch.Tensor, radius: float, value: str) -> Tuple[bool, float]:
+        """Manage new key: merge, shrink, or add as-is.
         
-        Merge condition: IoU(circle_new, circle_existing) > merge_iou_threshold
-        Merge with the HIGHEST IoU key.
-        
-        Returns True if merged, False if should add as new key.
+        Returns: (merged: bool, final_radius: float)
+        - merged=True: key was merged, don't add
+        - merged=False: add key with final_radius (possibly shrunk)
         """
         if self.key_embs is None or len(self.codebook) == 0:
-            return False
+            return False, radius
         
         emb_cpu = emb.cpu().squeeze(0) if emb.dim() > 1 else emb.cpu()
         dists = torch.norm(self.key_embs - emb_cpu, dim=1).numpy()
         radii = self.key_radii.numpy()
         
-        # Compute IoU for each existing key
-        ious = np.array([self._circle_iou(d, radius, r) for d, r in zip(dists, radii)])
+        # Find overlapping keys
+        overlapping = np.where(dists < radius + radii)[0]
+        if len(overlapping) == 0:
+            return False, radius
         
-        # Find keys exceeding threshold
-        above_thresh = ious > self.merge_iou_threshold
-        if not above_thresh.any():
-            return False
+        # Step 1: Check for merge (both IoA > merge_threshold)
+        if self.merge_keys:
+            for idx in overlapping:
+                ioa_new, ioa_old = self._circle_ioa_pair(dists[idx], radius, radii[idx])
+                if ioa_new > self.merge_ioa_threshold and ioa_old > self.merge_ioa_threshold:
+                    dist = float(dists[idx])
+                    self.key_radii[idx] = max(float(self.key_radii[idx]), dist + radius)
+                    existing_value = self.codebook[idx].get("value", "")
+                    if value and value != existing_value and value not in existing_value:
+                        self.codebook[idx]["value"] = f"{existing_value} {value}".strip()
+                    self.codebook[idx]["is_merged"] = True
+                    self.codebook[idx]["merge_count"] = self.codebook[idx].get("merge_count", 1) + 1
+                    return True, radius
         
-        # Merge with highest IoU
-        best_idx = int(np.argmax(ious))
-        dist = float(dists[best_idx])
+        # Step 2: Resolve conflicts (both IoA < shrink_threshold)
+        if not self.shrink_keys:
+            return False, radius
         
-        # Extend radius to cover both circles
-        self.key_radii[best_idx] = max(float(self.key_radii[best_idx]), dist + radius)
+        current_radius = radius
+        max_iters = 10
+        for _ in range(max_iters):
+            overlapping = np.where(dists < current_radius + radii)[0]
+            if len(overlapping) == 0:
+                break
+            
+            # Find conflicts
+            conflicts = []
+            for idx in overlapping:
+                ioa_new, ioa_old = self._circle_ioa_pair(dists[idx], current_radius, radii[idx])
+                if ioa_new < self.shrink_ioa_threshold and ioa_old < self.shrink_ioa_threshold:
+                    conflicts.append((idx, ioa_new, dists[idx]))
+            
+            if not conflicts:
+                break
+            
+            # Shrink worst conflict (highest IoA on new key)
+            worst_idx, worst_ioa, worst_dist = max(conflicts, key=lambda x: x[1])
+            
+            # Shrink proportionally: both just touch
+            old_r = float(radii[worst_idx])
+            factor = worst_dist / (current_radius + old_r)
+            current_radius *= factor
+            self.key_radii[worst_idx] = old_r * factor
+            radii[worst_idx] = old_r * factor
+            
+            # Check minimum radius → force merge
+            if current_radius < self.min_radius:
+                closest = int(np.argmin(dists))
+                existing_value = self.codebook[closest].get("value", "")
+                if value and value != existing_value and value not in existing_value:
+                    self.codebook[closest]["value"] = f"{existing_value} {value}".strip()
+                self.codebook[closest]["is_merged"] = True
+                self.codebook[closest]["merge_count"] = self.codebook[closest].get("merge_count", 1) + 1
+                return True, current_radius
         
-        # Combine values (append unique)
-        existing_value = self.codebook[best_idx].get("value", "")
-        if value and value != existing_value and value not in existing_value:
-            self.codebook[best_idx]["value"] = f"{existing_value} {value}".strip()
-        
-        self.codebook[best_idx]["is_merged"] = True
-        self.codebook[best_idx]["merge_count"] = self.codebook[best_idx].get("merge_count", 1) + 1
-        return True
-
-    def _shrink_high_overlap_keys(self):
-        """Shrink keys that overlap with too many other keys.
-        
-        For each key, count how many other keys it overlaps with.
-        If count > shrink_threshold, shrink radius by shrink_factor.
-        
-        Overlap defined as: dist(i,j) < r_i + r_j
-        """
-        if self.key_embs is None or len(self.codebook) < 2:
-            return
-        
-        # Compute pairwise distances
-        dists = torch.cdist(self.key_embs.float(), self.key_embs.float())  # [N, N]
-        
-        # Overlap: dist < r_i + r_j
-        radii = self.key_radii
-        radii_sum = radii.unsqueeze(0) + radii.unsqueeze(1)  # [N, N]
-        overlap_matrix = dists < radii_sum
-        
-        # Exclude self (diagonal)
-        overlap_matrix.fill_diagonal_(False)
-        
-        # Count overlaps per key
-        overlap_counts = overlap_matrix.sum(dim=1)  # [N]
-        
-        # Shrink keys exceeding threshold
-        high_overlap = overlap_counts > self.shrink_threshold
-        if high_overlap.any():
-            high_idx = torch.where(high_overlap)[0]
-            self.key_radii[high_idx] = self.key_radii[high_idx] * self.shrink_factor
-            for idx in high_idx.tolist():
-                self.codebook[idx]["is_shrunk"] = True
-            self._shrink_count += len(high_idx)
+        return False, current_radius
 
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
@@ -471,14 +499,16 @@ class IKE_CHAIN(nn.Module):
         # Move to CPU to save GPU memory (only used for retrieval)
         new_embs = new_embs.cpu()
         
-        # Add keys to codebook (with optional merging)
+        # Add keys to codebook (with optional key management)
         for i, entry in enumerate(new_entries):
             emb, radius = new_embs[i:i+1], float(new_radii[i])
             value = entry.get("value", "")
             
-            # Try merge if enabled (pure geographic)
-            if self.merge_keys and self._try_merge_key(emb, radius, value):
-                continue  # Merged into existing key
+            # Key management: merge/shrink based on IoA
+            if self.merge_keys or self.shrink_keys:
+                merged, radius = self._manage_new_key(emb, radius, value)
+                if merged:
+                    continue
             
             # Add as new key
             self.codebook.append(entry)
@@ -488,10 +518,6 @@ class IKE_CHAIN(nn.Module):
             else:
                 self.key_embs = torch.cat([self.key_embs, emb], dim=0)
                 self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
-        
-        # Shrink high-overlap keys after adding all keys for this edit
-        if self.shrink_keys:
-            self._shrink_high_overlap_keys()
         
         # Clear CUDA cache
         if torch.cuda.is_available():
@@ -851,15 +877,12 @@ class IKE_CHAIN(nn.Module):
         n_question_keys = sum(1 for e in self.codebook if e.get("is_question", False))
         n_rationale_keys = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
         n_merged_keys = sum(1 for e in self.codebook if e.get("is_merged", False))
-        n_shrunk_keys = sum(1 for e in self.codebook if e.get("is_shrunk", False))
         
         stats = {
             "num_keys": len(self.codebook),
             "num_orig_keys": n_orig_keys,
             "num_patch_keys": n_patch_keys,
             "num_merged_keys": n_merged_keys,
-            "num_shrunk_keys": n_shrunk_keys,
-            "num_shrink_ops": self._shrink_count,
             "num_question_keys": n_question_keys,
             "num_rationale_keys": n_rationale_keys,
             "num_image_only_keys": n_image_only,
@@ -886,6 +909,9 @@ class IKE_CHAIN(nn.Module):
             s1: First sentence for patch selection (if None, shows all patches without scores)
             figsize: Figure size
             score_type: "softmax" (default, probabilities sum to 1) or "ll" (raw log-likelihood)
+        
+        Green border = passed VQA verification (p_yes > 0.9)
+        Red border = in top-k but failed VQA
         """
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
@@ -904,6 +930,7 @@ class IKE_CHAIN(nn.Module):
         # Compute scores for each patch (excluding full image)
         scores = None
         top_k_idx = []
+        vqa_passed = set()  # indices that passed VQA
         score_label = ""
         if s1:
             nlls = []
@@ -920,6 +947,20 @@ class IKE_CHAIN(nn.Module):
                 scores = -nlls
                 score_label = "LL"
                 top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
+            
+            # VQA verification for top-k (already sorted by stage1 score, highest first)
+            vqa_question = f"Does {s1.lower().replace('.', '?')}"
+            print(f"[VQA] Q: {vqa_question}")
+            for i, idx in enumerate(top_k_idx):
+                patch = patches[idx]
+                nll_yes = self._get_nll(patch, vqa_question, "Yes")
+                nll_no = self._get_nll(patch, vqa_question, "No")
+                p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
+                status = "✓" if p_yes > 0.9 else "✗"
+                s1_score = scores[idx] if score_type == "softmax" else -nlls[idx]
+                print(f"  [{i}] {patch_names[idx]}: s1={s1_score:.1%}, p_yes={p_yes:.3f} {status}")
+                if p_yes > 0.9:
+                    vqa_passed.add(idx)
         
         for idx in range(len(axes)):
             ax = axes[idx]
@@ -937,16 +978,18 @@ class IKE_CHAIN(nn.Module):
                     title = patch_names[idx]
                 ax.set_title(title, fontsize=6)
                 
-                # Highlight top-k with green box
+                # Highlight: green=passed VQA, red=top-k but failed VQA
                 if idx in top_k_idx:
+                    color = 'limegreen' if idx in vqa_passed else 'red'
                     rect = Rectangle((0, 0), patch.width-1, patch.height-1, 
-                                      linewidth=8, edgecolor='limegreen', facecolor='none')
+                                      linewidth=8, edgecolor=color, facecolor='none')
                     ax.add_patch(rect)
             ax.axis('off')
         
         # Title with s1 preview
         score_info = "softmax prob" if score_type == "softmax" else "log-likelihood"
-        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, {score_info})"
+        n_passed = len(vqa_passed) if s1 else 0
+        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, VQA passed={n_passed}, {score_info})"
         if s1:
             title += f"\ns1: {s1}"
         plt.suptitle(title, fontsize=10)
