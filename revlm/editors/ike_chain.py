@@ -49,11 +49,11 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Core Retrieval
-        self.cap_k_edits = int(getattr(cfg, "cap_k_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
-        self.auto_k_edits = getattr(cfg, "auto_k_edits", True)                 # True = Grubbs adaptive, False = fixed cap_k_edits
-        self.knn_k = int(getattr(cfg, "knn_k", 10))                              # 0 = radius-based, >0 = KNN pool size
+        self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
+        self.cap_edits = int(getattr(cfg, "cap_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.knn_keys = int(getattr(cfg, "knn_keys", 10))                              # 0 = radius-based, >0 = KNN pool size
         self.retrieve_winner_edits = getattr(cfg, "retrieve_winner_edits", True) # filter to winner edits (most keys + closest key)
-        self.cap_k = int(getattr(cfg, "cap_k", 3))                              # final max keys to retrieve
+        self.cap_keys = int(getattr(cfg, "cap_keys", 3))                              # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.seed = getattr(cfg, "seed", None)
 
@@ -441,7 +441,7 @@ class IKE_CHAIN(nn.Module):
         print(f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)")
         
         # Update edit centroids for two-level retrieval
-        if self.cap_k_edits > 0:
+        if self.cap_edits > 0:
             self._update_edit_centroids()
         
         if torch.cuda.is_available():
@@ -504,10 +504,10 @@ class IKE_CHAIN(nn.Module):
     def _get_top_edits(self, q_embs: torch.Tensor) -> List[int]:
         """Level 1: Return top edits by min distance to centroids.
         
-        If auto_k_edits=True: use Grubbs to find k, capped at cap_k_edits
-        If auto_k_edits=False: use fixed cap_k_edits
+        If auto_k=True: use Grubbs to determine number of edits
+        Only called when n_edits >= auto_k_edit_after
         """
-        if self.edit_centroids is None or self.cap_k_edits <= 0:
+        if self.edit_centroids is None or self.cap_edits <= 0:
             return list(range(self._edit_count))  # All edits
         
         # Compute distances from query patches to edit centroids
@@ -521,13 +521,13 @@ class IKE_CHAIN(nn.Module):
         scores = -min_dists.numpy()  # Higher is better (negative distance)
         
         # Determine k
-        if self.auto_k_edits:
-            k = self._grubbs_k(scores, top_n=self.cap_k_edits)
+        if self.auto_k:
+            k = self._grubbs_k(scores, top_n=self.cap_edits)
             if k == 0:
                 return []  # No edit close enough → good for locality
-            k = min(k, self.cap_k_edits)
+            k = min(k, self.cap_edits)
         else:
-            k = min(self.cap_k_edits, self._edit_count)
+            k = min(self.cap_edits, self._edit_count)
         
         top_edit_indices = np.argsort(scores)[::-1][:k].tolist()
         return top_edit_indices
@@ -544,8 +544,8 @@ class IKE_CHAIN(nn.Module):
         """Select candidates via KNN or radius. Returns (local_indices, min_dists)."""
         min_dists_all = dist_matrix.min(dim=0).values
         
-        if self.knn_k > 0:
-            k = min(self.knn_k, len(key_indices))
+        if self.knn_keys > 0:
+            k = min(self.knn_keys, len(key_indices))
             matched_local = min_dists_all.argsort()[:k]
             return matched_local, min_dists_all[matched_local]
         
@@ -605,8 +605,8 @@ class IKE_CHAIN(nn.Module):
                             key_indices: List[int] = None) -> List[str]:
         """Retrieve from specified keys (or all non-image-only keys).
         
-        Two-level retrieval (if cap_k_edits > 0):
-        - Level 1: Filter to top cap_k_edits edits by centroid distance
+        Two-level retrieval (if cap_edits > 0):
+        - Level 1: Filter to top cap_edits edits by centroid distance
         - Level 2: Key-level retrieval within those edits
         """
         # Build query embeddings
@@ -617,9 +617,11 @@ class IKE_CHAIN(nn.Module):
         
         # Get key indices
         if key_indices is None:
-            # Level 1: Filter to top edits first (if enabled)
-            if self.cap_k_edits > 0 and self.edit_centroids is not None:
+            # Level 1: Filter to top edits first (if enabled and enough edits)
+            if self.cap_edits > 0 and self.edit_centroids is not None and self._edit_count >= self.auto_k_edit_after:
                 top_edit_ids = set(self._get_top_edits(q_embs))
+                if not top_edit_ids:
+                    return []  # No edit matched (Grubbs returned 0)
                 key_indices = [i for i, e in enumerate(self.codebook) 
                               if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
             else:
@@ -638,9 +640,9 @@ class IKE_CHAIN(nn.Module):
         if self.retrieve_winner_edits:
             matched_local, min_dists = self._filter_winner_edits(matched_local, min_dists, key_indices)
         
-        # Sort and take top cap_k
+        # Sort and take top cap_keys
         sorted_order = min_dists.argsort()
-        selected_local = matched_local[sorted_order].tolist()[:self.cap_k]
+        selected_local = matched_local[sorted_order].tolist()[:self.cap_keys]
         
         # Collect values
         retrieved = set()
@@ -709,9 +711,11 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         
-        # Level 1: Filter to top edits (if enabled)
-        if self.cap_k_edits > 0 and self.edit_centroids is not None:
+        # Level 1: Filter to top edits (if enabled and enough edits)
+        if self.cap_edits > 0 and self.edit_centroids is not None and self._edit_count >= self.auto_k_edit_after:
             top_edit_ids = set(self._get_top_edits(q_embs))
+            if not top_edit_ids:
+                return text_matched, img_matched  # No edit matched
             text_indices = [i for i, e in enumerate(self.codebook) 
                            if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
         else:
@@ -727,7 +731,7 @@ class IKE_CHAIN(nn.Module):
                 
                 top_k = matched_local[min_dists.argsort()]
                 if apply_cap_k:
-                    top_k = top_k[:self.cap_k]
+                    top_k = top_k[:self.cap_keys]
                 text_matched = {text_indices[i.item()] for i in top_k}
         
         if text_matched or not self.image_only_retrieval:
@@ -768,7 +772,7 @@ class IKE_CHAIN(nn.Module):
                     min_dists = dm[:, matched_local].min(dim=0).values
                     top_k = matched_local[min_dists.argsort()]
                     if apply_cap_k:
-                        top_k = top_k[:self.cap_k]
+                        top_k = top_k[:self.cap_keys]
                     img_matched.update(t_idx[i.item()] for i in top_k)
         
         return text_matched, img_matched
@@ -893,7 +897,7 @@ class IKE_CHAIN(nn.Module):
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
-            "cap_k_edits": self.cap_k_edits,
+            "cap_edits": self.cap_edits,
             "retrieve_winner_edits": self.retrieve_winner_edits,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
