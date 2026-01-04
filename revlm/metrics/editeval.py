@@ -451,14 +451,7 @@ def _maybe_apply_ike(
             if hasattr(editor.model, "eval"):
                 editor.model.eval()
         editor.edit(cfg, edit_ds=edit_ds, train_ds=train_ds)
-    elif editor_name == "ike_clip":
-        # IKE_CLIP: reuse the CLIP retriever learned during the main edit phase.
-        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
-            if hasattr(editor.model, "eval"):
-                editor.model.eval()
-        # Apply retrieval-based prompt augmentation in-place.
-        editor.apply_to_dataset(edit_ds, inplace=True)
-    elif editor_name in ["ike_tuple", "reasonedit", "ike_proto", "ike_chain", "ike_causal", "ike_cot"]:
+    elif editor_name in ["ike_chain", "ike_cot"]:
         # IKE variants using apply_to_dataset without inplace flag
         if hasattr(editor, "model") and hasattr(editor, "wrapper"):
             if hasattr(editor.model, "eval"):
@@ -667,7 +660,7 @@ def editk_generality(
 
 	editor_name = getattr(getattr(config, "editor", None), "_name", None)
 	use_rationale = getattr(config, "rationale", False)
-	is_ike = editor_name in ("ike", "ike_clip", "ike_tuple", "ike_cot", "ike_proto")
+	is_ike = editor_name in ("ike", "ike_cot", "ike_chain")
 	rng = random.Random(getattr(config, "seed", 333))
 	
 	corrects, totals = [], []
@@ -694,17 +687,6 @@ def editk_generality(
 		t_edit = time.time()
 		if is_ike:
 			editor.edit(config, edit_ds=edit_subset)
-		elif editor_name == "mend_pretrain":
-			# 1) Pretrain hypernetwork on edit_subset, 2) apply averaged edits via edit_batch
-			inner_model = getattr(model, "model", model)
-			inner_model.train()
-			train_data = [{'edit_input': {kk: vv.clone() if torch.is_tensor(vv) else vv for kk, vv in model.prepare_training_batch(b).items()}} for b in edit_subset.loader]
-			cfg = config.editor
-			editor.pretrain(train_data, epochs=int(cfg.pretrain_epochs), lr=float(cfg.pretrain_lr), early_stop_patience=int(cfg.early_stop_patience), save_path=None)
-			# Use edit_batch to apply all edits at once (averaged updates)
-			all_tokens = [d['edit_input'] for d in train_data]
-			editor.edit_batch(all_tokens)
-			inner_model.eval()
 		else:
 			inner_model = getattr(model, "model", model)
 			inner_model.train()

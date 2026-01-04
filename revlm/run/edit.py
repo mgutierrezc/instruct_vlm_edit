@@ -52,7 +52,7 @@ if __name__ == "__main__":
         "--editor",
         type=str,
         required=True,
-        choices=["ft", "ft_ewc", "ft_retrain", "grace", "balancedit", "ike", "ike_cot", "ike_clip", "ike_tuple", "ike_causal", "ike_chain", "ike_proto", "reasonedit", "mend", "mend_pretrain", "baseline"],
+        choices=["ft", "ft_retrain", "grace", "balancedit", "ike", "ike_cot", "ike_chain", "mend", "baseline"],
         help="Editor method to use",
     )
     parser.add_argument("--model_name", type=str, default=None, help="Short VLM name to map to full HF id (e.g., 'qwen3', 'qwen3_4b', 'llava', 'blip')")

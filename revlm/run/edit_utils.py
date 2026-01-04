@@ -155,34 +155,13 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         editor = get_editor(config, model)
         editor.generate = model.model.generate if hasattr(model, "model") else model.generate
 
-    # ------------------------------------------------------------
-    # Special: mend_pretrain pretraining step (if not already pretrained)
-    if editor_name == "mend_pretrain" and not getattr(editor, 'is_pretrained', False):
-        print("[mend_pretrain] Pretraining hypernetwork on edit dataset...", flush=True)
-        train_data = [{'edit_input': {k: v.clone() if torch.is_tensor(v) else v for k, v in model.prepare_training_batch(b).items()}} for b in edit_ds.loader]
-        cfg = config.editor
-        editor.pretrain(train_data, epochs=int(cfg.pretrain_epochs), lr=float(cfg.pretrain_lr), early_stop_patience=int(cfg.early_stop_patience), save_path=cfg.checkpoint_path)
-        print("[mend_pretrain] Pretraining done.", flush=True)
-    # ------------------------------------------------------------
-
     if editor_name == "baseline":
         if hasattr(model, "model"):
             model.model.eval()
-    elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple", "ike_causal", "ike_chain", "ike_proto"}:
+    elif editor_name in {"ike", "ike_cot", "ike_chain"}:
         if hasattr(model, "model"):
             model.model.eval()
         editor.edit(config, edit_ds=edit_ds)
-    elif editor_name == "reasonedit":
-        if hasattr(model, "model"):
-            model.model.train()
-        editor.edit(config, edit_ds=edit_ds)
-    elif editor_name == "mend_pretrain":
-        # mend_pretrain: use edit_batch to apply all edits at once (averaged updates)
-        if hasattr(model, "model"):
-            model.model.train()
-        print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
-        all_tokens = [model.prepare_training_batch(batch) for batch in edit_ds.loader]
-        editor.edit_batch(all_tokens)
     else:
         if hasattr(model, "model"):
             model.model.train()
@@ -257,7 +236,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     """Edit sequentially, evaluating every `eval_every` batchess."""
     editor_name_check = getattr(config.editor, "_name", "").lower()
     # Retrieval-based editors don't modify weights - skip expensive deepcopy
-    retrieval_editors = ["ike", "ike_chain", "ike_proto", "ike_cot", "ike_clip", "ike_tuple"]
+    retrieval_editors = ["ike", "ike_chain", "ike_cot"]
     if any(editor_name_check.startswith(name) for name in retrieval_editors):
         model_old = model  # Same reference, no copy needed
     else:
@@ -277,16 +256,6 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     if editor_name != "baseline":
         editor = get_editor(config, model)
         editor.generate = model.model.generate if hasattr(model, "model") else model.generate
-
-    # ------------------------------------------------------------
-    # Special: mend_pretrain pretraining step (if not already pretrained)
-    if editor_name == "mend_pretrain" and not getattr(editor, 'is_pretrained', False):
-        print("[mend_pretrain] Pretraining hypernetwork on edit dataset...", flush=True)
-        train_data = [{'edit_input': {k: v.clone() if torch.is_tensor(v) else v for k, v in model.prepare_training_batch(b).items()}} for b in edit_ds.loader]
-        cfg = config.editor
-        editor.pretrain(train_data, epochs=int(cfg.pretrain_epochs), lr=float(cfg.pretrain_lr), early_stop_patience=int(cfg.early_stop_patience), save_path=cfg.checkpoint_path)
-        print("[mend_pretrain] Pretraining done.", flush=True)
-    # ------------------------------------------------------------
 
     batch_history = []
     all_out_dicts = []
@@ -318,19 +287,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         t2 = time.time()
         if editor_name == "baseline":
             pass  # no editing
-        elif editor_name in {"ike", "ike_cot", "ike_clip", "ike_tuple", "ike_causal", "ike_chain", "ike_proto"}:
-            # ike_causal: train last-only by default, full train every N batches
-            # Set retrain_every=-1 to always train on all (no last-only)
-            if editor_name == "ike_causal" and hasattr(editor, "train_last_only"):
-                if editor.retrain_every < 0:
-                    editor.train_last_only = False  # Always train on all
-                else:
-                    is_retrain = ((batch_idx + 1) % editor.retrain_every == 0)
-                    editor.train_last_only = not is_retrain
-            editor.edit(config, edit_ds=edit_ds_sofar)
-        elif editor_name == "reasonedit":
-            if hasattr(model, "model"):
-                model.model.train()
+        elif editor_name in {"ike", "ike_cot", "ike_chain"}:
             editor.edit(config, edit_ds=edit_ds_sofar)
         else:
             if hasattr(model, "model"):
