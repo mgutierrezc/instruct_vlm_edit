@@ -48,6 +48,7 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # Core Retrieval
+        self.cap_k_edits = int(getattr(cfg, "cap_k_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
         self.knn_k = int(getattr(cfg, "knn_k", 10))                              # 0 = radius-based, >0 = KNN pool size
         self.retrieve_winner_edits = getattr(cfg, "retrieve_winner_edits", True) # filter to winner edits (most keys + closest key)
         self.cap_k = int(getattr(cfg, "cap_k", 3))                              # final max keys to retrieve
@@ -100,6 +101,7 @@ class IKE_CHAIN(nn.Module):
         self.codebook = []
         self.key_embs = None   # [N, hidden]
         self.key_radii = None  # [N]
+        self.edit_centroids = None  # [n_edits, hidden] - for two-level retrieval
         
         # Logging
         self.last_retrieval_log = None
@@ -434,10 +436,63 @@ class IKE_CHAIN(nn.Module):
                 self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
         
         print(f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)")
+        
+        # Update edit centroids for two-level retrieval
+        if self.cap_k_edits > 0:
+            self._update_edit_centroids()
+        
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _update_edit_centroids(self):
+        """Recompute all edit centroids from current keys."""
+        if self.key_embs is None or len(self.codebook) == 0:
+            self.edit_centroids = None
+            return
+        
+        # Group key indices by edit_idx
+        edit_to_keys = {}
+        for i, entry in enumerate(self.codebook):
+            if entry.get("is_image_only", False):
+                continue  # Skip image-only keys for centroid
+            edit_idx = entry["edit_idx"]
+            edit_to_keys.setdefault(edit_idx, []).append(i)
+        
+        if not edit_to_keys:
+            self.edit_centroids = None
+            return
+        
+        # Compute centroid for each edit
+        n_edits = max(edit_to_keys.keys()) + 1
+        hidden_dim = self.key_embs.shape[1]
+        centroids = torch.zeros(n_edits, hidden_dim)
+        
+        for edit_idx, key_indices in edit_to_keys.items():
+            centroids[edit_idx] = self.key_embs[key_indices].mean(dim=0)
+        
+        self.edit_centroids = centroids
+
     # ==================== 4. RETRIEVAL ====================
+
+    def _get_top_edits(self, q_embs: torch.Tensor) -> List[int]:
+        """Level 1: Return top cap_k_edits edit indices by min distance to centroids."""
+        if self.edit_centroids is None or self.cap_k_edits <= 0:
+            return list(range(self._edit_count))  # All edits
+        
+        # Compute distances from query patches to edit centroids
+        if self.distance == "cosine":
+            dist_matrix = 1 - (q_embs @ self.edit_centroids.t())
+        else:
+            dist_matrix = torch.cdist(q_embs.float(), self.edit_centroids.float(), p=2)
+        
+        # Min distance per edit across all query patches
+        min_dists = dist_matrix.min(dim=0).values
+        
+        # Get top cap_k_edits closest edits
+        k = min(self.cap_k_edits, self._edit_count)
+        top_edit_indices = min_dists.argsort()[:k].tolist()
+        
+        return top_edit_indices
 
     def _compute_distances(self, q_embs: torch.Tensor, key_indices: List[int]) -> torch.Tensor:
         """Compute [n_queries, n_keys] distance matrix."""
@@ -510,7 +565,12 @@ class IKE_CHAIN(nn.Module):
     @torch.no_grad()
     def _retrieve_from_keys(self, query_patches: List, question: str, 
                             key_indices: List[int] = None) -> List[str]:
-        """Retrieve from specified keys (or all non-image-only keys)."""
+        """Retrieve from specified keys (or all non-image-only keys).
+        
+        Two-level retrieval (if cap_k_edits > 0):
+        - Level 1: Filter to top cap_k_edits edits by centroid distance
+        - Level 2: Key-level retrieval within those edits
+        """
         # Build query embeddings
         q_embs = self._encode_vlm(query_patches, [question] * len(query_patches))
         if self.distance == "cosine":
@@ -519,7 +579,13 @@ class IKE_CHAIN(nn.Module):
         
         # Get key indices
         if key_indices is None:
-            key_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
+            # Level 1: Filter to top edits first (if enabled)
+            if self.cap_k_edits > 0 and self.edit_centroids is not None:
+                top_edit_ids = set(self._get_top_edits(q_embs))
+                key_indices = [i for i, e in enumerate(self.codebook) 
+                              if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
+            else:
+                key_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
         if not key_indices:
             return []
         
@@ -601,12 +667,19 @@ class IKE_CHAIN(nn.Module):
         query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
         
         # Stage 1: Text-aware
-        text_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
+        q_embs = self._encode_vlm(query_patches, [question] * len(query_patches)).cpu()
+        if self.distance == "cosine":
+            q_embs = F.normalize(q_embs, dim=-1)
+        
+        # Level 1: Filter to top edits (if enabled)
+        if self.cap_k_edits > 0 and self.edit_centroids is not None:
+            top_edit_ids = set(self._get_top_edits(q_embs))
+            text_indices = [i for i, e in enumerate(self.codebook) 
+                           if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
+        else:
+            text_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
+        
         if text_indices:
-            q_embs = self._encode_vlm(query_patches, [question] * len(query_patches)).cpu()
-            if self.distance == "cosine":
-                q_embs = F.normalize(q_embs, dim=-1)
-            
             dist_matrix = self._compute_distances(q_embs, text_indices)
             matched_local, min_dists = self._get_candidate_keys(dist_matrix, text_indices)
             
@@ -745,7 +818,9 @@ class IKE_CHAIN(nn.Module):
             "codebook": self.codebook,
             "key_embs": self.key_embs,
             "key_radii": self.key_radii,
+            "edit_centroids": self.edit_centroids,
             "top_k_patches": self.top_k_patches,
+            "_edit_count": self._edit_count,
         }, path)
         print(f"[IKE_CHAIN] saved {len(self.codebook)} keys to {path}", flush=True)
     
@@ -754,6 +829,10 @@ class IKE_CHAIN(nn.Module):
         data = torch.load(path, map_location=self.device)
         self.codebook = data["codebook"]
         self.key_embs = data["key_embs"].to(self.device)
+        self.edit_centroids = data.get("edit_centroids")
+        if self.edit_centroids is not None:
+            self.edit_centroids = self.edit_centroids.to(self.device)
+        self._edit_count = data.get("_edit_count", len(set(e.get("edit_idx", 0) for e in self.codebook)))
         self.key_radii = data["key_radii"].to(self.device)
         print(f"[IKE_CHAIN] loaded {len(self.codebook)} keys from {path}", flush=True)
 
@@ -776,6 +855,7 @@ class IKE_CHAIN(nn.Module):
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
+            "cap_k_edits": self.cap_k_edits,
             "retrieve_winner_edits": self.retrieve_winner_edits,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
