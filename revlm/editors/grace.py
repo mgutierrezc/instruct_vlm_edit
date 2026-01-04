@@ -151,8 +151,8 @@ class GRACE(torch.nn.Module):
                 if i >= 100 and patience_counter >= early_stop_patience:
                     break
             
-            # Print loss every 10 iterations or on first/last iteration
-            if (i + 1) % 10 == 0 or i == 0 or i == n_iter - 1:
+            # Print loss every 200 iterations or on first/last iteration
+            if (i + 1) % 200 == 0 or i == 0 or i == n_iter - 1:
                 print(f"[grace] iter {i+1}/{n_iter} - loss: {loss_value:.4f}")
         
         self.loss = loss if 'loss' in locals() else None
