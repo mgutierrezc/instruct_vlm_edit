@@ -46,8 +46,9 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # ==================== Core Retrieval ====================
-        self.cap_k = int(getattr(cfg, "cap_k", 3))                              # max keys to retrieve
-        self.retrieve_single_edit = getattr(cfg, "retrieve_single_edit", False) # only retrieve from winning edit
+        self.knn_k = int(getattr(cfg, "knn_k", 10))                              # 0 = radius-based candidate keyss, >0 = KNN pool size candidate keys
+        self.retrieve_winner_edits = getattr(cfg, "retrieve_winner_edits", True) # only retrieve from winner edits (most keys + closest key)
+        self.cap_k = int(getattr(cfg, "cap_k", 3))                              # final max keys to retrieve from all candidate keys
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.seed = getattr(cfg, "seed", None)
 
@@ -59,7 +60,7 @@ class IKE_CHAIN(nn.Module):
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
         
         # ==================== Radius Estimation ====================
-        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
+        self.radius_method = getattr(cfg, "radius_method", "fixed")  # "fixed", "augment", or "balance"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 1000.0))
         # augment method
         self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.5))
@@ -76,9 +77,13 @@ class IKE_CHAIN(nn.Module):
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
         # ==================== Key Management ====================
-        self.merge_keys = getattr(cfg, "merge_keys", False)  # enable both merge methods
+        self.merge_keys = getattr(cfg, "merge_keys", True)  # enable both merge methods
         self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))  # IoA merge threshold
         self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))  # distance merge: if dist < pct * both radii
+        if self.merge_keys: # unreliable radius should not be used for merge
+            self.radius_method = "augment"
+            self.radius_area_pct = 0.95
+
 
         # ==================== Image-Only Fallback ====================
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -583,19 +588,24 @@ class IKE_CHAIN(nn.Module):
         else:
             dist_matrix = torch.cdist(q_embs.float(), key_embs.float(), p=2)
         
-        # Step 1: Find all keys within radius
-        in_radius = dist_matrix <= key_radii
-        matched_mask = in_radius.any(dim=0)
+        # Step 1: Find candidate keys (KNN or radius-based)
+        min_dists_all = dist_matrix.min(dim=0).values  # min dist per key across all query patches
+        if self.knn_k > 0:
+            # KNN: top knn_k closest keys
+            k = min(self.knn_k, len(key_indices))
+            matched_local = min_dists_all.argsort()[:k]
+            min_dists = min_dists_all[matched_local]
+        else:
+            # Radius-based: keys within radius
+            in_radius = dist_matrix <= key_radii
+            matched_mask = in_radius.any(dim=0)
+            if not matched_mask.any():
+                return []
+            matched_local = torch.where(matched_mask)[0]
+            min_dists = min_dists_all[matched_local]
         
-        if not matched_mask.any():
-            return []
-        
-        # Get matched indices and their min distances
-        matched_local = torch.where(matched_mask)[0]
-        min_dists = dist_matrix[:, matched_local].min(dim=0).values
-        
-        # Step 2 & 3: Single-edit mode - only keep keys from winning edit
-        if self.retrieve_single_edit and len(matched_local) > 0:
+        # Step 2 & 3: Winner-edits mode - keep keys from (1) most keys edit + (2) closest key edit
+        if self.retrieve_winner_edits and len(matched_local) > 0:
             # Group matched keys by edit_idx
             edit_keys = {}       # edit_idx -> list of (local_idx, dist)
             for local_i, dist in zip(matched_local.tolist(), min_dists.tolist()):
@@ -603,14 +613,14 @@ class IKE_CHAIN(nn.Module):
                 edit_idx = self.codebook[global_i]["edit_idx"]
                 edit_keys.setdefault(edit_idx, []).append((local_i, dist))
             
-            # Find winning edit: most keys, tie-break by closest key
-            winning_edit = max(
-                edit_keys.keys(),
-                key=lambda e: (len(edit_keys[e]), -min(d for _, d in edit_keys[e]))
-            )
+            # Winner 1: edit with most keys
+            winner_count = max(edit_keys.keys(), key=lambda e: len(edit_keys[e]))
+            # Winner 2: edit with closest key
+            winner_dist = min(edit_keys.keys(), key=lambda e: min(d for _, d in edit_keys[e]))
             
-            # Filter to only winning edit's keys
-            winning_pairs = edit_keys[winning_edit]
+            # Keep keys from both winners (may be same edit)
+            winner_edits = {winner_count, winner_dist}
+            winning_pairs = [p for e in winner_edits for p in edit_keys[e]]
             matched_local = torch.tensor([p[0] for p in winning_pairs])
             min_dists = torch.tensor([p[1] for p in winning_pairs])
         
@@ -713,21 +723,29 @@ class IKE_CHAIN(nn.Module):
                 dm = 1 - (q_embs @ self.key_embs[idx_t].t())
             else:
                 dm = torch.cdist(q_embs.float(), self.key_embs[idx_t].float(), p=2)
-            matched = dm <= self.key_radii[idx_t]
-            matched_local = torch.where(matched.any(dim=0))[0]
-            if matched_local.numel() > 0:
-                min_dists = dm[:, matched_local].min(dim=0).values
+            min_dists_all = dm.min(dim=0).values
+            if self.knn_k > 0:
+                k = min(self.knn_k, len(text_indices))
+                matched_local = min_dists_all.argsort()[:k]
+                min_dists = min_dists_all[matched_local]
+            else:
+                matched = dm <= self.key_radii[idx_t]
+                matched_local = torch.where(matched.any(dim=0))[0]
+                min_dists = min_dists_all[matched_local] if matched_local.numel() > 0 else None
+            if matched_local.numel() > 0 and min_dists is not None:
                 
-                # Single-edit mode: filter to winning edit
-                if self.retrieve_single_edit:
+                # Winner-edits mode: filter to winner edits (most keys + closest key)
+                if self.retrieve_winner_edits:
                     edit_keys = {}
                     for local_i, dist in zip(matched_local.tolist(), min_dists.tolist()):
                         global_i = text_indices[local_i]
                         edit_idx = self.codebook[global_i]["edit_idx"]
                         edit_keys.setdefault(edit_idx, []).append((local_i, dist))
                     if edit_keys:
-                        winning_edit = max(edit_keys.keys(), key=lambda e: (len(edit_keys[e]), -min(d for _, d in edit_keys[e])))
-                        winning_pairs = edit_keys[winning_edit]
+                        winner_count = max(edit_keys.keys(), key=lambda e: len(edit_keys[e]))
+                        winner_dist = min(edit_keys.keys(), key=lambda e: min(d for _, d in edit_keys[e]))
+                        winner_edits = {winner_count, winner_dist}
+                        winning_pairs = [p for e in winner_edits for p in edit_keys[e]]
                         matched_local = torch.tensor([p[0] for p in winning_pairs])
                         min_dists = torch.tensor([p[1] for p in winning_pairs])
                 
@@ -893,7 +911,7 @@ class IKE_CHAIN(nn.Module):
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
-            "retrieve_single_edit": self.retrieve_single_edit,
+            "retrieve_winner_edits": self.retrieve_winner_edits,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
