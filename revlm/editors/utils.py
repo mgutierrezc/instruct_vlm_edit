@@ -94,6 +94,9 @@ class BackgroundCache:
 # Global cache instance
 _bg_cache = None
 
+# Default area percentage for mosaic padding (image occupies this % of canvas area)
+DEFAULT_AREA_PCT = 0.9
+
 def get_bg_cache() -> BackgroundCache:
     """Get or create global background cache."""
     global _bg_cache
@@ -198,7 +201,7 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
 
 
 
-def pad_with_mosaic(img, area_pct: float = 0.25, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, area_pct: float = DEFAULT_AREA_PCT, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
@@ -249,7 +252,7 @@ def pad_with_mosaic(img, area_pct: float = 0.25, max_size: int = None, n_tiles: 
     return canvas
 
 
-def pad_with_midas_mosaic(img, area_pct: float = 0.5) -> PILImage.Image:
+def pad_with_midas_mosaic(img, area_pct: float = DEFAULT_AREA_PCT) -> PILImage.Image:
     """Pad image with pre-cached MIDAS skin mosaic background."""
     if isinstance(img, str):
         img = PILImage.open(img).convert("RGB")
@@ -490,7 +493,7 @@ class Augmenter:
             img: Input image (path or PIL Image)
             use_mosaic: Force mosaic on/off. None = random based on mosaic_prob
             max_size: Resize large images to this max dimension for speed
-            area_pct: Override area percentage for mosaic padding (default 0.25 for normal, 0.5 for midas)
+            area_pct: Override area percentage for mosaic padding (default: DEFAULT_AREA_PCT)
         """
         if isinstance(img, str):
             img = PILImage.open(img).convert("RGB")
@@ -504,11 +507,10 @@ class Augmenter:
         # Optionally apply mosaic padding first
         apply_mosaic = use_mosaic if use_mosaic is not None else (random.random() < self.mosaic_prob)
         if apply_mosaic:
+            pct = area_pct if area_pct is not None else DEFAULT_AREA_PCT
             if self.dataset_name == "midas":
-                pct = area_pct if area_pct is not None else 0.5
                 img = pad_with_midas_mosaic(img, area_pct=pct)
             else:
-                pct = area_pct if area_pct is not None else 0.25
                 img = pad_with_mosaic(img, area_pct=pct)
         
         return self.img_aug(img)

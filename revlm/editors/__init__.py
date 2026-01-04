@@ -2,6 +2,7 @@ from .ft import Finetune
 from .ft_retrain import Finetune_retrain
 from .mend import MEND
 from .grace import GRACE
+from .grace_cot import GRACE_COT
 from .balancedit import BalancEdit
 from .ike import IKE
 from .ike_cot import IKE_COT
@@ -35,6 +36,8 @@ def get_editor(config, model):
         editor = MEND(config, model, tokenizer, device)
     elif editor_name == "grace":
         editor = GRACE(config, model)
+    elif editor_name == "grace_cot":
+        editor = GRACE_COT(config, model)
     elif editor_name == "balancedit":
         editor = BalancEdit(config, model)
     elif editor_name == "ike":

@@ -171,7 +171,13 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
             tokens = model.prepare_training_batch(batch)
             # ft_retrain: do one single retrain on the full edit set (all-at-once).
             if editor_name != "ft_retrain":
-                editor.edit(config, tokens, batch_history=batch_history)
+                if editor_name == "grace_cot":
+                    # GRACE_COT needs image and cot for sentence keys
+                    idx = batch["idxs"][0]
+                    ex = edit_ds.data[idx]
+                    editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
+                else:
+                    editor.edit(config, tokens, batch_history=batch_history)
 
             # Keep a lightweight history copy for methods that need replay/regularization
             tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
@@ -293,7 +299,12 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             if hasattr(model, "model"):
                 model.model.train()
             tokens = model.prepare_training_batch(batch)
-            editor.edit(config, tokens, batch_history=batch_history)
+            if editor_name == "grace_cot":
+                idx = batch["idxs"][0]
+                ex = edit_ds_sofar.data[seen_idxs.index(idx)] if idx in seen_idxs else edit_ds.data[idx]
+                editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
+            else:
+                editor.edit(config, tokens, batch_history=batch_history)
             tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
             batch_history.append(tokens_copy)
             del tokens
