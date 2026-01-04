@@ -523,7 +523,9 @@ class IKE_CHAIN(nn.Module):
         # Determine k
         if self.auto_k_edits:
             k = self._grubbs_k(scores, top_n=self.cap_k_edits)
-            k = max(1, min(k, self.cap_k_edits))  # At least 1, at most cap_k_edits
+            if k == 0:
+                return []  # No edit close enough → good for locality
+            k = min(k, self.cap_k_edits)
         else:
             k = min(self.cap_k_edits, self._edit_count)
         
