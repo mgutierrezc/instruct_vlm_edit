@@ -16,6 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from PIL import Image
 from typing import List, Dict, Tuple, Optional
+from scipy.stats import t as t_dist
 
 from .utils import brackets_to_periods, parent_module, Augmenter, ImagePatchifier
 
@@ -49,6 +50,7 @@ class IKE_CHAIN(nn.Module):
 
         # Core Retrieval
         self.cap_k_edits = int(getattr(cfg, "cap_k_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.auto_k_edits = getattr(cfg, "auto_k_edits", True)                 # True = Grubbs adaptive, False = fixed cap_k_edits
         self.knn_k = int(getattr(cfg, "knn_k", 10))                              # 0 = radius-based, >0 = KNN pool size
         self.retrieve_winner_edits = getattr(cfg, "retrieve_winner_edits", True) # filter to winner edits (most keys + closest key)
         self.cap_k = int(getattr(cfg, "cap_k", 3))                              # final max keys to retrieve
@@ -84,6 +86,7 @@ class IKE_CHAIN(nn.Module):
         if self.merge_keys:
             self.radius_method = "augment"
             self.radius_area_pct = 0.95
+            self.n_radius_samples = 1
 
         # Image-Only Fallback
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -474,8 +477,36 @@ class IKE_CHAIN(nn.Module):
 
     # ==================== 4. RETRIEVAL ====================
 
+    @staticmethod
+    def _grubbs_k(scores, top_n=50, alpha=0.05):
+        """Use Grubbs' test on similarity gaps to find natural cutoff. Returns 0 if no outlier."""
+        scores = np.asarray(scores, dtype=float)
+        if scores.size < 4:
+            return 0
+        vals = np.sort(scores)[::-1][:top_n]
+        spread = vals[0] - vals[-1]
+        if spread <= 0:
+            return 0
+        d = (vals[:-1] - vals[1:]) / spread
+        n = d.size
+        if n < 3:
+            return 0
+        mean, std = d.mean(), d.std(ddof=1)
+        if std <= 1e-12:
+            return 0
+        i = int(np.argmax(d))
+        G = abs(d[i] - mean) / std
+        p = alpha / (2 * n)
+        tcrit = t_dist.ppf(1 - p, df=n - 2)
+        Gcrit = ((n - 1) / np.sqrt(n)) * np.sqrt(tcrit**2 / (n - 2 + tcrit**2))
+        return (i + 1) if G > Gcrit else 0
+
     def _get_top_edits(self, q_embs: torch.Tensor) -> List[int]:
-        """Level 1: Return top cap_k_edits edit indices by min distance to centroids."""
+        """Level 1: Return top edits by min distance to centroids.
+        
+        If auto_k_edits=True: use Grubbs to find k, capped at cap_k_edits
+        If auto_k_edits=False: use fixed cap_k_edits
+        """
         if self.edit_centroids is None or self.cap_k_edits <= 0:
             return list(range(self._edit_count))  # All edits
         
@@ -487,11 +518,16 @@ class IKE_CHAIN(nn.Module):
         
         # Min distance per edit across all query patches
         min_dists = dist_matrix.min(dim=0).values
+        scores = -min_dists.numpy()  # Higher is better (negative distance)
         
-        # Get top cap_k_edits closest edits
-        k = min(self.cap_k_edits, self._edit_count)
-        top_edit_indices = min_dists.argsort()[:k].tolist()
+        # Determine k
+        if self.auto_k_edits:
+            k = self._grubbs_k(scores, top_n=self.cap_k_edits)
+            k = max(1, min(k, self.cap_k_edits))  # At least 1, at most cap_k_edits
+        else:
+            k = min(self.cap_k_edits, self._edit_count)
         
+        top_edit_indices = np.argsort(scores)[::-1][:k].tolist()
         return top_edit_indices
 
     def _compute_distances(self, q_embs: torch.Tensor, key_indices: List[int]) -> torch.Tensor:
