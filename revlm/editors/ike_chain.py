@@ -46,23 +46,23 @@ class IKE_CHAIN(nn.Module):
         self.device = getattr(config, "device", torch.device("cpu"))
 
         # ==================== Core Retrieval ====================
-        self.cap_k = int(getattr(cfg, "cap_k", 5))                              # max keys to retrieve
-        self.retrieve_single_edit = getattr(cfg, "retrieve_single_edit", False)  # only retrieve from winning edit
+        self.cap_k = int(getattr(cfg, "cap_k", 3))                              # max keys to retrieve
+        self.retrieve_single_edit = getattr(cfg, "retrieve_single_edit", False) # only retrieve from winning edit
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.seed = getattr(cfg, "seed", None)
 
         # ==================== Embedding Config ====================
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
         self.dual_layer = getattr(cfg, "dual_layer", True)          # concat vision + lang embeddings
+        self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
         self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")   # "internal" or "sbert"
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
-        self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
-
+        
         # ==================== Radius Estimation ====================
         self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
-        self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
+        self.fixed_radius = float(getattr(cfg, "fixed_radius", 1000.0))
         # augment method
-        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.25))
+        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.5))
         self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 3))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
@@ -76,10 +76,9 @@ class IKE_CHAIN(nn.Module):
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
         # ==================== Key Management ====================
-        self.merge_keys = getattr(cfg, "merge_keys", True)  # enable merge (both IoA > threshold)
-        self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
-        self.merge_keys_by_dist = getattr(cfg, "merge_keys_by_dist", True)# Distance-based merge: merge if dist < pct * both radii
-        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))  # 1%
+        self.merge_keys = getattr(cfg, "merge_keys", False)  # enable both merge methods
+        self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))  # IoA merge threshold
+        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))  # distance merge: if dist < pct * both radii
 
         # ==================== Image-Only Fallback ====================
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -394,7 +393,7 @@ class IKE_CHAIN(nn.Module):
             return False, radius
         
         # Step 1a: Distance-based merge (centers very close)
-        if self.merge_keys_by_dist:
+        if self.merge_keys:
             for idx in overlapping:
                 d = dists[idx]
                 if d < self.merge_dist_pct * radius and d < self.merge_dist_pct * radii[idx]:

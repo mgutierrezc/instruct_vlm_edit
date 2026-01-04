@@ -119,6 +119,8 @@ def get_preprocess(config):
         return preprocess_qwen3
     if "llava" in name_lower:
         return preprocess_llava
+    if "blip" in name_lower:
+        return preprocess_instructblip
     return _generic
 
 
