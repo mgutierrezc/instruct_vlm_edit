@@ -30,7 +30,8 @@ class AutoScaler(ModularityCore):
     """
 
     def __init__(self, config, model, inner_params_vision, inner_params_lang=None, n_samples=10,
-                 n_aug=None, edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert"):
+                 n_aug=None, edge_filter="none", edge_filter_kwargs=None, lang_encoder="sbert",
+                 pool_method="mean"):
         """
         Args:
             config: Config object with device
@@ -54,6 +55,7 @@ class AutoScaler(ModularityCore):
         self.edge_filter = edge_filter
         self.edge_filter_kwargs = edge_filter_kwargs or {}
         self.lang_encoder = lang_encoder
+        self.pool_method = pool_method  # "mean" or "last"
         self._augmenter = None
         
         # Activations storage
@@ -91,14 +93,16 @@ class AutoScaler(ModularityCore):
         )
 
     def _pool_act(self, act):
-        """Pool activation to [B, hidden]."""
+        """Pool activation to [B, hidden]. pool_method: 'mean' or 'last'."""
         if act is None:
             raise RuntimeError("Hook failed to capture activation")
         act = act.to(self.device, torch.float32)
         if act.dim() == 3:
-            return act.mean(dim=1)
+            return act[:, -1, :] if self.pool_method == "last" else act.mean(dim=1)
         elif act.dim() == 2:
-            return act if act.shape[0] == 1 else act.mean(dim=0, keepdim=True)
+            if act.shape[0] == 1:
+                return act
+            return act[-1:, :] if self.pool_method == "last" else act.mean(dim=0, keepdim=True)
         elif act.dim() == 1:
             return act.unsqueeze(0)
         else:

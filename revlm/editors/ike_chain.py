@@ -1,12 +1,12 @@
-"""IKE_PATCH: Patch-Aware In-Context Knowledge Editing
+"""IKE_CHAIN: Sentence-Specific Patch-Aware In-Context Knowledge Editing
 
 Expands retrieval surface by creating patch-level keys from images.
-Uses log-likelihood scoring to select informative patches.
+Each rationale sentence gets its own patches selected by that sentence.
 
 Key structure: [<image/patch, text>, value]
-- Original image always included (4 keys)
-- Top-k patches selected by log-likelihood of s1 (4k keys)
-- Total per edit: 4 + 4k keys
+- Original image: (1 + n) keys for question + n sentences
+- Sentence-specific patches: n × (up to k) keys
+- Total per edit: (1 + n) + n × k keys max
 """
 
 import re
@@ -21,18 +21,18 @@ from .utils import brackets_to_periods, parent_module, Augmenter, ImagePatchifie
 
 
 class IKE_CHAIN(nn.Module):
-    """Patch-aware codebook for VLM editing.
+    """Sentence-specific patch-aware codebook for VLM editing.
     
     Codebook entry: [key_emb, value, radius]
     - key_emb: vision_layer(<image/patch, text>) embedding
     - value: sentence to retrieve
-    - radius: 99th percentile of augmented distances
+    - radius: percentile of augmented distances
     
-    Edit structure:
-    - 4 keys from original image: (question, s1, s2, s3) × original
-    - 4k keys from top-k patches: (question, s1, s2, s3) × each patch
+    Edit structure (for n sentences, k patches):
+    - (1+n) keys from original image: <orig, question> + <orig, si> for each si
+    - n×k keys from sentence-specific patches: <patches_si, si> for each si
     
-    Query: patchify query image, check all 14 query embeddings against codebook.
+    Query: patchify query image, check query embeddings against codebook.
     """
 
     def __init__(self, config, model):
@@ -56,13 +56,15 @@ class IKE_CHAIN(nn.Module):
         self.dual_layer = getattr(cfg, "dual_layer", True)          # concat vision + lang embeddings
         self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")   # "internal" or "sbert"
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
+        self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
 
         # ==================== Radius Estimation ====================
         self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
-        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.25))
         # augment method
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 1))
+        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.25))
+        self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 3))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
         # balance method
         self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
@@ -73,20 +75,11 @@ class IKE_CHAIN(nn.Module):
         self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
-        # ==================== Key Management (IoA-based) ====================
+        # ==================== Key Management ====================
         self.merge_keys = getattr(cfg, "merge_keys", True)  # enable merge (both IoA > threshold)
         self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
         self.merge_keys_by_dist = getattr(cfg, "merge_keys_by_dist", True)# Distance-based merge: merge if dist < pct * both radii
-        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.05))  # 5%
-        self.shrink_keys = getattr(cfg, "shrink_keys", False)  # enable shrink (both IoA < threshold)
-        self.shrink_ioa_threshold = float(getattr(cfg, "shrink_ioa_threshold", 0.0))
-        self.min_radius = float(getattr(cfg, "min_radius", 1.0))
-        
-        
-        # Overlap-counting shrink (post-edit) - disabled by default, can be too aggressive
-        self.shrink_overlap_keys = getattr(cfg, "shrink_overlap_keys", False)
-        self.shrink_overlap_threshold = int(getattr(cfg, "shrink_overlap_threshold", 150))
-        self.shrink_overlap_factor = float(getattr(cfg, "shrink_overlap_factor", 0.95))
+        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))  # 1%
 
         # ==================== Image-Only Fallback ====================
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
@@ -95,7 +88,6 @@ class IKE_CHAIN(nn.Module):
         # ==================== Internal State ====================
         self._added_uids = set()
         self._edit_count = 0
-        self._shrink_count = 0  # Track overlap-based shrink operations
         self._vision_act = None
         self._lang_act = None
         self._sbert = None
@@ -144,20 +136,34 @@ class IKE_CHAIN(nn.Module):
         return (self.model if hasattr(self.model, "generate") else self.wrapper).generate(*a, **kw)
 
     def _pool_act(self, act, batch_size):
-        """Pool activation to [B, hidden] shape."""
+        """Pool activation to [B, hidden] shape.
+        
+        pool_method:
+        - "mean": average over sequence dimension (default)
+        - "last": use last token position
+        """
         if act is None:
             raise RuntimeError("Hook failed to capture activation")
         act = act.to(self.device, torch.float32)
         if act.dim() == 3:
-            return act.mean(dim=1)
+            if self.pool_method == "last":
+                return act[:, -1, :]
+            else:
+                return act.mean(dim=1)
         elif act.dim() == 2:
             if act.shape[0] == batch_size:
                 return act
             elif act.shape[0] % batch_size == 0:
                 patches = act.shape[0] // batch_size
-                return act.view(batch_size, patches, -1).mean(dim=1)
+                if self.pool_method == "last":
+                    return act.view(batch_size, patches, -1)[:, -1, :]
+                else:
+                    return act.view(batch_size, patches, -1).mean(dim=1)
             else:
-                return act.mean(dim=0, keepdim=True).expand(batch_size, -1)
+                if self.pool_method == "last":
+                    return act[-1:].expand(batch_size, -1)
+                else:
+                    return act.mean(dim=0, keepdim=True).expand(batch_size, -1)
         else:
             raise RuntimeError(f"Expected 2D or 3D activation, got {act.shape}")
 
@@ -239,30 +245,37 @@ class IKE_CHAIN(nn.Module):
         return float(out.loss.item())
 
     @torch.no_grad()
-    def _select_top_k_patches(self, image, s1: str) -> List[Image.Image]:
-        """Select top-k patches by log-likelihood of s1, then VQA-verify."""
+    def _select_top_k_patches(self, image, sentence: str, is_first_sentence: bool = True) -> List[Image.Image]:
+        """Select up to k patches by log-likelihood of sentence, then VQA-verify.
+        
+        Args:
+            sentence: The rationale sentence to select patches for
+            is_first_sentence: If True, VQA prompt is "Does {s}?"; else "Does the image show {s}?"
+        """
         patches = self.patchifier.patchify_exclude_full(image)  # 35 patches
         
-        # Stage 1: Rank by NLL of s1
+        # Stage 1: Rank by NLL of sentence
         nlls = []
         for patch in patches:
-            nll = self._get_nll(patch, self.patch_select_prompt, s1)
+            nll = self._get_nll(patch, self.patch_select_prompt, sentence)
             nlls.append(nll)
         
         nlls = np.array(nlls)
         top_k_idx = np.argsort(nlls)[:self.top_k_patches]
         candidates = [patches[i] for i in top_k_idx]
         
-        # Stage 2: VQA verification - "Does {s1}?"
-        vqa_question = f"Does {s1.lower().replace('.', '?')}"
+        # Stage 2: VQA verification
+        if is_first_sentence:
+            vqa_question = f"Does {sentence.lower().replace('.', '?')}"
+        else:
+            vqa_question = f"Does the image show {sentence.lower().replace('.', '?')}"
+        
         verified = []
         yes_probs = []
         
         for patch in candidates:
             nll_yes = self._get_nll(patch, vqa_question, "Yes")
             nll_no = self._get_nll(patch, vqa_question, "No")
-            # Convert NLL to probability: P(yes) = exp(-nll_yes) / (exp(-nll_yes) + exp(-nll_no))
-            # Numerically stable: P(yes) = 1 / (1 + exp(nll_yes - nll_no))
             p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
             yes_probs.append(p_yes)
             if p_yes > 0.5:
@@ -309,10 +322,10 @@ class IKE_CHAIN(nn.Module):
             is_question: True for question text (rephrase), False for rationale (turn into question)
         """
         if self.radius_method == "fixed":
-            return self.fixed_radius
+            return self.fixed_radius * self.radius_scaler
         
         if self.radius_method == "balance":
-            return self._estimate_radius_balance(key_emb, img, text, is_question)
+            return self._estimate_radius_balance(key_emb, img, text, is_question) * self.radius_scaler
         
         # Default: multiple augmentations, take percentile
         aug_dists = []
@@ -323,7 +336,7 @@ class IKE_CHAIN(nn.Module):
             dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
             aug_dists.append(dist)
         
-        return float(np.percentile(aug_dists, self.radius_percentile))
+        return float(np.percentile(aug_dists, self.radius_percentile)) * self.radius_scaler
 
     def _circle_intersection(self, d: float, r1: float, r2: float) -> float:
         """Compute intersection area of two circles."""
@@ -345,12 +358,28 @@ class IKE_CHAIN(nn.Module):
         return (intersection / area1 if area1 > 0 else 0.0,
                 intersection / area2 if area2 > 0 else 0.0)
 
+    def _effective_distances(self, indices: List[int] = None) -> np.ndarray:
+        """Compute effective pairwise distances: max(0, d(ki,kj) - (ri + rj)).
+        
+        Returns [N, N] matrix where 0 means circles overlap/touch.
+        """
+        if indices is None:
+            embs = self.key_embs.float().cpu().numpy()
+            radii = self.key_radii.cpu().numpy()
+        else:
+            embs = self.key_embs[indices].float().cpu().numpy()
+            radii = self.key_radii[indices].cpu().numpy()
+        
+        dists = np.linalg.norm(embs[:, None] - embs[None, :], axis=-1)
+        radii_sum = radii[:, None] + radii[None, :]
+        return np.maximum(0, dists - radii_sum)
+
     def _manage_new_key(self, emb: torch.Tensor, radius: float, value: str) -> Tuple[bool, float]:
-        """Manage new key: merge, shrink, or add as-is.
+        """Manage new key: merge or add as-is.
         
         Returns: (merged: bool, final_radius: float)
         - merged=True: key was merged, don't add
-        - merged=False: add key with final_radius (possibly shrunk)
+        - merged=False: add key with final_radius
         """
         if self.key_embs is None or len(self.codebook) == 0:
             return False, radius
@@ -391,167 +420,64 @@ class IKE_CHAIN(nn.Module):
                     self.codebook[idx]["merge_count"] = self.codebook[idx].get("merge_count", 1) + 1
                     return True, radius
         
-        # Step 2: Resolve conflicts (both IoA < shrink_threshold)
-        if not self.shrink_keys:
-            return False, radius
-        
-        current_radius = radius
-        max_iters = 10
-        for _ in range(max_iters):
-            overlapping = np.where(dists < current_radius + radii)[0]
-            if len(overlapping) == 0:
-                break
-            
-            # Find conflicts
-            conflicts = []
-            for idx in overlapping:
-                ioa_new, ioa_old = self._circle_ioa_pair(dists[idx], current_radius, radii[idx])
-                if ioa_new < self.shrink_ioa_threshold and ioa_old < self.shrink_ioa_threshold:
-                    conflicts.append((idx, ioa_new, dists[idx]))
-            
-            if not conflicts:
-                break
-            
-            # Shrink worst conflict (highest IoA on new key)
-            worst_idx, worst_ioa, worst_dist = max(conflicts, key=lambda x: x[1])
-            
-            # Shrink proportionally: both just touch
-            old_r = float(radii[worst_idx])
-            factor = worst_dist / (current_radius + old_r)
-            current_radius *= factor
-            self.key_radii[worst_idx] = old_r * factor
-            radii[worst_idx] = old_r * factor
-            
-            # Check minimum radius → force merge
-            if current_radius < self.min_radius:
-                closest = int(np.argmin(dists))
-                existing_value = self.codebook[closest].get("value", "")
-                if value and value != existing_value and value not in existing_value:
-                    self.codebook[closest]["value"] = f"{existing_value} {value}".strip()
-                self.codebook[closest]["is_merged"] = True
-                self.codebook[closest]["merge_count"] = self.codebook[closest].get("merge_count", 1) + 1
-                return True, current_radius
-        
-        return False, current_radius
-
-    def _shrink_high_overlap_keys(self):
-        """Shrink keys that overlap with too many other keys.
-        
-        For each key, count how many other keys it overlaps with.
-        If count > shrink_overlap_threshold, shrink radius by shrink_overlap_factor.
-        
-        Overlap defined as: dist(i,j) < r_i + r_j
-        
-        Called after each edit - overlap counts are recalculated fresh each time.
-        Keys may be shrunk multiple times if they continue to have high overlaps.
-        """
-        if self.key_embs is None or len(self.codebook) < 2:
-            return
-        
-        # Compute pairwise distances
-        dists = torch.cdist(self.key_embs.float(), self.key_embs.float())  # [N, N]
-        
-        # Overlap: dist < r_i + r_j
-        radii = self.key_radii
-        radii_sum = radii.unsqueeze(0) + radii.unsqueeze(1)  # [N, N]
-        overlap_matrix = dists < radii_sum
-        
-        # Exclude self (diagonal)
-        overlap_matrix.fill_diagonal_(False)
-        
-        # Count overlaps per key
-        overlap_counts = overlap_matrix.sum(dim=1)  # [N]
-        
-        # Debug: print radius and distance statistics
-        n_keys = len(self.codebook)
-        
-        # Get upper triangle (exclude diagonal) for inter-key distances
-        triu_mask = torch.triu(torch.ones(n_keys, n_keys, dtype=torch.bool), diagonal=1)
-        inter_dists = dists[triu_mask]
-        
-        print(f"[Radius] {n_keys} keys: min={float(radii.min()):.1f}, max={float(radii.max()):.1f}, mean={float(radii.mean()):.1f}")
-        print(f"[Dists]  inter-key: min={float(inter_dists.min()):.1f}, max={float(inter_dists.max()):.1f}, mean={float(inter_dists.mean()):.1f}")
-        
-        # Overlap stats
-        n_above = int((overlap_counts > self.shrink_overlap_threshold).sum())
-        print(f"[Overlap] {n_keys} keys: overlaps min={int(overlap_counts.min())}, max={int(overlap_counts.max())}, "
-              f"mean={float(overlap_counts.float().mean()):.1f}, >{self.shrink_overlap_threshold}={n_above}")
-        
-        # Shrink keys exceeding threshold
-        high_overlap = overlap_counts > self.shrink_overlap_threshold
-        if high_overlap.any():
-            high_idx = torch.where(high_overlap)[0]
-            self.key_radii[high_idx] = self.key_radii[high_idx] * self.shrink_overlap_factor
-            for idx in high_idx.tolist():
-                self.codebook[idx]["is_shrunk"] = True
-            self._shrink_count += len(high_idx)
-            print(f"[Overlap] Shrunk {len(high_idx)} keys by {self.shrink_overlap_factor}")
+        return False, radius
 
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
         """Add keys for one edit.
         
         Creates:
-        - 4 keys from original image
-        - 4k keys from top-k patches
+        - (1+n) keys from original image: <orig, question> + <orig, si>
+        - n×k keys from sentence-specific patches: <patches_si, si>
         """
-        # Select top-k patches based on s1 likelihood
-        s1 = rationale_sents[0] if rationale_sents else ""
-        top_patches = self._select_top_k_patches(img, s1) if s1 else []
-        
-        # Prepare all image sources: original + top-k patches
-        image_sources = [img] + top_patches
-        
-        # Build 4 key-value pairs per image source
         answer_value = f"The answer to '{question}' is {answer}." if answer else ""
         
         new_entries = []
         new_imgs = []
         new_texts = []
-        new_is_question = []  # Track if each key is question (True) or rationale (False)
+        new_is_question = []
         
-        for src_idx, src_img in enumerate(image_sources):
-            is_patch = (src_idx > 0)
-            
-            # Key 1: <image, question> -> answer
+        # 1. Original image keys
+        # <orig, question> -> answer
+        new_entries.append({
+            "value": answer_value, "is_patch": False, "edit_idx": self._edit_count,
+            "key_text": question, "is_image_only": False, "is_question": True
+        })
+        new_imgs.append(img)
+        new_texts.append(question)
+        new_is_question.append(True)
+        
+        # <orig, si> -> si for each sentence
+        for sent in rationale_sents:
             new_entries.append({
-                "value": answer_value,
-                "is_patch": is_patch,
-                "edit_idx": self._edit_count,
-                "key_text": question,
-                "is_image_only": False,
-                "is_question": True
+                "value": sent, "is_patch": False, "edit_idx": self._edit_count,
+                "key_text": sent, "is_image_only": False, "is_question": False
             })
-            new_imgs.append(src_img)
-            new_texts.append(question)
-            new_is_question.append(True)
-            
-            # Keys 2-4: <image, si> -> si for each sentence (rationale)
-            for sent in rationale_sents:
+            new_imgs.append(img)
+            new_texts.append(sent)
+            new_is_question.append(False)
+        
+        # Optional: <orig, ""> for image-only retrieval
+        if self.image_only_retrieval:
+            new_entries.append({
+                "value": "", "is_patch": False, "edit_idx": self._edit_count,
+                "key_text": "", "is_image_only": True, "is_question": False
+            })
+            new_imgs.append(img)
+            new_texts.append("")
+            new_is_question.append(False)
+        
+        # 2. Sentence-specific patch keys: <patches_si, si> -> si
+        for i, sent in enumerate(rationale_sents):
+            is_first = (i == 0)
+            patches = self._select_top_k_patches(img, sent, is_first_sentence=is_first)
+            for patch in patches:
                 new_entries.append({
-                    "value": sent,
-                    "is_patch": is_patch,
-                    "edit_idx": self._edit_count,
-                    "key_text": sent,
-                    "is_image_only": False,
-                    "is_question": False
+                    "value": sent, "is_patch": True, "edit_idx": self._edit_count,
+                    "key_text": sent, "is_image_only": False, "is_question": False
                 })
-                new_imgs.append(src_img)
+                new_imgs.append(patch)
                 new_texts.append(sent)
-                new_is_question.append(False)
-            
-            # Key 5: <image, ""> -> "" (image-only gate key, optional)
-            if self.image_only_retrieval:
-                new_entries.append({
-                    "value": "",
-                    "is_patch": is_patch,
-                    "edit_idx": self._edit_count,
-                    "key_text": "",
-                    "is_image_only": True,
-                    "is_question": False
-                })
-                new_imgs.append(src_img)
-                new_texts.append("")
                 new_is_question.append(False)
         
         self._edit_count += 1
@@ -571,7 +497,7 @@ class IKE_CHAIN(nn.Module):
             new_radii.append(r)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         
-        # Move to CPU to save GPU memory (only used for retrieval)
+        # Move to CPU to save GPU memory
         new_embs = new_embs.cpu()
         
         # Add keys to codebook (with optional key management)
@@ -581,15 +507,14 @@ class IKE_CHAIN(nn.Module):
             emb, radius = new_embs[i:i+1], float(new_radii[i])
             value = entry.get("value", "")
             
-            # Key management: merge/shrink based on IoA
-            if self.merge_keys or self.shrink_keys:
+            if self.merge_keys:
                 merged, radius = self._manage_new_key(emb, radius, value)
                 if merged:
                     n_merged += 1
                     continue
             
-            # Add as new key
             n_added += 1
+            entry["original_radius"] = radius  # track original for hard budget
             self.codebook.append(entry)
             if self.key_embs is None:
                 self.key_embs = emb
@@ -600,11 +525,6 @@ class IKE_CHAIN(nn.Module):
         
         print(f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)")
         
-        # Shrink high-overlap keys after adding all keys for this edit
-        if self.shrink_overlap_keys:
-            self._shrink_high_overlap_keys()
-        
-        # Clear CUDA cache
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -962,23 +882,18 @@ class IKE_CHAIN(nn.Module):
         n_question_keys = sum(1 for e in self.codebook if e.get("is_question", False))
         n_rationale_keys = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
         n_merged_keys = sum(1 for e in self.codebook if e.get("is_merged", False))
-        n_shrunk_keys = sum(1 for e in self.codebook if e.get("is_shrunk", False))
         
         stats = {
             "num_keys": len(self.codebook),
             "num_orig_keys": n_orig_keys,
             "num_patch_keys": n_patch_keys,
             "num_merged_keys": n_merged_keys,
-            "num_shrunk_keys": n_shrunk_keys,
-            "num_shrink_ops": self._shrink_count,
             "num_question_keys": n_question_keys,
             "num_rationale_keys": n_rationale_keys,
             "num_image_only_keys": n_image_only,
             "num_edits": len(self._added_uids),
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
-            "shrink_keys": self.shrink_keys,
-            "shrink_overlap_keys": self.shrink_overlap_keys,
             "retrieve_single_edit": self.retrieve_single_edit,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
@@ -990,12 +905,14 @@ class IKE_CHAIN(nn.Module):
         return stats
 
     @torch.no_grad()
-    def visualize_patches(self, image, s1: str = None, figsize=(16, 10), score_type="softmax"):
+    def visualize_patches(self, image, sentence: str = None, is_first_sentence: bool = True, 
+                          figsize=(16, 10), score_type="softmax"):
         """Visualize patchification with scores and top-k highlighted.
         
         Args:
             image: Input image
-            s1: First sentence for patch selection (if None, shows all patches without scores)
+            sentence: Sentence for patch selection (if None, shows all patches without scores)
+            is_first_sentence: If True, VQA prompt is "Does {s}?"; else "Does the image show {s}?"
             figsize: Figure size
             score_type: "softmax" (default, probabilities sum to 1) or "ll" (raw log-likelihood)
         
@@ -1010,35 +927,36 @@ class IKE_CHAIN(nn.Module):
         patch_names = self.patchifier.get_patch_names()
         n_patches = len(patches)
         
-        # Grid layout: 6x6 for 36 patches
         n_cols = 6
         n_rows = (n_patches + n_cols - 1) // n_cols
         fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
         axes = axes.flatten()
         
-        # Compute scores for each patch (excluding full image)
         scores = None
         top_k_idx = []
-        vqa_passed = set()  # indices that passed VQA
+        vqa_passed = set()
         score_label = ""
-        if s1:
+        if sentence:
             nlls = []
-            for patch in patches[:-1]:  # exclude 3x3
-                nll = self._get_nll(patch, self.patch_select_prompt, s1)
+            for patch in patches[:-1]:
+                nll = self._get_nll(patch, self.patch_select_prompt, sentence)
                 nlls.append(nll)
             nlls = np.array(nlls)
             
             if score_type == "softmax":
-                scores = softmax(-nlls)  # softmax over -NLL (higher prob = better)
+                scores = softmax(-nlls)
                 score_label = "P"
                 top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
-            else:  # "ll"
+            else:
                 scores = -nlls
                 score_label = "LL"
                 top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
             
-            # VQA verification for top-k (already sorted by stage1 score, highest first)
-            vqa_question = f"Does {s1.lower().replace('.', '?')}"
+            # VQA verification with sentence-appropriate prompt
+            if is_first_sentence:
+                vqa_question = f"Does {sentence.lower().replace('.', '?')}"
+            else:
+                vqa_question = f"Does the image show {sentence.lower().replace('.', '?')}"
             print(f"[VQA] Q: {vqa_question}")
             for i, idx in enumerate(top_k_idx):
                 patch = patches[idx]
@@ -1046,8 +964,8 @@ class IKE_CHAIN(nn.Module):
                 nll_no = self._get_nll(patch, vqa_question, "No")
                 p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
                 status = "✓" if p_yes > 0.9 else "✗"
-                s1_score = scores[idx] if score_type == "softmax" else -nlls[idx]
-                print(f"  [{i}] {patch_names[idx]}: s1={s1_score:.1%}, p_yes={p_yes:.3f} {status}")
+                s_score = scores[idx] if score_type == "softmax" else -nlls[idx]
+                print(f"  [{i}] {patch_names[idx]}: score={s_score:.1%}, p_yes={p_yes:.3f} {status}")
                 if p_yes > 0.9:
                     vqa_passed.add(idx)
         
@@ -1057,7 +975,6 @@ class IKE_CHAIN(nn.Module):
                 patch = patches[idx]
                 ax.imshow(patch)
                 
-                # Build title with score if available
                 if scores is not None and idx < len(scores):
                     if score_type == "softmax":
                         title = f"{patch_names[idx]}\n{score_label}={scores[idx]:.1%}"
@@ -1067,7 +984,6 @@ class IKE_CHAIN(nn.Module):
                     title = patch_names[idx]
                 ax.set_title(title, fontsize=6)
                 
-                # Highlight: green=passed VQA, red=top-k but failed VQA
                 if idx in top_k_idx:
                     color = 'limegreen' if idx in vqa_passed else 'red'
                     rect = Rectangle((0, 0), patch.width-1, patch.height-1, 
@@ -1075,19 +991,24 @@ class IKE_CHAIN(nn.Module):
                     ax.add_patch(rect)
             ax.axis('off')
         
-        # Title with s1 preview
         score_info = "softmax prob" if score_type == "softmax" else "log-likelihood"
-        n_passed = len(vqa_passed) if s1 else 0
-        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, VQA passed={n_passed}, {score_info})"
-        if s1:
-            title += f"\ns1: {s1}"
+        n_passed = len(vqa_passed) if sentence else 0
+        prompt_type = "s1" if is_first_sentence else "s2+"
+        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, VQA passed={n_passed}, {score_info}, {prompt_type})"
+        if sentence:
+            title += f"\nsentence: {sentence}"
         plt.suptitle(title, fontsize=10)
         plt.tight_layout()
         plt.show()
 
     @torch.no_grad()
-    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None, apply_cap_k=True):
+    def plot_codebook(self, max_edits=20, figsize=(6, 4), query_img=None, query_text=None, 
+                      apply_cap_k=True, use_effective_dist=False):
         """Plot force-directed network of keys.
+        
+        Args:
+            use_effective_dist: If True, use d_eff = max(0, d - (r1+r2)) instead of raw distance.
+                               Edges connect overlapping keys (d_eff=0).
         
         Color by edit_idx, size by is_patch (original=large, patch=small).
         Black circle: text retrieval, Red circle: image-only fallback.
@@ -1096,7 +1017,7 @@ class IKE_CHAIN(nn.Module):
         import networkx as nx
         
         if self.key_embs is None or len(self.codebook) == 0:
-            print("[IKE_PATCH] No keys to plot")
+            print("[IKE_CHAIN] No keys to plot")
             return
         
         # Sample edits if too many
@@ -1118,7 +1039,6 @@ class IKE_CHAIN(nn.Module):
         q_emb = None
         if query_img is not None and query_text is not None:
             text_global, img_global = self._get_matched_indices(query_img, query_text, apply_cap_k=apply_cap_k)
-            # Get query embedding for plotting
             query_patches = self.patchifier.patchify(query_img, kernels=self.query_kernels)
             q_embs = self._encode_vlm(query_patches, [query_text] * len(query_patches)).cpu()
             if self.distance == "cosine":
@@ -1128,8 +1048,13 @@ class IKE_CHAIN(nn.Module):
         img_local = {idx_to_local[g] for g in img_global if g in idx_to_local}
         
         # Build graph from similarity
-        dists = np.linalg.norm(embs[:, None] - embs[None, :], axis=-1)
-        sims = 1 / (1 + dists)
+        if use_effective_dist:
+            eff_dists = self._effective_distances(indices)
+            sims = 1 / (1 + eff_dists)  # overlapping keys have eff_dist=0 -> sim=1
+        else:
+            dists = np.linalg.norm(embs[:, None] - embs[None, :], axis=-1)
+            sims = 1 / (1 + dists)
+        
         G = nx.Graph()
         G.add_nodes_from(range(n_keys))
         thresh = np.percentile(sims[np.triu_indices(n_keys, k=1)], self.plot_codebook_pct_threshold) if n_keys > 1 else 0
@@ -1193,7 +1118,8 @@ class IKE_CHAIN(nn.Module):
             ax.scatter([], [], c='gray', s=30, marker='o', edgecolors='red', linewidths=1.5, label='image fallback')
         ax.legend(loc='lower left', fontsize=6, frameon=False, handletextpad=0.1)
         
-        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {len(text_local)}+{len(img_local)} retrieved)', fontsize=8)
+        dist_mode = "eff" if use_effective_dist else "raw"
+        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {len(text_local)}+{len(img_local)} retrieved, {dist_mode})', fontsize=8)
         ax.axis('off')
         plt.tight_layout()
         plt.show()

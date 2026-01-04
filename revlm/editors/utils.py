@@ -198,7 +198,7 @@ def create_mosaic_background(size: Tuple[int, int], tile_size: int = 64, noise_p
 
 
 
-def pad_with_mosaic(img, area_pct: float = 0.2, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
+def pad_with_mosaic(img, area_pct: float = 0.25, max_size: int = None, n_tiles: int = 4) -> PILImage.Image:
     """Pad image with mosaic background, placing image at random position.
     
     Args:
@@ -508,7 +508,7 @@ class Augmenter:
                 pct = area_pct if area_pct is not None else 0.5
                 img = pad_with_midas_mosaic(img, area_pct=pct)
             else:
-                pct = area_pct if area_pct is not None else 0.2
+                pct = area_pct if area_pct is not None else 0.25
                 img = pad_with_mosaic(img, area_pct=pct)
         
         return self.img_aug(img)

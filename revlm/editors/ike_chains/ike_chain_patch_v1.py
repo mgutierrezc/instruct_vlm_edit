@@ -40,91 +40,77 @@ class IKE_CHAIN(nn.Module):
         self.config = config
         cfg = getattr(config, "editor", config)
 
-        # ==================== Model References ====================
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.device = getattr(config, "device", torch.device("cpu"))
 
-        # ==================== Core Retrieval ====================
-        self.cap_k = int(getattr(cfg, "cap_k", 5))                              # max keys to retrieve
-        self.retrieve_single_edit = getattr(cfg, "retrieve_single_edit", False)  # only retrieve from winning edit
-        self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
-        self.seed = getattr(cfg, "seed", None)
-
-        # ==================== Embedding Config ====================
-        self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
-        self.dual_layer = getattr(cfg, "dual_layer", True)          # concat vision + lang embeddings
-        self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")   # "internal" or "sbert"
+        # Hyperparams
+        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
+        self.cap_k = int(getattr(cfg, "cap_k", 5))  # k closest keys to retrieve among all matching keys
+        self.prefix = getattr(cfg, "cot_prefix", "")
+        self.distance = getattr(cfg, "distance", "l2")
+        self.dual_layer = getattr(cfg, "dual_layer", True)  # concat lang_scaler*lang_layer(<blank, text>) with vision_layer(<img, text>)
+        self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")  # "internal" or "sbert"
+        # Use lang_scaler_sbert if sbert, else lang_scaler
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
-        self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
-
-        # ==================== Radius Estimation ====================
+        self.pool_method = getattr(cfg, "pool_method", "mean")  # "mean" or "last"
+        
+        # Radius estimation config
         self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
-        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.25))
-        # augment method
+        # "augment": radius based on percentile of augmented image distances
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 1))
-        self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
-        # balance method
+        self.radius_percentile = float(getattr(cfg, "radius_percentile", 50)) # 99
+        # "balance": radius based on positive (augmented image+text) and negative (blank image) samples
         self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
-
-        # ==================== Patchification ====================
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches to select per edit
-        self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
-        self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
-
-        # ==================== Key Management (IoA-based) ====================
-        self.merge_keys = getattr(cfg, "merge_keys", True)  # enable merge (both IoA > threshold)
-        self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
-        self.merge_keys_by_dist = getattr(cfg, "merge_keys_by_dist", True)# Distance-based merge: merge if dist < pct * both radii
-        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.05))  # 5%
-        self.shrink_keys = getattr(cfg, "shrink_keys", False)  # enable shrink (both IoA < threshold)
-        self.shrink_ioa_threshold = float(getattr(cfg, "shrink_ioa_threshold", 0.0))
-        self.min_radius = float(getattr(cfg, "min_radius", 1.0))
         
+        # Query kernels: which patches to use at retrieval. None = all 36, ["3x3"] = full image only
+        self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3']) # ['1x1', '2x2', '3x3']
         
-        # Overlap-counting shrink (post-edit) - disabled by default, can be too aggressive
-        self.shrink_overlap_keys = getattr(cfg, "shrink_overlap_keys", False)
-        self.shrink_overlap_threshold = int(getattr(cfg, "shrink_overlap_threshold", 150))
-        self.shrink_overlap_factor = float(getattr(cfg, "shrink_overlap_factor", 0.95))
-
-        # ==================== Image-Only Fallback ====================
+        # Image-only fallback retrieval
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
         self.top_i_image_only = int(getattr(cfg, "top_i_image_only_entry", 1))
-
-        # ==================== Internal State ====================
-        self._added_uids = set()
-        self._edit_count = 0
-        self._shrink_count = 0  # Track overlap-based shrink operations
-        self._vision_act = None
-        self._lang_act = None
-        self._sbert = None
-        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))
         
-        # Codebook storage
-        self.codebook = []
-        self.key_embs = None   # [N, hidden]
-        self.key_radii = None  # [N]
+        # Seed for reproducibility
+        self.seed = getattr(cfg, "seed", None)
         
-        # Logging
-        self.last_retrieval_log = None
-        self.plot_codebook_pct_threshold = 85
-
-        # ==================== Setup Hooks & Tools ====================
+        # Key merging: pure geographic - merge if new key falls within merge_ratio * radius
+        self.merge_keys = getattr(cfg, "merge_keys", False)
+        self.merge_ratio = float(getattr(cfg, "merge_ratio", 0.25))  # merge if dist < radius * merge_ratio
+        
+        # Key shrinking: shrink high-overlap keys after each edit
+        self.shrink_keys = getattr(cfg, "shrink_keys", False)
+        self.shrink_threshold = int(getattr(cfg, "shrink_threshold", 10))  # max overlaps before shrinking
+        self.shrink_factor = float(getattr(cfg, "shrink_factor", 0.95))  # shrink multiplier
+        self._shrink_count = 0  # Track number of shrink operations
+        
+        # Inner radius: two-tier retrieval (high-confidence inner, then fill with outer)
+        self.use_inner_radius = getattr(cfg, "use_inner_radius", False)
+        self.outer_area_pct = float(getattr(cfg, "outer_area_pct", 0.25))  # larger padding = larger radius
+        self.inner_area_pct = float(getattr(cfg, "inner_area_pct", 0.95))   # smaller padding = smaller radius
+        
+        # Patchifier and Augmenter
         self.patchifier = ImagePatchifier()
         dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
         self.augmenter = Augmenter(self.wrapper, seed=self.seed, mosaic_prob=1.0, dataset_name=dataset_name)
         
-        # VLM activation hooks
+        # Prompt for patch selection
+        self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
+
+        # Hook for VLM activations
         model_cfg = getattr(config, "model", config)
         inner_params_vision = getattr(model_cfg, "inner_params_vision", [])
         inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
         if not inner_params_vision:
             raise ValueError("Requires config.model.inner_params_vision")
+        # inner_params_lang only required for dual_layer with internal encoder
         if self.dual_layer and self.lang_encoder == "internal" and not inner_params_lang:
             raise ValueError("dual_layer=True with lang_encoder='internal' requires config.model.inner_params_lang")
-        
+        self._vision_act = None
+        self._lang_act = None
+        self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))  # used by dual_layer internal and balance radius
+        self._sbert = None  # lazy loaded
         def _setup_hook(param_name, attr_name):
             name = param_name.rsplit(".", 1)[0] if param_name.endswith((".weight", ".bias")) else param_name
             mod = parent_module(self.model, brackets_to_periods(name))
@@ -132,11 +118,24 @@ class IKE_CHAIN(nn.Module):
             return layer.register_forward_hook(
                 lambda m, i, o, an=attr_name: setattr(self, an, i[0].detach() if isinstance(i[0], torch.Tensor) else None)
             )
-        
         self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act")
         self._lang_hook = None
         if self.dual_layer and self.lang_encoder == "internal":
             self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act")
+
+        # Codebook: list of {key_idx, value, edit_idx, is_patch}
+        self.codebook = []
+        
+        # Embeddings and radii
+        self.key_embs = None        # [N, hidden]
+        self.key_radii = None       # [N] outer radius
+        self.key_radii_inner = None # [N] inner radius (if use_inner_radius)
+        
+        # Tracking
+        self._added_uids = set()
+        self._edit_count = 0
+        self.last_retrieval_log = None
+        self.plot_codebook_pct_threshold = 85
 
     def forward(self, *a, **kw):
         return self.model(*a, **kw)
@@ -145,34 +144,21 @@ class IKE_CHAIN(nn.Module):
         return (self.model if hasattr(self.model, "generate") else self.wrapper).generate(*a, **kw)
 
     def _pool_act(self, act, batch_size):
-        """Pool activation to [B, hidden] shape.
-        
-        pool_method:
-        - "mean": average over sequence dimension (default)
-        - "last": use last token position
-        """
+        """Pool activation to [B, hidden] shape. pool_method: 'mean' or 'last'."""
         if act is None:
             raise RuntimeError("Hook failed to capture activation")
         act = act.to(self.device, torch.float32)
         if act.dim() == 3:
-            if self.pool_method == "last":
-                return act[:, -1, :]
-            else:
-                return act.mean(dim=1)
+            return act[:, -1, :] if self.pool_method == "last" else act.mean(dim=1)
         elif act.dim() == 2:
             if act.shape[0] == batch_size:
                 return act
             elif act.shape[0] % batch_size == 0:
                 patches = act.shape[0] // batch_size
-                if self.pool_method == "last":
-                    return act.view(batch_size, patches, -1)[:, -1, :]
-                else:
-                    return act.view(batch_size, patches, -1).mean(dim=1)
+                reshaped = act.view(batch_size, patches, -1)
+                return reshaped[:, -1, :] if self.pool_method == "last" else reshaped.mean(dim=1)
             else:
-                if self.pool_method == "last":
-                    return act[-1:].expand(batch_size, -1)
-                else:
-                    return act.mean(dim=0, keepdim=True).expand(batch_size, -1)
+                return act[-1:].expand(batch_size, -1) if self.pool_method == "last" else act.mean(dim=0, keepdim=True).expand(batch_size, -1)
         else:
             raise RuntimeError(f"Expected 2D or 3D activation, got {act.shape}")
 
@@ -255,44 +241,21 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _select_top_k_patches(self, image, s1: str) -> List[Image.Image]:
-        """Select top-k patches by log-likelihood of s1, then VQA-verify."""
+        """Select top-k patches by log-likelihood of s1."""
         patches = self.patchifier.patchify_exclude_full(image)  # 35 patches
         
-        # Stage 1: Rank by NLL of s1
         nlls = []
         for patch in patches:
             nll = self._get_nll(patch, self.patch_select_prompt, s1)
             nlls.append(nll)
         
-        nlls = np.array(nlls)
-        top_k_idx = np.argsort(nlls)[:self.top_k_patches]
-        candidates = [patches[i] for i in top_k_idx]
-        
-        # Stage 2: VQA verification - "Does {s1}?"
-        vqa_question = f"Does {s1.lower().replace('.', '?')}"
-        verified = []
-        yes_probs = []
-        
-        for patch in candidates:
-            nll_yes = self._get_nll(patch, vqa_question, "Yes")
-            nll_no = self._get_nll(patch, vqa_question, "No")
-            # Convert NLL to probability: P(yes) = exp(-nll_yes) / (exp(-nll_yes) + exp(-nll_no))
-            # Numerically stable: P(yes) = 1 / (1 + exp(nll_yes - nll_no))
-            p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
-            yes_probs.append(p_yes)
-            if p_yes > 0.5:
-                verified.append(patch)
-        
-        # Fallback: if none passed, keep highest P("yes")
-        if not verified:
-            best_idx = int(np.argmax(yes_probs))
-            verified = [candidates[best_idx]]
-        
         # Clear cache after many forward passes
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        return verified
+        nlls = np.array(nlls)
+        top_k_idx = np.argsort(nlls)[:self.top_k_patches]
+        return [patches[i] for i in top_k_idx]
 
     @torch.no_grad()
     def _estimate_radius_balance(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True) -> float:
@@ -312,7 +275,7 @@ class IKE_CHAIN(nn.Module):
         return (1 - self.balance_alpha) * d_pos + self.balance_alpha * d_neg
 
     @torch.no_grad()
-    def _estimate_radius(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True) -> float:
+    def _estimate_radius(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True, area_pct: float = None) -> float:
         """Estimate radius.
         
         Methods:
@@ -322,6 +285,7 @@ class IKE_CHAIN(nn.Module):
         
         Args:
             is_question: True for question text (rephrase), False for rationale (turn into question)
+            area_pct: Override area percentage for mosaic padding (smaller = tighter radius)
         """
         if self.radius_method == "fixed":
             return self.fixed_radius
@@ -332,7 +296,7 @@ class IKE_CHAIN(nn.Module):
         # Default: multiple augmentations, take percentile
         aug_dists = []
         for _ in range(self.n_radius_samples):
-            aug_img = self.augmenter.image(img, area_pct=self.radius_area_pct)
+            aug_img = self.augmenter.image(img, area_pct=area_pct)
             aug_text = self.augmenter.question(text) if is_question else self.augmenter.rationale(text) if text else ""
             aug_emb = self._encode_vlm([aug_img], [aug_text])
             dist = float(torch.norm(aug_emb.cpu() - key_emb.cpu()))
@@ -340,125 +304,52 @@ class IKE_CHAIN(nn.Module):
         
         return float(np.percentile(aug_dists, self.radius_percentile))
 
-    def _circle_intersection(self, d: float, r1: float, r2: float) -> float:
-        """Compute intersection area of two circles."""
-        if d >= r1 + r2:
-            return 0.0
-        if d <= abs(r1 - r2):
-            return np.pi * min(r1, r2) ** 2
-        # Lens formula
-        part1 = r1**2 * np.arccos((d**2 + r1**2 - r2**2) / (2 * d * r1))
-        part2 = r2**2 * np.arccos((d**2 + r2**2 - r1**2) / (2 * d * r2))
-        part3 = 0.5 * np.sqrt((r1+r2-d) * (d+r1-r2) * (d-r1+r2) * (d+r1+r2))
-        return part1 + part2 - part3
-
-    def _circle_ioa_pair(self, d: float, r1: float, r2: float) -> Tuple[float, float]:
-        """Compute IoA pair: (intersection/area1, intersection/area2)."""
-        intersection = self._circle_intersection(d, r1, r2)
-        area1 = np.pi * r1 ** 2
-        area2 = np.pi * r2 ** 2
-        return (intersection / area1 if area1 > 0 else 0.0,
-                intersection / area2 if area2 > 0 else 0.0)
-
-    def _manage_new_key(self, emb: torch.Tensor, radius: float, value: str) -> Tuple[bool, float]:
-        """Manage new key: merge, shrink, or add as-is.
+    def _try_merge_key(self, emb: torch.Tensor, radius: float, value: str) -> bool:
+        """Try to merge a new key into closest existing key (pure geographic).
         
-        Returns: (merged: bool, final_radius: float)
-        - merged=True: key was merged, don't add
-        - merged=False: add key with final_radius (possibly shrunk)
+        Merge condition: dist < existing_radius * merge_ratio
+        Merge with the CLOSEST such key.
+        
+        Returns True if merged, False if should add as new key.
         """
         if self.key_embs is None or len(self.codebook) == 0:
-            return False, radius
+            return False
         
         emb_cpu = emb.cpu().squeeze(0) if emb.dim() > 1 else emb.cpu()
-        dists = torch.norm(self.key_embs - emb_cpu, dim=1).numpy()
-        radii = self.key_radii.numpy()
         
-        # Find overlapping keys
-        overlapping = np.where(dists < radius + radii)[0]
-        if len(overlapping) == 0:
-            return False, radius
+        # Compute distances to all existing keys
+        dists = torch.norm(self.key_embs - emb_cpu, dim=1)
+        merge_thresholds = self.key_radii * self.merge_ratio
         
-        # Step 1a: Distance-based merge (centers very close)
-        if self.merge_keys_by_dist:
-            for idx in overlapping:
-                d = dists[idx]
-                if d < self.merge_dist_pct * radius and d < self.merge_dist_pct * radii[idx]:
-                    self.key_radii[idx] = max(float(self.key_radii[idx]), d + radius)
-                    existing_value = self.codebook[idx].get("value", "")
-                    if value and value != existing_value and value not in existing_value:
-                        self.codebook[idx]["value"] = f"{existing_value} {value}".strip()
-                    self.codebook[idx]["is_merged"] = True
-                    self.codebook[idx]["merge_count"] = self.codebook[idx].get("merge_count", 1) + 1
-                    return True, radius
+        # Find keys where new key is within merge threshold
+        within_merge = dists < merge_thresholds
+        if not within_merge.any():
+            return False
         
-        # Step 1b: IoA-based merge (both IoA > threshold)
-        if self.merge_keys:
-            for idx in overlapping:
-                ioa_new, ioa_old = self._circle_ioa_pair(dists[idx], radius, radii[idx])
-                if ioa_new > self.merge_ioa_threshold and ioa_old > self.merge_ioa_threshold:
-                    dist = float(dists[idx])
-                    self.key_radii[idx] = max(float(self.key_radii[idx]), dist + radius)
-                    existing_value = self.codebook[idx].get("value", "")
-                    if value and value != existing_value and value not in existing_value:
-                        self.codebook[idx]["value"] = f"{existing_value} {value}".strip()
-                    self.codebook[idx]["is_merged"] = True
-                    self.codebook[idx]["merge_count"] = self.codebook[idx].get("merge_count", 1) + 1
-                    return True, radius
+        # Merge with closest
+        candidates = torch.where(within_merge)[0]
+        closest_idx = candidates[dists[candidates].argmin()].item()
+        dist = float(dists[closest_idx])
         
-        # Step 2: Resolve conflicts (both IoA < shrink_threshold)
-        if not self.shrink_keys:
-            return False, radius
+        # Extend radius if new key's coverage sticks out
+        self.key_radii[closest_idx] = max(float(self.key_radii[closest_idx]), dist + radius)
         
-        current_radius = radius
-        max_iters = 10
-        for _ in range(max_iters):
-            overlapping = np.where(dists < current_radius + radii)[0]
-            if len(overlapping) == 0:
-                break
-            
-            # Find conflicts
-            conflicts = []
-            for idx in overlapping:
-                ioa_new, ioa_old = self._circle_ioa_pair(dists[idx], current_radius, radii[idx])
-                if ioa_new < self.shrink_ioa_threshold and ioa_old < self.shrink_ioa_threshold:
-                    conflicts.append((idx, ioa_new, dists[idx]))
-            
-            if not conflicts:
-                break
-            
-            # Shrink worst conflict (highest IoA on new key)
-            worst_idx, worst_ioa, worst_dist = max(conflicts, key=lambda x: x[1])
-            
-            # Shrink proportionally: both just touch
-            old_r = float(radii[worst_idx])
-            factor = worst_dist / (current_radius + old_r)
-            current_radius *= factor
-            self.key_radii[worst_idx] = old_r * factor
-            radii[worst_idx] = old_r * factor
-            
-            # Check minimum radius → force merge
-            if current_radius < self.min_radius:
-                closest = int(np.argmin(dists))
-                existing_value = self.codebook[closest].get("value", "")
-                if value and value != existing_value and value not in existing_value:
-                    self.codebook[closest]["value"] = f"{existing_value} {value}".strip()
-                self.codebook[closest]["is_merged"] = True
-                self.codebook[closest]["merge_count"] = self.codebook[closest].get("merge_count", 1) + 1
-                return True, current_radius
+        # Combine values (append unique)
+        existing_value = self.codebook[closest_idx].get("value", "")
+        if value and value != existing_value and value not in existing_value:
+            self.codebook[closest_idx]["value"] = f"{existing_value} {value}".strip()
         
-        return False, current_radius
+        self.codebook[closest_idx]["is_merged"] = True
+        self.codebook[closest_idx]["merge_count"] = self.codebook[closest_idx].get("merge_count", 1) + 1
+        return True
 
     def _shrink_high_overlap_keys(self):
         """Shrink keys that overlap with too many other keys.
         
         For each key, count how many other keys it overlaps with.
-        If count > shrink_overlap_threshold, shrink radius by shrink_overlap_factor.
+        If count > shrink_threshold, shrink radius by shrink_factor.
         
         Overlap defined as: dist(i,j) < r_i + r_j
-        
-        Called after each edit - overlap counts are recalculated fresh each time.
-        Keys may be shrunk multiple times if they continue to have high overlaps.
         """
         if self.key_embs is None or len(self.codebook) < 2:
             return
@@ -477,30 +368,14 @@ class IKE_CHAIN(nn.Module):
         # Count overlaps per key
         overlap_counts = overlap_matrix.sum(dim=1)  # [N]
         
-        # Debug: print radius and distance statistics
-        n_keys = len(self.codebook)
-        
-        # Get upper triangle (exclude diagonal) for inter-key distances
-        triu_mask = torch.triu(torch.ones(n_keys, n_keys, dtype=torch.bool), diagonal=1)
-        inter_dists = dists[triu_mask]
-        
-        print(f"[Radius] {n_keys} keys: min={float(radii.min()):.1f}, max={float(radii.max()):.1f}, mean={float(radii.mean()):.1f}")
-        print(f"[Dists]  inter-key: min={float(inter_dists.min()):.1f}, max={float(inter_dists.max()):.1f}, mean={float(inter_dists.mean()):.1f}")
-        
-        # Overlap stats
-        n_above = int((overlap_counts > self.shrink_overlap_threshold).sum())
-        print(f"[Overlap] {n_keys} keys: overlaps min={int(overlap_counts.min())}, max={int(overlap_counts.max())}, "
-              f"mean={float(overlap_counts.float().mean()):.1f}, >{self.shrink_overlap_threshold}={n_above}")
-        
         # Shrink keys exceeding threshold
-        high_overlap = overlap_counts > self.shrink_overlap_threshold
+        high_overlap = overlap_counts > self.shrink_threshold
         if high_overlap.any():
             high_idx = torch.where(high_overlap)[0]
-            self.key_radii[high_idx] = self.key_radii[high_idx] * self.shrink_overlap_factor
+            self.key_radii[high_idx] = self.key_radii[high_idx] * self.shrink_factor
             for idx in high_idx.tolist():
                 self.codebook[idx]["is_shrunk"] = True
             self._shrink_count += len(high_idx)
-            print(f"[Overlap] Shrunk {len(high_idx)} keys by {self.shrink_overlap_factor}")
 
     @torch.no_grad()
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
@@ -576,47 +451,46 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             new_embs = F.normalize(new_embs, dim=-1)
         
-        # Compute radii per key
+        # Compute radii per key, using appropriate augmentation
         new_radii = []
+        new_radii_inner = []
         for i, (src_img, text, is_q) in enumerate(zip(new_imgs, new_texts, new_is_question)):
             if not text:  # image-only key
-                r = self._estimate_radius(new_embs[i:i+1], src_img, question, is_question=True)
+                r = self._estimate_radius(new_embs[i:i+1], src_img, question, is_question=True, area_pct=self.outer_area_pct)
+                r_inner = self._estimate_radius(new_embs[i:i+1], src_img, question, is_question=True, area_pct=self.inner_area_pct) if self.use_inner_radius else r
             else:
-                r = self._estimate_radius(new_embs[i:i+1], src_img, text, is_question=is_q)
+                r = self._estimate_radius(new_embs[i:i+1], src_img, text, is_question=is_q, area_pct=self.outer_area_pct)
+                r_inner = self._estimate_radius(new_embs[i:i+1], src_img, text, is_question=is_q, area_pct=self.inner_area_pct) if self.use_inner_radius else r
             new_radii.append(r)
+            new_radii_inner.append(r_inner)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
+        new_radii_inner = torch.tensor(new_radii_inner, dtype=torch.float32)
         
         # Move to CPU to save GPU memory (only used for retrieval)
         new_embs = new_embs.cpu()
         
-        # Add keys to codebook (with optional key management)
-        n_merged = 0
-        n_added = 0
+        # Add keys to codebook (with optional merging/splitting)
         for i, entry in enumerate(new_entries):
-            emb, radius = new_embs[i:i+1], float(new_radii[i])
+            emb, radius, radius_inner = new_embs[i:i+1], float(new_radii[i]), float(new_radii_inner[i])
             value = entry.get("value", "")
             
-            # Key management: merge/shrink based on IoA
-            if self.merge_keys or self.shrink_keys:
-                merged, radius = self._manage_new_key(emb, radius, value)
-                if merged:
-                    n_merged += 1
-                    continue
+            # Try merge if enabled (pure geographic)
+            if self.merge_keys and self._try_merge_key(emb, radius, value):
+                continue  # Merged into existing key
             
             # Add as new key
-            n_added += 1
             self.codebook.append(entry)
             if self.key_embs is None:
                 self.key_embs = emb
                 self.key_radii = torch.tensor([radius])
+                self.key_radii_inner = torch.tensor([radius_inner])
             else:
                 self.key_embs = torch.cat([self.key_embs, emb], dim=0)
                 self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
-        
-        print(f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)")
+                self.key_radii_inner = torch.cat([self.key_radii_inner, torch.tensor([radius_inner])])
         
         # Shrink high-overlap keys after adding all keys for this edit
-        if self.shrink_overlap_keys:
+        if self.shrink_keys:
             self._shrink_high_overlap_keys()
         
         # Clear CUDA cache
@@ -679,7 +553,7 @@ class IKE_CHAIN(nn.Module):
         else:
             dist_matrix = torch.cdist(q_embs.float(), key_embs.float(), p=2)
         
-        # Step 1: Find all keys within radius
+        # Check matches against outer radius
         in_radius = dist_matrix <= key_radii
         matched_mask = in_radius.any(dim=0)
         
@@ -690,29 +564,15 @@ class IKE_CHAIN(nn.Module):
         matched_local = torch.where(matched_mask)[0]
         min_dists = dist_matrix[:, matched_local].min(dim=0).values
         
-        # Step 2 & 3: Single-edit mode - only keep keys from winning edit
-        if self.retrieve_single_edit and len(matched_local) > 0:
-            # Group matched keys by edit_idx
-            edit_keys = {}       # edit_idx -> list of (local_idx, dist)
-            for local_i, dist in zip(matched_local.tolist(), min_dists.tolist()):
-                global_i = key_indices[local_i]
-                edit_idx = self.codebook[global_i]["edit_idx"]
-                edit_keys.setdefault(edit_idx, []).append((local_i, dist))
-            
-            # Find winning edit: most keys, tie-break by closest key
-            winning_edit = max(
-                edit_keys.keys(),
-                key=lambda e: (len(edit_keys[e]), -min(d for _, d in edit_keys[e]))
+        # Two-tier selection if inner radius enabled and too many matches
+        if self.use_inner_radius and len(matched_local) > self.cap_k:
+            selected_local = self._select_with_inner_radius(
+                matched_local, min_dists, key_idx_t, key_indices
             )
-            
-            # Filter to only winning edit's keys
-            winning_pairs = edit_keys[winning_edit]
-            matched_local = torch.tensor([p[0] for p in winning_pairs])
-            min_dists = torch.tensor([p[1] for p in winning_pairs])
-        
-        # Sort by distance, take top cap_k
-        sorted_order = min_dists.argsort()
-        selected_local = matched_local[sorted_order].tolist()[:self.cap_k]
+        else:
+            # Standard: sort by distance, take top cap_k
+            sorted_order = min_dists.argsort()
+            selected_local = matched_local[sorted_order].tolist()[:self.cap_k]
         
         # Collect values
         retrieved = set()
@@ -723,6 +583,39 @@ class IKE_CHAIN(nn.Module):
                 retrieved.add(value)
         
         return list(retrieved)
+
+    def _select_with_inner_radius(self, matched_local: torch.Tensor, min_dists: torch.Tensor, 
+                                   key_idx_t: torch.Tensor, key_indices: List[int]) -> List[int]:
+        """Two-tier selection: prioritize inner radius matches, then fill with closest outer.
+        
+        1. Take up to cap_k keys from inner_radius (sorted by distance)
+        2. If < cap_k, fill remaining slots with closest outer matches
+        """
+        key_radii_inner = self.key_radii_inner[key_idx_t]
+        inner_radii_matched = key_radii_inner[matched_local]
+        
+        # Check which matches are within inner radius
+        in_inner = min_dists <= inner_radii_matched
+        inner_local = matched_local[in_inner].tolist()
+        
+        # If inner matches >= cap_k, return top cap_k inner (sorted by distance)
+        if len(inner_local) >= self.cap_k:
+            inner_dists = min_dists[in_inner]
+            sorted_order = inner_dists.argsort()
+            return [inner_local[i] for i in sorted_order.tolist()[:self.cap_k]]
+        
+        # Otherwise, fill remaining slots with closest outer matches
+        outer_only_mask = ~in_inner
+        if outer_only_mask.any():
+            outer_local = matched_local[outer_only_mask]
+            outer_dists = min_dists[outer_only_mask]
+            sorted_order = outer_dists.argsort()
+            remaining = self.cap_k - len(inner_local)
+            outer_selected = [outer_local[i].item() for i in sorted_order[:remaining]]
+        else:
+            outer_selected = []
+        
+        return inner_local + outer_selected
 
     @torch.no_grad()
     def _retrieve_image_only_fallback(self, query_patches: List, question: str) -> List[str]:
@@ -813,20 +706,6 @@ class IKE_CHAIN(nn.Module):
             matched_local = torch.where(matched.any(dim=0))[0]
             if matched_local.numel() > 0:
                 min_dists = dm[:, matched_local].min(dim=0).values
-                
-                # Single-edit mode: filter to winning edit
-                if self.retrieve_single_edit:
-                    edit_keys = {}
-                    for local_i, dist in zip(matched_local.tolist(), min_dists.tolist()):
-                        global_i = text_indices[local_i]
-                        edit_idx = self.codebook[global_i]["edit_idx"]
-                        edit_keys.setdefault(edit_idx, []).append((local_i, dist))
-                    if edit_keys:
-                        winning_edit = max(edit_keys.keys(), key=lambda e: (len(edit_keys[e]), -min(d for _, d in edit_keys[e])))
-                        winning_pairs = edit_keys[winning_edit]
-                        matched_local = torch.tensor([p[0] for p in winning_pairs])
-                        min_dists = torch.tensor([p[1] for p in winning_pairs])
-                
                 top_k = matched_local[min_dists.argsort()]
                 if apply_cap_k:
                     top_k = top_k[:self.cap_k]
@@ -958,6 +837,8 @@ class IKE_CHAIN(nn.Module):
             "key_radii": self.key_radii,
             "top_k_patches": self.top_k_patches,
         }
+        if self.key_radii_inner is not None:
+            data["key_radii_inner"] = self.key_radii_inner
         torch.save(data, path)
         print(f"[IKE_PATCH] saved {len(self.codebook)} keys to {path}", flush=True)
     
@@ -967,6 +848,8 @@ class IKE_CHAIN(nn.Module):
         self.codebook = data["codebook"]
         self.key_embs = data["key_embs"].to(self.device)
         self.key_radii = data["key_radii"].to(self.device)
+        if "key_radii_inner" in data:
+            self.key_radii_inner = data["key_radii_inner"].to(self.device)
         print(f"[IKE_PATCH] loaded {len(self.codebook)} keys from {path}", flush=True)
 
     def get_stats(self) -> Dict:
@@ -993,8 +876,7 @@ class IKE_CHAIN(nn.Module):
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
             "shrink_keys": self.shrink_keys,
-            "shrink_overlap_keys": self.shrink_overlap_keys,
-            "retrieve_single_edit": self.retrieve_single_edit,
+            "use_inner_radius": self.use_inner_radius,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
@@ -1002,6 +884,10 @@ class IKE_CHAIN(nn.Module):
             stats["avg_radius"] = float(self.key_radii.mean())
             stats["min_radius"] = float(self.key_radii.min())
             stats["max_radius"] = float(self.key_radii.max())
+        if self.key_radii_inner is not None and self.use_inner_radius:
+            stats["avg_inner_radius"] = float(self.key_radii_inner.mean())
+            stats["min_inner_radius"] = float(self.key_radii_inner.min())
+            stats["max_inner_radius"] = float(self.key_radii_inner.max())
         return stats
 
     @torch.no_grad()
@@ -1013,9 +899,6 @@ class IKE_CHAIN(nn.Module):
             s1: First sentence for patch selection (if None, shows all patches without scores)
             figsize: Figure size
             score_type: "softmax" (default, probabilities sum to 1) or "ll" (raw log-likelihood)
-        
-        Green border = passed VQA verification (p_yes > 0.9)
-        Red border = in top-k but failed VQA
         """
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
@@ -1034,7 +917,6 @@ class IKE_CHAIN(nn.Module):
         # Compute scores for each patch (excluding full image)
         scores = None
         top_k_idx = []
-        vqa_passed = set()  # indices that passed VQA
         score_label = ""
         if s1:
             nlls = []
@@ -1051,20 +933,6 @@ class IKE_CHAIN(nn.Module):
                 scores = -nlls
                 score_label = "LL"
                 top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
-            
-            # VQA verification for top-k (already sorted by stage1 score, highest first)
-            vqa_question = f"Does {s1.lower().replace('.', '?')}"
-            print(f"[VQA] Q: {vqa_question}")
-            for i, idx in enumerate(top_k_idx):
-                patch = patches[idx]
-                nll_yes = self._get_nll(patch, vqa_question, "Yes")
-                nll_no = self._get_nll(patch, vqa_question, "No")
-                p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
-                status = "✓" if p_yes > 0.9 else "✗"
-                s1_score = scores[idx] if score_type == "softmax" else -nlls[idx]
-                print(f"  [{i}] {patch_names[idx]}: s1={s1_score:.1%}, p_yes={p_yes:.3f} {status}")
-                if p_yes > 0.9:
-                    vqa_passed.add(idx)
         
         for idx in range(len(axes)):
             ax = axes[idx]
@@ -1082,18 +950,16 @@ class IKE_CHAIN(nn.Module):
                     title = patch_names[idx]
                 ax.set_title(title, fontsize=6)
                 
-                # Highlight: green=passed VQA, red=top-k but failed VQA
+                # Highlight top-k with green box
                 if idx in top_k_idx:
-                    color = 'limegreen' if idx in vqa_passed else 'red'
                     rect = Rectangle((0, 0), patch.width-1, patch.height-1, 
-                                      linewidth=8, edgecolor=color, facecolor='none')
+                                      linewidth=8, edgecolor='limegreen', facecolor='none')
                     ax.add_patch(rect)
             ax.axis('off')
         
         # Title with s1 preview
         score_info = "softmax prob" if score_type == "softmax" else "log-likelihood"
-        n_passed = len(vqa_passed) if s1 else 0
-        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, VQA passed={n_passed}, {score_info})"
+        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, {score_info})"
         if s1:
             title += f"\ns1: {s1}"
         plt.suptitle(title, fontsize=10)

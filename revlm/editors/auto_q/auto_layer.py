@@ -46,7 +46,7 @@ class AutoLayer(ModularityCore):
     """
 
     def __init__(self, config, model, n_samples=100, n_aug=None, blank_image_size="match",
-                 edge_filter="none", edge_filter_kwargs=None):
+                 edge_filter="none", edge_filter_kwargs=None, pool_method="mean"):
         """
         Args:
             config: Config object with device
@@ -73,6 +73,7 @@ class AutoLayer(ModularityCore):
         self.blank_image_size = blank_image_size  # "match" or (W, H) tuple
         self.edge_filter = edge_filter
         self.edge_filter_kwargs = edge_filter_kwargs or {}
+        self.pool_method = pool_method  # "mean" or "last"
         
         self._hooks = []
         self._all_acts = {}
@@ -126,14 +127,16 @@ class AutoLayer(ModularityCore):
         self._all_acts = {}
 
     def _pool_act(self, act):
-        """Pool to [1, hidden]."""
+        """Pool to [1, hidden]. pool_method: 'mean' or 'last'."""
         if act is None:
             return None
         act = act.to(self.device, torch.float32)
         if act.dim() == 3:
-            return act.mean(dim=1)
+            return act[:, -1, :] if self.pool_method == "last" else act.mean(dim=1)
         elif act.dim() == 2:
-            return act if act.shape[0] == 1 else act.mean(dim=0, keepdim=True)
+            if act.shape[0] == 1:
+                return act
+            return act[-1:, :] if self.pool_method == "last" else act.mean(dim=0, keepdim=True)
         elif act.dim() == 1:
             return act.unsqueeze(0)
         elif act.dim() >= 4:
