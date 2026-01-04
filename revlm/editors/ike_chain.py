@@ -65,9 +65,9 @@ class IKE_CHAIN(nn.Module):
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
         
         # Radius Estimation
-        self.radius_method = getattr(cfg, "radius_method", "fixed")  # "fixed", "augment", or "balance"
+        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
         self.fixed_radius = float(getattr(cfg, "fixed_radius", 1000.0))
-        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.5))
+        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.95))
         self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 3))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
@@ -504,8 +504,8 @@ class IKE_CHAIN(nn.Module):
     def _get_top_edits(self, q_embs: torch.Tensor) -> List[int]:
         """Level 1: Return top edits by min distance to centroids.
         
-        If auto_k=True: use Grubbs to determine number of edits
-        Only called when n_edits >= auto_k_edit_after
+        If auto_k=True AND n_edits >= auto_k_edit_after: use Grubbs adaptive k
+        Otherwise: use fixed k = min(cap_edits, n_edits)
         """
         if self.edit_centroids is None or self.cap_edits <= 0:
             return list(range(self._edit_count))  # All edits
@@ -521,7 +521,7 @@ class IKE_CHAIN(nn.Module):
         scores = -min_dists.numpy()  # Higher is better (negative distance)
         
         # Determine k
-        if self.auto_k:
+        if self.auto_k and self._edit_count >= self.auto_k_edit_after:
             k = self._grubbs_k(scores, top_n=self.cap_edits)
             if k == 0:
                 return []  # No edit close enough → good for locality
@@ -617,8 +617,8 @@ class IKE_CHAIN(nn.Module):
         
         # Get key indices
         if key_indices is None:
-            # Level 1: Filter to top edits first (if enabled and enough edits)
-            if self.cap_edits > 0 and self.edit_centroids is not None and self._edit_count >= self.auto_k_edit_after:
+            # Level 1: Filter to top edits first (if enabled)
+            if self.cap_edits > 0 and self.edit_centroids is not None:
                 top_edit_ids = set(self._get_top_edits(q_embs))
                 if not top_edit_ids:
                     return []  # No edit matched (Grubbs returned 0)
@@ -711,8 +711,8 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         
-        # Level 1: Filter to top edits (if enabled and enough edits)
-        if self.cap_edits > 0 and self.edit_centroids is not None and self._edit_count >= self.auto_k_edit_after:
+        # Level 1: Filter to top edits (if enabled)
+        if self.cap_edits > 0 and self.edit_centroids is not None:
             top_edit_ids = set(self._get_top_edits(q_embs))
             if not top_edit_ids:
                 return text_matched, img_matched  # No edit matched
