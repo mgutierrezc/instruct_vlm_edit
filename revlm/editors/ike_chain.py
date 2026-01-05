@@ -51,13 +51,14 @@ class IKE_CHAIN(nn.Module):
 
         # Core Retrieval
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
-        self.cap_edits = int(getattr(cfg, "cap_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
         self.cap_keys = int(getattr(cfg, "cap_keys", 3))                    # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.query_kernels = getattr(cfg, "query_kernels", ['3x3'])# '1x1', '2x2', 
         self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
         self.query_radius_method = getattr(cfg, "query_radius_method", "balance")  # "patch_spread", "balance", or "augment"
-
+        self.hubness_correction = getattr(cfg, "hubness_correction", True)
+        self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -101,12 +102,15 @@ class IKE_CHAIN(nn.Module):
         self._lang_act = None
         self._sbert = None
         self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))
+        self._hubness_logged = False
         
         # Codebook Storage
         self.codebook = []
         self.key_embs = None   # [N, hidden]
         self.key_radii = None  # [N]
+        self.key_sigmas = None  # [N] - local neighborhood scale for hubness correction
         self.edit_centroids = None  # [n_edits, hidden] - for two-level retrieval
+        self.centroid_sigmas = None  # [n_edits] - inherited from key sigmas
         
         # Logging
         self.last_retrieval_log = None
@@ -478,6 +482,8 @@ class IKE_CHAIN(nn.Module):
         # Update edit centroids for two-level retrieval
         if self.cap_edits > 0:
             self._update_edit_centroids()
+        self.key_sigmas = None  # invalidate, recompute lazily on first retrieval
+        self.centroid_sigmas = None
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -509,6 +515,39 @@ class IKE_CHAIN(nn.Module):
             centroids[edit_idx] = self.key_embs[key_indices].mean(dim=0)
         
         self.edit_centroids = centroids
+
+    def _compute_key_sigmas(self, chunk_size: int = 1000):
+        """Compute σ_k = median distance to cap_keys nearest neighbor keys (for hubness correction)."""
+        if not self.hubness_correction or self.key_embs is None or len(self.key_embs) < 2:
+            self.key_sigmas = None
+            return
+        N = len(self.key_embs)
+        k = min(self.cap_keys, N - 1)
+        sigmas = torch.zeros(N)
+        embs = self.key_embs.float()
+        for i in range(0, N, chunk_size):
+            chunk = embs[i:i+chunk_size]
+            dists = torch.cdist(chunk, embs, p=2)  # [chunk, N]
+            dists[:, i:i+len(chunk)].fill_diagonal_(float('inf'))  # exclude self
+            topk_dists, _ = dists.topk(k, dim=1, largest=False)
+            sigmas[i:i+len(chunk)] = topk_dists.median(dim=1).values
+        self.key_sigmas = sigmas
+        print(f"[Hubness] computed σ for {N} keys (median={sigmas.median():.2f})")
+        self._compute_centroid_sigmas()
+
+    def _compute_centroid_sigmas(self):
+        """Compute centroid σ as mean of constituent key sigmas."""
+        if self.key_sigmas is None or self.edit_centroids is None:
+            self.centroid_sigmas = None
+            return
+        n_edits = len(self.edit_centroids)
+        sums, counts = torch.zeros(n_edits), torch.zeros(n_edits)
+        for i, e in enumerate(self.codebook):
+            if not e.get("is_image_only", False):
+                sums[e["edit_idx"]] += self.key_sigmas[i]
+                counts[e["edit_idx"]] += 1
+        self.centroid_sigmas = sums / counts.clamp(min=1)
+        print(f"[Hubness] computed σ for {n_edits} centroids (median={self.centroid_sigmas.median():.2f})")
 
     # ==================== 4. RETRIEVAL ====================
 
@@ -551,6 +590,10 @@ class IKE_CHAIN(nn.Module):
         else:
             dist_matrix = torch.cdist(q_embs.float(), self.edit_centroids.float(), p=2)
         
+        # Hubness correction for centroids
+        if self.hubness_correction and self.centroid_sigmas is not None:
+            dist_matrix = dist_matrix / (self.centroid_sigmas + self.hubness_eps)
+        
         # Min distance per edit across all query patches
         min_dists = dist_matrix.min(dim=0).values
         scores = -min_dists.numpy()  # Higher is better (negative distance)
@@ -568,11 +611,22 @@ class IKE_CHAIN(nn.Module):
         return top_edit_indices
 
     def _compute_distances(self, q_embs: torch.Tensor, key_indices: List[int]) -> torch.Tensor:
-        """Compute [n_queries, n_keys] distance matrix."""
+        """Compute [n_queries, n_keys] distance matrix, optionally hubness-scaled."""
         key_embs = self.key_embs[torch.tensor(key_indices)]
         if self.distance == "cosine":
-            return 1 - (q_embs @ key_embs.t())
-        return torch.cdist(q_embs.float(), key_embs.float(), p=2)
+            dists = 1 - (q_embs @ key_embs.t())
+        else:
+            dists = torch.cdist(q_embs.float(), key_embs.float(), p=2)
+        if self.hubness_correction:
+            if self.key_sigmas is None:
+                self._compute_key_sigmas()
+            if self.key_sigmas is not None:
+                sigmas = self.key_sigmas[torch.tensor(key_indices)]
+                dists = dists / (sigmas + self.hubness_eps)
+                if not getattr(self, '_hubness_logged', False):
+                    print(f"[Hubness correction] enabled, scaling distances by σ_k")
+                    self._hubness_logged = True
+        return dists
 
     @torch.no_grad()
     def _retrieve(self, image, question: str) -> List[str]:
@@ -800,8 +854,8 @@ class IKE_CHAIN(nn.Module):
         
         self.last_retrieval_log = log
         print(f"[IKE_CHAIN] applied facts to {applied}/{len(data)} examples", flush=True)
-        for i, ex in enumerate(data[:3]):
-            print(f"  [{i}] q='{ex.get('question','')}' answer='{ex.get('answer','')}' prompt='{ex.get('prompt','')}'")
+        # for i, ex in enumerate(data[:3]):
+        #     print(f"  [{i}] q='{ex.get('question','')}' answer='{ex.get('answer','')}' prompt='{ex.get('prompt','')}'")
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook."""
@@ -845,6 +899,8 @@ class IKE_CHAIN(nn.Module):
             "codebook": self.codebook,
             "key_embs": self.key_embs,
             "key_radii": self.key_radii,
+            "key_sigmas": self.key_sigmas,
+            "centroid_sigmas": self.centroid_sigmas,
             "edit_centroids": self.edit_centroids,
             "top_k_patches": self.top_k_patches,
             "_edit_count": self._edit_count,
@@ -861,6 +917,12 @@ class IKE_CHAIN(nn.Module):
             self.edit_centroids = self.edit_centroids.to(self.device)
         self._edit_count = data.get("_edit_count", len(set(e.get("edit_idx", 0) for e in self.codebook)))
         self.key_radii = data["key_radii"].to(self.device)
+        self.key_sigmas = data.get("key_sigmas")
+        if self.key_sigmas is not None:
+            self.key_sigmas = self.key_sigmas.to(self.device)
+        self.centroid_sigmas = data.get("centroid_sigmas")
+        if self.centroid_sigmas is not None:
+            self.centroid_sigmas = self.centroid_sigmas.to(self.device)
         print(f"[IKE_CHAIN] loaded {len(self.codebook)} keys from {path}", flush=True)
 
     def get_stats(self) -> Dict:
