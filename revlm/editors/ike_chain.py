@@ -61,6 +61,7 @@ class IKE_CHAIN(nn.Module):
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
         self.hubness_knn = int(getattr(cfg, "hubness_knn", 30))
+        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 0))  # 0=disabled, e.g. 25
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -113,6 +114,7 @@ class IKE_CHAIN(nn.Module):
         self.key_sigmas = None  # [N] - local neighborhood scale for hubness correction
         self.edit_centroids = None  # [n_edits, hidden] - for two-level retrieval
         self.centroid_sigmas = None  # [n_edits] - inherited from key sigmas
+        self.key_dist_threshold = None  # rejection threshold for far queries
         
         # Logging
         self.last_retrieval_log = None
@@ -486,6 +488,7 @@ class IKE_CHAIN(nn.Module):
             self._update_edit_centroids()
         self.key_sigmas = None  # invalidate, recompute lazily on first retrieval
         self.centroid_sigmas = None
+        self.key_dist_threshold = None
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -536,6 +539,20 @@ class IKE_CHAIN(nn.Module):
         self.key_sigmas = sigmas
         print(f"[Hubness] computed sigma for {N} keys (k={k}, median={sigmas.median():.2f})")
         self._compute_centroid_sigmas()
+        self._compute_reject_threshold()
+
+    def _compute_reject_threshold(self, max_sample: int = 2000):
+        """Compute rejection threshold as percentile of pairwise key distances."""
+        if self.reject_threshold_pct <= 0 or self.key_embs is None or len(self.key_embs) < 2:
+            self.key_dist_threshold = None
+            return
+        N = len(self.key_embs)
+        idx = torch.randperm(N)[:min(max_sample, N)]
+        sample = self.key_embs[idx].float()
+        dists = torch.cdist(sample, sample, p=2)
+        dists = dists[torch.triu(torch.ones_like(dists), diagonal=1) == 1]  # upper triangle
+        self.key_dist_threshold = float(np.percentile(dists.numpy(), self.reject_threshold_pct))
+        print(f"[Reject] threshold={self.key_dist_threshold:.2f} (p{self.reject_threshold_pct:.0f} of {len(dists)} pairs)")
 
     def _compute_centroid_sigmas(self):
         """Compute centroid sigma as mean of constituent key sigmas."""
@@ -686,6 +703,11 @@ class IKE_CHAIN(nn.Module):
         
         # Sort by min distance, take top cap_keys
         min_dists = dist_matrix.min(dim=0).values
+        
+        # Rejection gate: query too far from all keys
+        if self.key_dist_threshold is not None and min_dists.min() > self.key_dist_threshold:
+            return []
+        
         top_local = min_dists.argsort()[:self.cap_keys].tolist()
         
         # Collect unique values
@@ -903,6 +925,7 @@ class IKE_CHAIN(nn.Module):
             "key_radii": self.key_radii,
             "key_sigmas": self.key_sigmas,
             "centroid_sigmas": self.centroid_sigmas,
+            "key_dist_threshold": self.key_dist_threshold,
             "edit_centroids": self.edit_centroids,
             "top_k_patches": self.top_k_patches,
             "_edit_count": self._edit_count,
@@ -925,6 +948,7 @@ class IKE_CHAIN(nn.Module):
         self.centroid_sigmas = data.get("centroid_sigmas")
         if self.centroid_sigmas is not None:
             self.centroid_sigmas = self.centroid_sigmas.to(self.device)
+        self.key_dist_threshold = data.get("key_dist_threshold")
         print(f"[IKE_CHAIN] loaded {len(self.codebook)} keys from {path}", flush=True)
 
     def get_stats(self) -> Dict:

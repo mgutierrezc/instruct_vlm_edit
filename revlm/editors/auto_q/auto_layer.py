@@ -616,7 +616,7 @@ class AutoLayer(ModularityCore):
         import json
         import os
         
-        out_dir = out_dir or "results/auto_layer"
+        out_dir = out_dir or f"results/auto_layer_{self.n_samples}"
         model_tag = self._get_model_tag()
         os.makedirs(out_dir, exist_ok=True)
         
@@ -644,7 +644,7 @@ class AutoLayer(ModularityCore):
         import json
         import os
         
-        out_dir = out_dir or "results/auto_layer"
+        out_dir = out_dir or f"results/auto_layer_{self.n_samples}"
         model_tag = self._get_model_tag()
         suffix = f"_run{run_id}" if run_id is not None else ""
         in_path = os.path.join(out_dir, f"{model_tag}{suffix}.json")
@@ -665,7 +665,7 @@ class AutoLayer(ModularityCore):
         import os
         import glob
         
-        out_dir = out_dir or "results/auto_layer"
+        out_dir = out_dir or f"results/auto_layer_{self.n_samples}"
         pattern = os.path.join(out_dir, f"{self._get_model_tag()}_run*.json")
         files = sorted(glob.glob(pattern))
         

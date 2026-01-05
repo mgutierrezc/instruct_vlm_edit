@@ -415,7 +415,7 @@ class AutoScaler(ModularityCore):
         import json
         import os
         
-        out_dir = out_dir or "results/auto_scaler"
+        out_dir = out_dir or f"results/auto_scaler_{self.n_samples}"
         model_tag = self._get_model_tag()
         os.makedirs(out_dir, exist_ok=True)
         
@@ -442,7 +442,7 @@ class AutoScaler(ModularityCore):
         import json
         import os
         
-        out_dir = out_dir or "results/auto_scaler"
+        out_dir = out_dir or f"results/auto_scaler_{self.n_samples}"
         model_tag = self._get_model_tag()
         suffix = f"_run{run_id}" if run_id is not None else ""
         in_path = os.path.join(out_dir, f"{model_tag}{suffix}.json")
@@ -467,7 +467,7 @@ class AutoScaler(ModularityCore):
         import glob
         import numpy as np
         
-        out_dir = out_dir or "results/auto_scaler"
+        out_dir = out_dir or f"results/auto_scaler_{self.n_samples}"
         pattern = os.path.join(out_dir, f"{self._get_model_tag()}_run*.json")
         files = sorted(glob.glob(pattern))
         

@@ -85,6 +85,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="all", choices=["train", "test", "all"])
     
     # AutoLayer params
+    parser.add_argument("--n_samples", type=int, default=20, help="Samples per run for Q computation")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
 
     args = parser.parse_args()
@@ -95,4 +96,4 @@ if __name__ == "__main__":
     
     config = configure_args(args, config_path=args.config)
 
-    run_auto_layer(config, overwrite=args.overwrite)
+    run_auto_layer(config, n_samples=args.n_samples, overwrite=args.overwrite)
