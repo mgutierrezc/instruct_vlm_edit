@@ -50,10 +50,17 @@ class IKE_CHAIN(nn.Module):
 
         # Core Retrieval
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
-        self.cap_edits = int(getattr(cfg, "cap_edits", 2))                  # 0 = disabled, >0 = top edits for level-1 filtering
-        self.cap_keys = int(getattr(cfg, "cap_keys", 2))                    # final max keys to retrieve
+        self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.knn_keys = int(getattr(cfg, "knn_keys", 10))                              # 0 = radius-based, >0 = KNN pool size
+        self.retrieve_winner_edits = getattr(cfg, "retrieve_winner_edits", True) # filter to winner edits (most keys + closest key)
+        self.cap_keys = int(getattr(cfg, "cap_keys", 3))                              # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.seed = getattr(cfg, "seed", None)
+
+        # Page-Based Retrieval
+        self.page_retrieval = getattr(cfg, "page_retrieval", False)  # Enable page-based retrieval
+        self.page_size = int(getattr(cfg, "page_size", 10))          # Edits per page
+        self.page_select_k = int(getattr(cfg, "page_select_k", 3))   # 0=centroid, >0=avg top-K keys
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -142,16 +149,6 @@ class IKE_CHAIN(nn.Module):
         return (self.model if hasattr(self.model, "generate") else self.wrapper).generate(*a, **kw)
 
     # ==================== 2. ENCODING ====================
-
-    _GENERIC_PREFIXES = re.compile(
-        r'^(the image (shows|depicts|contains|features|displays)|'
-        r'in the image,?|this image (shows|depicts))\s*',
-        re.IGNORECASE
-    )
-
-    def _clean_key_text(self, text: str) -> str:
-        """Strip generic prefixes like 'The image shows' for cleaner embeddings."""
-        return self._GENERIC_PREFIXES.sub('', text)
 
     def _pool_act(self, act, batch_size):
         """Pool activation to [B, hidden] shape."""
@@ -414,9 +411,8 @@ class IKE_CHAIN(nn.Module):
         
         self._edit_count += 1
         
-        # Compute embeddings and radii (clean text for embedding only)
-        clean_texts = [self._clean_key_text(t) for t in new_texts]
-        new_embs = self._encode_vlm(new_imgs, clean_texts)
+        # Compute embeddings and radii
+        new_embs = self._encode_vlm(new_imgs, new_texts)
         if self.distance == "cosine":
             new_embs = F.normalize(new_embs, dim=-1)
         
@@ -541,12 +537,101 @@ class IKE_CHAIN(nn.Module):
         top_edit_indices = np.argsort(scores)[::-1][:k].tolist()
         return top_edit_indices
 
+    def _get_keys_in_page(self, page_num: int) -> List[int]:
+        """Return key indices belonging to a page."""
+        start, end = page_num * self.page_size, (page_num + 1) * self.page_size
+        return [i for i, e in enumerate(self.codebook) 
+                if start <= e.get("edit_idx", 0) < end and not e.get("is_image_only", False)]
+
+    def _select_best_page(self, q_embs: torch.Tensor) -> Optional[int]:
+        """Select best page.
+        
+        page_select_k=0: Use closest edit centroid to pick page
+        page_select_k>0: Score pages by avg distance of top-K closest keys
+        """
+        if self._edit_count == 0:
+            return None
+        
+        # Mode: closest edit centroid
+        if self.page_select_k == 0:
+            if self.edit_centroids is None:
+                self._update_edit_centroids()
+            if self.edit_centroids is None:
+                return 0
+            if self.distance == "cosine":
+                dists = 1 - (q_embs @ self.edit_centroids.t())
+            else:
+                dists = torch.cdist(q_embs.float(), self.edit_centroids.float(), p=2)
+            closest_edit = int(dists.min(dim=0).values.argmin())
+            return closest_edit // self.page_size
+        
+        # Mode: avg of top-K keys per page
+        n_pages = (self._edit_count + self.page_size - 1) // self.page_size
+        page_scores = []
+        
+        for page_num in range(n_pages):
+            key_indices = self._get_keys_in_page(page_num)
+            if not key_indices:
+                page_scores.append(float('inf'))
+                continue
+            
+            dist_matrix = self._compute_distances(q_embs, key_indices)
+            min_dists = dist_matrix.min(dim=0).values
+            k = min(self.page_select_k, len(key_indices))
+            top_k_dists = min_dists.topk(k, largest=False).values
+            page_scores.append(float(top_k_dists.mean()))
+        
+        return int(np.argmin(page_scores))
+
     def _compute_distances(self, q_embs: torch.Tensor, key_indices: List[int]) -> torch.Tensor:
         """Compute [n_queries, n_keys] distance matrix."""
         key_embs = self.key_embs[torch.tensor(key_indices)]
         if self.distance == "cosine":
             return 1 - (q_embs @ key_embs.t())
         return torch.cdist(q_embs.float(), key_embs.float(), p=2)
+
+    def _get_candidate_keys(self, dist_matrix: torch.Tensor, key_indices: List[int]
+                           ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Select candidates via KNN or radius. Returns (local_indices, min_dists)."""
+        min_dists_all = dist_matrix.min(dim=0).values
+        
+        if self.knn_keys > 0:
+            k = min(self.knn_keys, len(key_indices))
+            matched_local = min_dists_all.argsort()[:k]
+            return matched_local, min_dists_all[matched_local]
+        
+        # Radius-based
+        key_radii = self.key_radii[torch.tensor(key_indices)]
+        in_radius = dist_matrix <= key_radii
+        matched_mask = in_radius.any(dim=0)
+        if not matched_mask.any():
+            return torch.tensor([]), torch.tensor([])
+        matched_local = torch.where(matched_mask)[0]
+        return matched_local, min_dists_all[matched_local]
+
+    def _filter_winner_edits(self, matched_local: torch.Tensor, min_dists: torch.Tensor, 
+                             key_indices: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Keep keys from winner edits (most keys + closest key)."""
+        if len(matched_local) == 0:
+            return matched_local, min_dists
+        
+        # Group by edit_idx
+        edit_keys = {}
+        for local_i, dist in zip(matched_local.tolist(), min_dists.tolist()):
+            global_i = key_indices[local_i]
+            edit_idx = self.codebook[global_i]["edit_idx"]
+            edit_keys.setdefault(edit_idx, []).append((local_i, dist))
+        
+        if not edit_keys:
+            return matched_local, min_dists
+        
+        # Winner 1: most keys, Winner 2: closest key
+        winner_count = max(edit_keys.keys(), key=lambda e: len(edit_keys[e]))
+        winner_dist = min(edit_keys.keys(), key=lambda e: min(d for _, d in edit_keys[e]))
+        
+        winner_edits = {winner_count, winner_dist}
+        winning_pairs = [p for e in winner_edits for p in edit_keys[e]]
+        return torch.tensor([p[0] for p in winning_pairs]), torch.tensor([p[1] for p in winning_pairs])
 
     @torch.no_grad()
     def _retrieve(self, image, question: str) -> List[str]:
@@ -569,34 +654,58 @@ class IKE_CHAIN(nn.Module):
     @torch.no_grad()
     def _retrieve_from_keys(self, query_patches: List, question: str, 
                             key_indices: List[int] = None) -> List[str]:
-        """Retrieve top cap_keys from filtered edits."""
+        """Retrieve from specified keys.
+        
+        Modes (priority order):
+        1. page_retrieval: Select best page → KNN within page
+        2. cap_edits>0: Top edits by centroid → KNN within those edits
+        3. Otherwise: KNN across all keys
+        """
         # Build query embeddings
         q_embs = self._encode_vlm(query_patches, [question] * len(query_patches))
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         q_embs = q_embs.cpu()
         
-        # Get key indices (filter to top edits if cap_edits > 0)
+        # Get key indices based on retrieval mode
         if key_indices is None:
-            if self.cap_edits > 0 and self.edit_centroids is not None:
+            if self.page_retrieval and self._edit_count > 0:
+                # Mode 1: Page-based
+                best_page = self._select_best_page(q_embs)
+                if best_page is None:
+                    return []
+                key_indices = self._get_keys_in_page(best_page)
+            elif self.cap_edits > 0 and self.edit_centroids is not None:
+                # Mode 2: Centroid-based
                 top_edit_ids = set(self._get_top_edits(q_embs))
                 if not top_edit_ids:
                     return []
                 key_indices = [i for i, e in enumerate(self.codebook) 
                               if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
             else:
+                # Mode 3: All keys
                 key_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
         if not key_indices:
             return []
         
-        # Compute distances, sort, take top cap_keys
+        # Compute distances and get candidates
         dist_matrix = self._compute_distances(q_embs, key_indices)
-        min_dists = dist_matrix.min(dim=0).values
-        top_local = min_dists.argsort()[:self.cap_keys].tolist()
+        matched_local, min_dists = self._get_candidate_keys(dist_matrix, key_indices)
         
-        # Collect unique values
+        if len(matched_local) == 0:
+            return []
+        
+        # Filter by winner edits
+        if self.retrieve_winner_edits:
+            matched_local, min_dists = self._filter_winner_edits(matched_local, min_dists, key_indices)
+        
+        # Sort and take top cap_keys
+        sorted_order = min_dists.argsort()
+        selected_local = matched_local[sorted_order].tolist()[:self.cap_keys]
+        
+        # Collect values
         retrieved = set()
-        for local_i in top_local:
+        for local_i in selected_local:
             value = self.codebook[key_indices[local_i]]["value"]
             if value:
                 retrieved.add(value)
@@ -661,11 +770,16 @@ class IKE_CHAIN(nn.Module):
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         
-        # Level 1: Filter to top edits (if enabled)
-        if self.cap_edits > 0 and self.edit_centroids is not None:
+        # Filter keys based on retrieval mode
+        if self.page_retrieval and self._edit_count > 0:
+            best_page = self._select_best_page(q_embs)
+            if best_page is None:
+                return text_matched, img_matched
+            text_indices = self._get_keys_in_page(best_page)
+        elif self.cap_edits > 0 and self.edit_centroids is not None:
             top_edit_ids = set(self._get_top_edits(q_embs))
             if not top_edit_ids:
-                return text_matched, img_matched  # No edit matched
+                return text_matched, img_matched
             text_indices = [i for i, e in enumerate(self.codebook) 
                            if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
         else:
@@ -673,11 +787,16 @@ class IKE_CHAIN(nn.Module):
         
         if text_indices:
             dist_matrix = self._compute_distances(q_embs, text_indices)
-            min_dists = dist_matrix.min(dim=0).values
-            top_k = min_dists.argsort()
-            if apply_cap_k:
-                top_k = top_k[:self.cap_keys]
-            text_matched = {text_indices[i.item()] for i in top_k}
+            matched_local, min_dists = self._get_candidate_keys(dist_matrix, text_indices)
+            
+            if len(matched_local) > 0:
+                if self.retrieve_winner_edits:
+                    matched_local, min_dists = self._filter_winner_edits(matched_local, min_dists, text_indices)
+                
+                top_k = matched_local[min_dists.argsort()]
+                if apply_cap_k:
+                    top_k = top_k[:self.cap_keys]
+                text_matched = {text_indices[i.item()] for i in top_k}
         
         if text_matched or not self.image_only_retrieval:
             return text_matched, img_matched
@@ -831,6 +950,7 @@ class IKE_CHAIN(nn.Module):
         n_rationale = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
         n_merged = sum(1 for e in self.codebook if e.get("is_merged", False))
         
+        n_pages = (self._edit_count + self.page_size - 1) // self.page_size if self._edit_count > 0 else 0
         stats = {
             "num_keys": len(self.codebook),
             "num_orig_keys": len(self.codebook) - n_patch,
@@ -840,10 +960,13 @@ class IKE_CHAIN(nn.Module):
             "num_rationale_keys": n_rationale,
             "num_image_only_keys": n_img_only,
             "num_edits": len(self._added_uids),
+            "num_pages": n_pages,
+            "page_retrieval": self.page_retrieval,
+            "page_size": self.page_size,
             "top_k_patches": self.top_k_patches,
             "merge_keys": self.merge_keys,
             "cap_edits": self.cap_edits,
-            "cap_keys": self.cap_keys,
+            "retrieve_winner_edits": self.retrieve_winner_edits,
             "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
