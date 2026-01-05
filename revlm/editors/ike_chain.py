@@ -47,13 +47,17 @@ class IKE_CHAIN(nn.Module):
         self.wrapper = model if hasattr(model, "model") else None
         self.model = model.model if hasattr(model, "model") else model
         self.device = getattr(config, "device", torch.device("cpu"))
+        self.seed = getattr(cfg, "seed", None)
 
         # Core Retrieval
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
-        self.cap_edits = int(getattr(cfg, "cap_edits", 2))                  # 0 = disabled, >0 = top edits for level-1 filtering
-        self.cap_keys = int(getattr(cfg, "cap_keys", 2))                    # final max keys to retrieve
+        self.cap_edits = int(getattr(cfg, "cap_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.cap_keys = int(getattr(cfg, "cap_keys", 3))                    # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
-        self.seed = getattr(cfg, "seed", None)
+        self.query_kernels = getattr(cfg, "query_kernels", ['3x3'])# '1x1', '2x2', 
+        self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
+        self.query_radius_method = getattr(cfg, "query_radius_method", "balance")  # "patch_spread", "balance", or "augment"
+
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -64,17 +68,16 @@ class IKE_CHAIN(nn.Module):
         
         # Radius Estimation
         self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
-        self.fixed_radius = float(getattr(cfg, "fixed_radius", 1000.0))
-        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.95))
+        self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
+        self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.9))
+        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 1))
         self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
-        self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 3))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
         self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
-        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.5))
+        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.9))
 
         # Patchification
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches per sentence
-        self.query_kernels = getattr(cfg, "query_kernels", ['1x1', '2x2', '3x3'])
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
 
         # Key Management
@@ -83,13 +86,14 @@ class IKE_CHAIN(nn.Module):
         self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))
         if self.merge_keys:
             self.radius_method = "augment"
-            self.radius_area_pct = 0.95
+            self.radius_area_pct = 0.9
             self.n_radius_samples = 1
 
         # Image-Only Fallback
         self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
         self.top_i_image_only = int(getattr(cfg, "top_i_image_only_entry", 1))
 
+        
         # Internal State
         self._added_uids = set()
         self._edit_count = 0
@@ -310,6 +314,28 @@ class IKE_CHAIN(nn.Module):
             aug_emb = self._encode_vlm([aug_img], [aug_text])
             aug_dists.append(float(torch.norm(aug_emb.cpu() - key_emb.cpu())))
         return float(np.percentile(aug_dists, self.radius_percentile)) * self.radius_scaler
+
+    @torch.no_grad()
+    def _estimate_query_radii(self, q_embs: torch.Tensor, query_patches: List, question: str) -> torch.Tensor:
+        """Estimate radii for query patches (no LLM text aug for speed)."""
+        n = len(query_patches)
+        if self.query_radius_method == "patch_spread":
+            # Patches as natural augmentations - use max pairwise distance (0 extra VLM calls)
+            max_dist = torch.cdist(q_embs, q_embs, p=2).max().item() if n > 1 else 0.0
+            return torch.full((n,), max_dist * self.radius_scaler)
+        if self.query_radius_method == "balance":
+            neg_emb = self._encode_vlm([self._blank_image], [question])
+            if self.distance == "cosine":
+                neg_emb = F.normalize(neg_emb, dim=-1)
+            return torch.norm(q_embs - neg_emb.cpu(), dim=1) * self.balance_alpha * self.radius_scaler
+        # augment
+        radii = []
+        for i, patch in enumerate(query_patches):
+            aug_emb = self._encode_vlm([self.augmenter.image(patch, area_pct=self.radius_area_pct)], [question])
+            if self.distance == "cosine":
+                aug_emb = F.normalize(aug_emb, dim=-1)
+            radii.append(float(torch.norm(aug_emb.cpu() - q_embs[i:i+1].cpu())))
+        return torch.tensor(radii) * self.radius_scaler
 
     def _circle_intersection(self, d: float, r1: float, r2: float) -> float:
         """Compute intersection area of two circles."""
@@ -589,8 +615,20 @@ class IKE_CHAIN(nn.Module):
         if not key_indices:
             return []
         
-        # Compute distances, sort, take top cap_keys
+        # Compute distances [n_patches, n_keys]
         dist_matrix = self._compute_distances(q_embs, key_indices)
+        
+        # Query radius filter
+        if self.query_radius_filter:
+            q_radii = self._estimate_query_radii(q_embs, query_patches, question)
+            within_radius = (dist_matrix < q_radii[:, None]).any(dim=0)  # [n_keys]
+            valid_local = torch.where(within_radius)[0].tolist()
+            if not valid_local:
+                return []
+            dist_matrix = dist_matrix[:, valid_local]
+            key_indices = [key_indices[i] for i in valid_local]
+        
+        # Sort by min distance, take top cap_keys
         min_dists = dist_matrix.min(dim=0).values
         top_local = min_dists.argsort()[:self.cap_keys].tolist()
         
@@ -762,6 +800,8 @@ class IKE_CHAIN(nn.Module):
         
         self.last_retrieval_log = log
         print(f"[IKE_CHAIN] applied facts to {applied}/{len(data)} examples", flush=True)
+        for i, ex in enumerate(data[:3]):
+            print(f"  [{i}] q='{ex.get('question','')}' answer='{ex.get('answer','')}' prompt='{ex.get('prompt','')}'")
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook."""
