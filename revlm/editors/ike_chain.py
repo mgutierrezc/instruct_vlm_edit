@@ -51,7 +51,7 @@ class IKE_CHAIN(nn.Module):
 
         # Core Retrieval
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
-        self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.cap_edits = int(getattr(cfg, "cap_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
         self.cap_keys = int(getattr(cfg, "cap_keys", 3))                    # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.query_kernels = getattr(cfg, "query_kernels", ['3x3'])# '1x1', '2x2', 
@@ -59,6 +59,7 @@ class IKE_CHAIN(nn.Module):
         self.query_radius_method = getattr(cfg, "query_radius_method", "balance")  # "patch_spread", "balance", or "augment"
         self.hubness_correction = getattr(cfg, "hubness_correction", True)
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
+        self.hubness_knn = int(getattr(cfg, "hubness_knn", 50))
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -517,12 +518,12 @@ class IKE_CHAIN(nn.Module):
         self.edit_centroids = centroids
 
     def _compute_key_sigmas(self, chunk_size: int = 1000):
-        """Compute σ_k = median distance to cap_keys nearest neighbor keys (for hubness correction)."""
+        """Compute σ_k = median distance to hubness_knn nearest neighbor keys (for hubness correction)."""
         if not self.hubness_correction or self.key_embs is None or len(self.key_embs) < 2:
             self.key_sigmas = None
             return
         N = len(self.key_embs)
-        k = min(self.cap_keys, N - 1)
+        k = min(self.hubness_knn, N - 1)
         sigmas = torch.zeros(N)
         embs = self.key_embs.float()
         for i in range(0, N, chunk_size):
@@ -532,11 +533,11 @@ class IKE_CHAIN(nn.Module):
             topk_dists, _ = dists.topk(k, dim=1, largest=False)
             sigmas[i:i+len(chunk)] = topk_dists.median(dim=1).values
         self.key_sigmas = sigmas
-        print(f"[Hubness] computed σ for {N} keys (median={sigmas.median():.2f})")
+        print(f"[Hubness] computed sigma for {N} keys (k={k}, median={sigmas.median():.2f})")
         self._compute_centroid_sigmas()
 
     def _compute_centroid_sigmas(self):
-        """Compute centroid σ as mean of constituent key sigmas."""
+        """Compute centroid sigma as mean of constituent key sigmas."""
         if self.key_sigmas is None or self.edit_centroids is None:
             self.centroid_sigmas = None
             return
@@ -547,7 +548,7 @@ class IKE_CHAIN(nn.Module):
                 sums[e["edit_idx"]] += self.key_sigmas[i]
                 counts[e["edit_idx"]] += 1
         self.centroid_sigmas = sums / counts.clamp(min=1)
-        print(f"[Hubness] computed σ for {n_edits} centroids (median={self.centroid_sigmas.median():.2f})")
+        print(f"[Hubness] computed sigma for {n_edits} centroids (median={self.centroid_sigmas.median():.2f})")
 
     # ==================== 4. RETRIEVAL ====================
 
