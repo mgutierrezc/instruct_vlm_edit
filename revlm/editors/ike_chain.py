@@ -51,15 +51,16 @@ class IKE_CHAIN(nn.Module):
 
         # Core Retrieval
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
-        self.cap_edits = int(getattr(cfg, "cap_edits", 3))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
         self.cap_keys = int(getattr(cfg, "cap_keys", 3))                    # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.query_kernels = getattr(cfg, "query_kernels", ['3x3'])# '1x1', '2x2', 
         self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
         self.query_radius_method = getattr(cfg, "query_radius_method", "balance")  # "patch_spread", "balance", or "augment"
-        self.hubness_correction = getattr(cfg, "hubness_correction", True)
+        self.hubness_keys = getattr(cfg, "hubness_keys", True)
+        self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
-        self.hubness_knn = int(getattr(cfg, "hubness_knn", 50))
+        self.hubness_knn = int(getattr(cfg, "hubness_knn", 30))
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -519,7 +520,7 @@ class IKE_CHAIN(nn.Module):
 
     def _compute_key_sigmas(self, chunk_size: int = 1000):
         """Compute σ_k = median distance to hubness_knn nearest neighbor keys (for hubness correction)."""
-        if not self.hubness_correction or self.key_embs is None or len(self.key_embs) < 2:
+        if not self.hubness_keys or self.key_embs is None or len(self.key_embs) < 2:
             self.key_sigmas = None
             return
         N = len(self.key_embs)
@@ -592,7 +593,7 @@ class IKE_CHAIN(nn.Module):
             dist_matrix = torch.cdist(q_embs.float(), self.edit_centroids.float(), p=2)
         
         # Hubness correction for centroids
-        if self.hubness_correction and self.centroid_sigmas is not None:
+        if self.hubness_keys and self.hubness_centroid and self.centroid_sigmas is not None:
             dist_matrix = dist_matrix / (self.centroid_sigmas + self.hubness_eps)
         
         # Min distance per edit across all query patches
@@ -618,7 +619,7 @@ class IKE_CHAIN(nn.Module):
             dists = 1 - (q_embs @ key_embs.t())
         else:
             dists = torch.cdist(q_embs.float(), key_embs.float(), p=2)
-        if self.hubness_correction:
+        if self.hubness_keys:
             if self.key_sigmas is None:
                 self._compute_key_sigmas()
             if self.key_sigmas is not None:
