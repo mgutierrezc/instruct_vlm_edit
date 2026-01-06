@@ -70,6 +70,8 @@ if __name__ == "__main__":
     parser.add_argument("--pred_path", type=str, default=None, help="Optional path to saved edit dataset. If it exists the file is loaded, otherwise it is written after error discovery.")
     parser.add_argument("--pred_postedit_dir", type=str, default=None, help="Optional directory for saving post-edit predictions on the edit set.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
+    parser.add_argument("--mode", type=str, default=None, choices=["vision", "language", "language_last", "dual_sbert"], help="Embedding mode for IKE_CHAIN")
+    parser.add_argument("--pool_method", type=str, default=None, choices=["mean", "last"], help="Pooling method for IKE_CHAIN")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -81,6 +83,12 @@ if __name__ == "__main__":
     else:
         args.suffix = ""
     config = configure_args(args, config_path=args.config)
+
+    # Override editor settings if provided
+    if args.mode:
+        config.editor.mode = args.mode
+    if args.pool_method:
+        config.editor.pool_method = args.pool_method
 
     # current run-specific settings
     config.subsample = args.subsample

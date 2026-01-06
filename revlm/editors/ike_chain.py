@@ -65,10 +65,9 @@ class IKE_CHAIN(nn.Module):
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
-        self.dual_layer = getattr(cfg, "dual_layer", True)          # concat vision + lang embeddings
+        self.mode = getattr(cfg, "mode", "dual_sbert")              # "vision", "language", "language_last", "dual_sbert"
         self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
-        self.lang_encoder = getattr(cfg, "lang_encoder", "sbert")   # "internal" or "sbert"
-        self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0)) if self.lang_encoder == "sbert" else float(getattr(config.model, "lang_scaler", 30.0))
+        self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0))
         
         # Radius Estimation
         self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
@@ -101,8 +100,7 @@ class IKE_CHAIN(nn.Module):
         # Internal State
         self._added_uids = set()
         self._edit_count = 0
-        self._vision_act = None
-        self._lang_act = None
+        self._act = None
         self._sbert = None
         self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128))
         self._hubness_logged = False
@@ -129,23 +127,37 @@ class IKE_CHAIN(nn.Module):
         model_cfg = getattr(config, "model", config)
         inner_params_vision = getattr(model_cfg, "inner_params_vision", [])
         inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
-        if not inner_params_vision:
-            raise ValueError("Requires config.model.inner_params_vision")
-        if self.dual_layer and self.lang_encoder == "internal" and not inner_params_lang:
-            raise ValueError("dual_layer=True with lang_encoder='internal' requires config.model.inner_params_lang")
+        inner_params = getattr(model_cfg, "inner_params", [])
         
-        def _setup_hook(param_name, attr_name):
+        # Validate required params based on mode
+        if self.mode == "vision" and not inner_params_vision:
+            raise ValueError("mode='vision' requires config.model.inner_params_vision")
+        elif self.mode == "language" and not inner_params_lang:
+            raise ValueError("mode='language' requires config.model.inner_params_lang")
+        elif self.mode == "language_last" and not inner_params:
+            raise ValueError("mode='language_last' requires config.model.inner_params")
+        elif self.mode == "dual_sbert" and not inner_params_vision:
+            raise ValueError("mode='dual_sbert' requires config.model.inner_params_vision")
+        
+        def _setup_hook(param_name):
             name = param_name.rsplit(".", 1)[0] if param_name.endswith((".weight", ".bias")) else param_name
             mod = parent_module(self.model, brackets_to_periods(name))
             layer = getattr(mod, name.rsplit(".", 1)[-1])
             return layer.register_forward_hook(
-                lambda m, i, o, an=attr_name: setattr(self, an, i[0].detach() if isinstance(i[0], torch.Tensor) else None)
+                lambda m, i, o: setattr(self, "_act", i[0].detach() if isinstance(i[0], torch.Tensor) else None)
             )
         
-        self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act")
-        self._lang_hook = None
-        if self.dual_layer and self.lang_encoder == "internal":
-            self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act")
+        # Setup single hook based on mode
+        if self.mode == "vision":
+            self._hook = _setup_hook(inner_params_vision[0])
+        elif self.mode == "language":
+            self._hook = _setup_hook(inner_params_lang[0])
+        elif self.mode == "language_last":
+            self._hook = _setup_hook(inner_params[0])
+        elif self.mode == "dual_sbert":
+            self._hook = _setup_hook(inner_params_vision[0])
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
 
     def forward(self, *a, **kw):
         return self.model(*a, **kw)
@@ -204,33 +216,24 @@ class IKE_CHAIN(nn.Module):
     def _encode_vlm(self, images: List, texts: List[str]) -> torch.Tensor:
         """Get VLM embedding for <image, text> pairs.
         
-        Returns: [B, hidden] or [B, hidden+lang_dim] tensor
+        Returns: [B, hidden] or [B, hidden+lang_dim] tensor (for dual_sbert)
         """
         self.model.eval()
         batch_size = len(images) if isinstance(images, list) else 1
         
-        # Pass 1: <image, text> -> vision embedding
-        self._vision_act = None
+        # Forward pass to capture activation
+        self._act = None
         inputs = self.wrapper.encode(images, texts, tokenize=False)
         self.model(**inputs)
-        vision_emb = self._pool_act(self._vision_act, batch_size)
-        self._vision_act = None
+        emb = self._pool_act(self._act, batch_size)
+        self._act = None
         
-        if not self.dual_layer:
-            return vision_emb
-        
-        # Pass 2: language embedding
-        if self.lang_encoder == "sbert":
+        # For dual_sbert, concat with SBERT embedding
+        if self.mode == "dual_sbert":
             lang_emb = self._encode_sbert(texts) * self.lang_scaler
-        else:
-            self._lang_act = None
-            blank_imgs = [self._blank_image] * batch_size
-            inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
-            self.model(**inputs)
-            lang_emb = self._pool_act(self._lang_act, batch_size) * self.lang_scaler
-            self._lang_act = None
+            emb = torch.cat([emb, lang_emb], dim=-1)
         
-        return torch.cat([vision_emb, lang_emb], dim=-1)
+        return emb
 
     @torch.no_grad()
     def _get_nll(self, image, prompt: str, label: str) -> float:
@@ -886,6 +889,7 @@ class IKE_CHAIN(nn.Module):
         if edit_ds is None:
             return self.model
         
+        print(f"[IKE_CHAIN] mode={self.mode}, pool_method={self.pool_method}")
         n_before = len(self.codebook)
         
         # Filter valid examples

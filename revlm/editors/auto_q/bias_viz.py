@@ -2,10 +2,12 @@
 
 For each edit <i, t> with n_aug augmentations:
 - <i, t>: anchor (raw)
-- <i+, t> × n_aug: minor image aug (area=0.9), same text
+- <i+, t> × n_aug: minor image aug, same text
 - <i, t+> × n_aug: same image, rephrased text
-- <i-, t> × n_aug: heavy image aug (area=0.1), same text
-- <i, t-> × min(n_aug, n_cot): same image, different texts from CoT
+- <i-, t> × n_aug: new image (area=0.0), same text
+- <i, t-> × min(n_aug, n_cot): same image, different texts from CoT or pool
+  - diff_text="cot": use CoT sentences from samples
+  - diff_text="pool": sample from 200 irrelevant common facts (no replacement)
 
 Bias metrics (positive = biased):
 - vis_bias: avg_dist(<i,t>, <i+,t>) - avg_dist(<i,t>, <i,t->) → image rep too weak
@@ -20,11 +22,10 @@ from PIL import Image
 from typing import List, Dict, Optional
 from ..utils import parent_module, brackets_to_periods, Augmenter
 
-
 class BiasViz:
     """Measure embedding bias for VLM representations."""
 
-    def __init__(self, config, model, mode="dual_sbert", lang_scaler=8.0, edge_pct=75, pool_method="mean", n_aug=2, dist_method="subgraph_connectivity"):
+    def __init__(self, config, model, mode="dual_sbert", lang_scaler=8.0, edge_pct=75, pool_method="mean", n_aug=2, dist_method="subgraph_connectivity", diff_text="pool"):
         """
         Args:
             config: Config with inner_params, inner_params_vision, inner_params_lang
@@ -35,6 +36,7 @@ class BiasViz:
             pool_method: "mean" or "last" for pooling activations
             n_aug: Number of augmentations per type (i+, t+, i-). t- capped by CoT sentences.
             dist_method: "dist2_anchor" (anchor to others) or "subgraph_connectivity" (all pairwise)
+            diff_text: "cot" (use CoT sentences) or "pool" (sample from FACT_POOL without replacement)
         """
         self.config = config
         self.wrapper = model if hasattr(model, "model") else None
@@ -46,9 +48,11 @@ class BiasViz:
         self.pool_method = pool_method
         self.n_aug = n_aug
         self.dist_method = dist_method
+        self.diff_text = diff_text
         
         # Storage: list of edit dicts with embeddings
         self.edits = []
+        self._pool_used = set()  # track used indices for diff_text="pool"
         
         # Hook state
         self._act = None
@@ -151,9 +155,9 @@ class BiasViz:
         # <i, t> - anchor
         pairs.append((image, question, (0, 0)))
         
-        # <i+, t> × n_aug - minor image aug
+        # <i+, t> × n_aug - minor image aug (80% original visible)
         for k in range(self.n_aug):
-            aug_img = aug.image(image, area_pct=0.9)
+            aug_img = aug.image(image, area_pct=0.8)
             pairs.append((aug_img, question, (k + 1, 0)))
         
         # <i, t+> × n_aug - rephrased text
@@ -166,10 +170,18 @@ class BiasViz:
             aug_img = aug.image(image, area_pct=0.1, n_tiles=1)
             pairs.append((aug_img, question, (-(k + 1), 0)))
         
-        # <i, t-> × min(n_aug, len(cot_sentences)) - different texts from CoT
-        n_diff = min(self.n_aug, len(cot_sentences)) if cot_sentences else 0
-        for k in range(n_diff):
-            pairs.append((image, cot_sentences[k], (0, -(k + 1))))
+        # <i, t-> - different texts from CoT or pool
+        if self.diff_text == "pool":
+            available = [i for i in range(len(FACT_POOL)) if i not in self._pool_used]
+            n_diff = min(self.n_aug, len(available))
+            sampled = np.random.choice(available, size=n_diff, replace=False).tolist() if n_diff > 0 else []
+            self._pool_used.update(sampled)
+            for k, idx in enumerate(sampled):
+                pairs.append((image, FACT_POOL[idx], (0, -(k + 1))))
+        else:  # cot
+            n_diff = min(self.n_aug, len(cot_sentences)) if cot_sentences else 0
+            for k in range(n_diff):
+                pairs.append((image, cot_sentences[k], (0, -(k + 1))))
         
         # Encode all
         images_batch = [p[0] for p in pairs]
@@ -375,7 +387,7 @@ class BiasViz:
         
         # Plot
         fig, ax = plt.subplots(figsize=figsize)
-        nx.draw_networkx_edges(G, pos, alpha=0.15, width=0.5, ax=ax)
+        nx.draw_networkx_edges(G, pos, alpha=0.15, width=0.9, ax=ax)
         
         # Draw nodes by shape
         for shape_key, shape in shape_map.items():
@@ -530,8 +542,9 @@ class BiasViz:
         ax.axis('off')
 
     def clear(self):
-        """Clear all edits."""
+        """Clear all edits and reset pool sampling."""
         self.edits = []
+        self._pool_used = set()
 
     def cleanup(self):
         """Remove hooks and free resources."""
@@ -539,4 +552,113 @@ class BiasViz:
             self._hook.remove()
         self._sbert = None
         self._augmenter = None
+
+
+
+
+# 200 irrelevant common fact sentences for diff_text="pool"
+FACT_POOL = [
+    "The sky appears blue during daytime.", "Water freezes at zero degrees Celsius.",
+    "The Earth orbits around the Sun.", "Humans have five fingers on each hand.",
+    "Grass is typically green in color.", "The moon reflects sunlight at night.",
+    "Fish breathe through their gills.", "Birds have feathers covering their bodies.",
+    "Ice floats on liquid water.", "The heart pumps blood through the body.",
+    "Trees produce oxygen through photosynthesis.", "Sound travels faster in water than air.",
+    "Bees collect nectar from flowers.", "The Pacific is the largest ocean.",
+    "Diamonds are made of carbon atoms.", "Cats are obligate carnivores.",
+    "The sun rises in the east.", "Spiders have eight legs total.",
+    "Gold is a precious metal.", "Whales are mammals not fish.",
+    "Lightning precedes thunder sounds.", "Salt dissolves easily in water.",
+    "The Amazon is the largest rainforest.", "Penguins cannot fly in air.",
+    "Iron rusts when exposed to moisture.", "The Sahara is the largest hot desert.",
+    "Elephants are the largest land animals.", "Coffee contains caffeine naturally.",
+    "Venus is the hottest planet.", "Bamboo is the fastest growing plant.",
+    "Octopuses have three hearts.", "The Great Wall is in China.",
+    "Honey never spoils naturally.", "Dolphins sleep with one eye open.",
+    "Mount Everest is the tallest mountain.", "Bananas are technically berries.",
+    "Owls can rotate their heads significantly.", "The Nile is the longest river.",
+    "Kangaroos cannot walk backwards.", "Glass is made from sand.",
+    "Crocodiles cannot stick out their tongues.", "Mars is called the red planet.",
+    "Flamingos are born with gray feathers.", "Paper is made from wood pulp.",
+    "Sharks have no bones.", "The human body has 206 bones.",
+    "Snails can sleep for years.", "Chocolate comes from cacao beans.",
+    "Starfish have no brains.", "Giraffes have the same neck vertebrae as humans.",
+    "Rubber comes from tree sap.", "Mosquitoes are attracted to carbon dioxide.",
+    "The Eiffel Tower is in Paris.", "Tomatoes are fruits not vegetables.",
+    "Camels store fat in their humps.", "Pearls come from oysters.",
+    "Bats are the only flying mammals.", "Lemons contain citric acid.",
+    "The Dead Sea is extremely salty.", "Koalas sleep about twenty hours daily.",
+    "Copper conducts electricity well.", "Strawberries have seeds on the outside.",
+    "Antarctica is the coldest continent.", "Mushrooms are fungi not plants.",
+    "The human brain uses twenty percent of oxygen.", "Polar bears have black skin.",
+    "Silk comes from silkworms.", "Carrots were originally purple.",
+    "Hummingbirds can fly backwards.", "The Titanic sank in 1912.",
+    "Cows have four stomach compartments.", "Maple syrup comes from tree sap.",
+    "Seahorses mate for life.", "Bronze is a copper alloy.",
+    "Ostriches have the largest eyes.", "Pineapples take two years to grow.",
+    "The human nose can detect trillion scents.", "Jellyfish are ninety-five percent water.",
+    "Cotton grows on plants.", "Sloths are surprisingly good swimmers.",
+    "The Mona Lisa is in the Louvre.", "Avocados are berries technically.",
+    "Fireflies produce cold light.", "Wool comes from sheep.",
+    "Platypuses lay eggs.", "Corn has even row numbers.",
+    "The Atlantic Ocean is expanding.", "Cashews grow on apples.",
+    "Butterflies taste with their feet.", "Concrete strengthens over time.",
+    "Frogs absorb water through skin.", "The piano has eighty-eight keys.",
+    "Almonds are related to peaches.", "Cockroaches can live without heads.",
+    "Honey is bee vomit essentially.", "Vanilla comes from orchids.",
+    "Rattlesnakes add a rattle yearly.", "Steel is an iron alloy.",
+    "Lobsters were once prison food.", "The violin has four strings.",
+    "Peanuts grow underground.", "Dragonflies have six legs.",
+    "The Colosseum is in Rome.", "Cranberries bounce when ripe.",
+    "Earthworms have five hearts.", "Aluminum is very abundant.",
+    "Hippos secrete red sweat.", "Rice feeds half the world.",
+    "The clarinet is a woodwind.", "Walnuts look like brains.",
+    "Ants can lift fifty times weight.", "Limestone is sedimentary rock.",
+    "Seahorse males carry the babies.", "Tea originated in China.",
+    "The cello has four strings.", "Apples float in water.",
+    "Scorpions glow under UV light.", "Granite is igneous rock.",
+    "Shrimp hearts are in heads.", "Wheat is a type of grass.",
+    "The flute is very ancient.", "Cucumbers are ninety-six percent water.",
+    "Turtles can breathe through butts.", "Marble is metamorphic rock.",
+    "Parrotfish create beach sand.", "Barley is used in beer.",
+    "Harps have forty-seven strings.", "Watermelons are mostly water.",
+    "Reindeer eyes change color seasonally.", "Basalt is volcanic rock.",
+    "Hagfish produce lots of slime.", "Oats are a cereal grain.",
+    "Drums are percussion instruments.", "Grapes can explode in microwaves.",
+    "Chameleons change color for mood.", "Sandstone is sedimentary rock.",
+    "Electric eels are not eels.", "Rye is related to wheat.",
+    "Trumpets are brass instruments.", "Onions make people cry.",
+    "Axolotls can regenerate limbs.", "Obsidian is volcanic glass.",
+    "Pistol shrimp create sonic booms.", "Millet is drought resistant.",
+    "Saxophones are technically woodwinds.", "Garlic repels some insects.",
+    "Tardigrades survive extreme conditions.", "Quartz is very common.",
+    "Mantis shrimp see many colors.", "Sorghum feeds many people.",
+    "Oboes use double reeds.", "Potatoes are stem tubers.",
+    "Immortal jellyfish can reverse aging.", "Feldspar is in granite.",
+    "Box jellyfish are very venomous.", "Quinoa is a pseudocereal.",
+    "Bassoons are double reed instruments.", "Beets contain natural sugars.",
+    "Mimic octopuses impersonate other species.", "Mica splits into sheets.",
+    "Blue whales are largest ever.", "Buckwheat is not wheat.",
+    "French horns are difficult instruments.", "Spinach contains iron.",
+    "Cuttlefish have W-shaped pupils.", "Talc is the sofite mineral.",
+    "Greenland sharks live very long.", "Amaranth is very nutritious.",
+    "Bagpipes originated in Middle East.", "Kale is very healthy.",
+    "Giant squid have huge eyes.", "Diamond is the hardest mineral.",
+    "Narwhals have spiral tusks.", "Teff is an Ethiopian grain.",
+    "Accordions have bellows.", "Broccoli is a flower.",
+    "Goblin sharks have projectile jaws.", "Corundum includes rubies sapphires.",
+    "Vampire squid are not squid.", "Fonio is African ancient grain.",
+    "Banjos have five strings typically.", "Asparagus grows very quickly.",
+    "Blanket octopuses are sexually dimorphic.", "Topaz comes in many colors.",
+    "Anglerfish males fuse to females.", "Spelt is ancient wheat.",
+    "Ukuleles have four strings.", "Celery has negative calories myth.",
+    "Barreleye fish have transparent heads.", "Emeralds are green beryls.",
+    "Leafy seadragons camouflage perfectly.", "Freekeh is roasted wheat.",
+    "Mandolins have eight strings.", "Artichokes are flower buds.",
+    "Blobfish look normal underwater.", "Sapphires can be many colors.",
+    "Yeti crabs farm bacteria.", "Einkorn is ancient wheat.",
+    "Sitars have sympathetic strings.", "Fennel tastes like licorice.",
+    "Christmas tree worms are colorful.", "Rubies are red corundum.",
+    "Dumbo octopuses live deep.", "Kamut is ancient wheat.",
+]
 

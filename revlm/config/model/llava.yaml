@@ -3,7 +3,7 @@ class_name: VQAModel
 pt: null
 inner_params: ["model.language_model.layers.31.mlp.gate_proj.weight"] # conventional layer
 inner_params_vision: ["model.vision_tower.vision_model.encoder.layers.19.mlp.fc1.weight"]
-inner_params_lang: ["model.language_model.layers.31.mlp.gate_proj.weight"]
+inner_params_lang: ["model.language_model.layers.18.mlp.gate_proj.weight"]
 lang_scaler: 7  # for dual-layer embedding: concat(vis_layer, scaler * lang_layer)
 lang_scaler_sbert: 11 # 30
 processor_class: null

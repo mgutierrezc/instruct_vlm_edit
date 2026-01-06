@@ -385,16 +385,18 @@ class AutoLayer(ModularityCore):
     def find_best(self, dataset, layers, n_samples=None, n_aug=None, verbose=True):
         """Find best layers for vision and language.
         
-        Computes 5 scores per layer:
+        Computes per layer:
         - vision_Q: entangled <img,text> n×n pairs, cluster by image
         - language_Q: entangled <img,text> n×n pairs, cluster by text
         - harmonic: harmonic mean of vision_Q and language_Q
         - pure_vision_Q: <image, ""> with image augs, cluster by sample
         - pure_language_Q: <blank, text> with text augs, cluster by sample
+        - vision_bias: positive = image representation too weak (via BiasViz)
+        - text_bias: positive = text representation too weak (via BiasViz)
         
         Returns:
             best: Dict with best layers per category
-            scores: Dict with {layer: {5 scores}}
+            scores: Dict with {layer: {scores including bias}}
         """
         n_samples = n_samples or self.n_samples
         n_aug = n_aug or self.n_aug
@@ -590,6 +592,14 @@ class AutoLayer(ModularityCore):
         # Store SBERT baseline in scores metadata
         scores["__sbert_lang_Q__"] = sbert_lang_Q
         
+        # Compute layer-wise bias using BiasViz (uses loaded samples and BiasViz defaults)
+        if verbose:
+            print(f"\n[AutoLayer] Computing layer-wise bias...")
+        bias_scores = self.compute_layer_bias(list(scores.keys()), verbose=False)
+        for layer in scores:
+            if layer in bias_scores:
+                scores[layer].update(bias_scores[layer])
+        
         if verbose:
             print(f"\n{'='*70}")
             print("Best layers per metric:")
@@ -603,6 +613,64 @@ class AutoLayer(ModularityCore):
             print(f"{'='*70}")
         
         return best, scores
+
+    # ==================== Layer-wise Bias ====================
+
+    def compute_layer_bias(self, layers, n_bias_samples=3, verbose=True):
+        """Compute vision_bias and text_bias at each layer using BiasViz.
+        
+        Uses samples already loaded in self._images and self._texts (from find_best).
+        Uses BiasViz defaults (n_aug=3, diff_text="pool", etc.) except:
+        - mode="vision" (raw layer activations, no SBERT)
+        - pool_method from AutoLayer
+        
+        Args:
+            layers: List of layer names to compute bias for
+            n_bias_samples: Max samples for bias computation (default 3, for speed)
+        
+        Returns:
+            Dict[layer, {"vision_bias": float, "text_bias": float, ...}]
+        """
+        from .bias_viz import BiasViz
+        
+        if not self._images or not self._texts:
+            raise ValueError("No samples loaded. Call find_best() first or load samples manually.")
+        
+        # Cap samples for speed (each sample = 13 forward passes with n_aug=3)
+        n_use = min(n_bias_samples, len(self._images))
+        images = self._images[:n_use]
+        texts = self._texts[:n_use]
+        
+        if verbose:
+            print(f"[AutoLayer] Computing bias at {len(layers)} layers, {n_use} samples (capped from {len(self._images)})")
+        
+        bias_scores = {}
+        for layer in (tqdm(layers, desc="layer_bias") if verbose else layers):
+            # Create BiasViz with defaults, only override mode and pool_method
+            bv = BiasViz(self.config, self.wrapper, mode="vision", pool_method=self.pool_method)
+            bv._hook.remove()
+            bv._hook = bv._setup_hook(layer)
+            
+            # Add capped samples
+            for img, text in zip(images, texts):
+                bv.add_edit(img, text, [])  # empty cot, BiasViz uses diff_text="pool" by default
+            
+            # Get bias
+            result = bv.compute_bias()
+            bias_scores[layer] = {
+                "vision_bias": result["vis_bias"],
+                "vision_bias_std": result.get("vis_bias_std", 0.0),
+                "text_bias": result["text_bias"],
+                "text_bias_std": result.get("text_bias_std", 0.0),
+            }
+            
+            if verbose:
+                tqdm.write(f"  {layer[-50:]}: vis={result['vis_bias']:+.3f}, txt={result['text_bias']:+.3f}")
+            
+            bv.cleanup()
+            torch.cuda.empty_cache()
+        
+        return bias_scores
 
     # ==================== Save / Load / Aggregate ====================
 
@@ -723,6 +791,9 @@ class AutoLayer(ModularityCore):
         sample_layer = layers[0]
         harmonic_key = "harmonic_shifted" if "harmonic_shifted" in agg_scores[sample_layer] else "harmonic"
         
+        # Check if bimodal metrics exist
+        has_bimodal = "bimodal_and_Q" in agg_scores[sample_layer]
+        
         best = {
             "vision_Q": build_best_dict("vision_Q"),
             "language_Q": build_best_dict("language_Q"),
@@ -730,6 +801,12 @@ class AutoLayer(ModularityCore):
             "pure_vision_Q": build_best_dict("pure_vision_Q"),
             "pure_language_Q": build_best_dict("pure_language_Q"),
         }
+        
+        # Add bimodal metrics if available
+        if has_bimodal:
+            best["bimodal_and_Q"] = build_best_dict("bimodal_and_Q")
+            best["bimodal_or_Q"] = build_best_dict("bimodal_or_Q")
+            best["bimodal_and_or_Q"] = build_best_dict("bimodal_and_or_Q")
         
         print(f"Best layers (from mean):")
         for metric_name, bests in best.items():
@@ -754,11 +831,11 @@ class AutoLayer(ModularityCore):
                 return isinstance(sample_val, dict) and "mean" in sample_val
         return False
 
-    def plot(self, scores, figsize=(25, 4)):
-        """Plot Q scores vs layer index in 1 row, 5 columns.
+    def plot(self, scores, figsize=(30, 4)):
+        """Plot Q scores vs layer index in 1 row, 6 columns.
         
         Supports both single-run scores and aggregated scores (with error bars).
-        Columns: Bimodal AND Q, Vision Q, Language Q, Pure Vision Q, Pure Language Q
+        Columns: Bias, Bimodal AND Q, Vision Q, Language Q, Pure Vision Q, Pure Language Q
         """
         import matplotlib.pyplot as plt
         
@@ -787,17 +864,47 @@ class AutoLayer(ModularityCore):
         sample_layer = layers[0]
         has_bimodal = "bimodal_and_Q" in scores[sample_layer]
         has_pure = "pure_vision_Q" in scores[sample_layer]
+        has_bias = "vision_bias" in scores[sample_layer]
         
-        fig, axes = plt.subplots(1, 5, figsize=figsize)
+        fig, axes = plt.subplots(1, 6, figsize=figsize)
         
+        # Column 0: Bias panel (vision_bias green, text_bias blue)
+        ax_bias = axes[0]
+        if has_bias:
+            if is_agg:
+                vis_bias = np.array([scores[l]["vision_bias"]["mean"] for l in layers])
+                vis_bias_std = np.array([scores[l]["vision_bias"]["std"] for l in layers])
+                txt_bias = np.array([scores[l]["text_bias"]["mean"] for l in layers])
+                txt_bias_std = np.array([scores[l]["text_bias"]["std"] for l in layers])
+                ax_bias.errorbar(indices, vis_bias, yerr=vis_bias_std, fmt='o', ms=4, 
+                                capsize=2, color='green', alpha=0.7, label='vision_bias')
+                ax_bias.errorbar(indices, txt_bias, yerr=txt_bias_std, fmt='o', ms=4, 
+                                capsize=2, color='blue', alpha=0.7, label='text_bias')
+            else:
+                vis_bias = np.array([scores[l]["vision_bias"] for l in layers])
+                txt_bias = np.array([scores[l]["text_bias"] for l in layers])
+                ax_bias.scatter(indices, vis_bias, c='green', s=20, alpha=0.7, label='vision_bias')
+                ax_bias.scatter(indices, txt_bias, c='blue', s=20, alpha=0.7, label='text_bias')
+            ax_bias.axhline(y=0, color='red', linestyle='--', lw=1.5, label='baseline (0)')
+            ax_bias.set_xlabel('Layer Index')
+            ax_bias.set_ylabel('Bias (↓ better)')
+            ax_bias.set_title('Modality Bias\n(+vis: img weak, +txt: text weak)')
+            ax_bias.grid(alpha=0.3)
+            ax_bias.legend(fontsize=7)
+        else:
+            ax_bias.text(0.5, 0.5, 'No bias data\nRun compute_layer_bias()', 
+                        ha='center', va='center', transform=ax_bias.transAxes)
+            ax_bias.set_title('Modality Bias')
+        
+        # Columns 1-5: Q scores
         plot_data = [
-            (axes[0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
+            (axes[1], "bimodal_and_Q" if has_bimodal else "vision_Q", 
              'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
-            (axes[1], "vision_Q", 'Vision Q\n(<image, text>)'),
-            (axes[2], "language_Q", 'Language Q\n(<image, text>)'),
-            (axes[3], "pure_vision_Q" if has_pure else "vision_Q", 
+            (axes[2], "vision_Q", 'Vision Q\n(<image, text>)'),
+            (axes[3], "language_Q", 'Language Q\n(<image, text>)'),
+            (axes[4], "pure_vision_Q" if has_pure else "vision_Q", 
              'Pure Vision Q\n(<image, "">)' if has_pure else 'Vision Q'),
-            (axes[4], "pure_language_Q" if has_pure else "language_Q", 
+            (axes[5], "pure_language_Q" if has_pure else "language_Q", 
              'Pure Language Q\n(<blank, text>)' if has_pure else 'Language Q'),
         ]
         
@@ -846,11 +953,11 @@ class AutoLayer(ModularityCore):
                               label=f'SBERT ({sbert_lang_Q:.3f})')
                 ax.legend(fontsize=7, loc='best')
         
-        # Legend on first plot
-        axes[0].scatter([], [], c='green', s=30, label='vision')
-        axes[0].scatter([], [], c='orange', s=30, label='merger')
-        axes[0].scatter([], [], c='blue', s=30, label='language')
-        axes[0].legend(fontsize=8)
+        # Legend for layer types on second plot (first Q plot)
+        axes[1].scatter([], [], c='green', s=30, label='vision')
+        axes[1].scatter([], [], c='orange', s=30, label='merger')
+        axes[1].scatter([], [], c='blue', s=30, label='language')
+        axes[1].legend(fontsize=8)
         
         # Restore SBERT baseline to scores dict
         if sbert_lang_Q is not None:
