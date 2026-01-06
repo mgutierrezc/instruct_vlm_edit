@@ -238,7 +238,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
 
 
 
-def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 10):
+def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 100):
     """Edit sequentially, evaluating every `eval_every` batchess."""
     editor_name_check = getattr(config.editor, "_name", "").lower()
     # Retrieval-based editors don't modify weights - skip expensive deepcopy
@@ -333,7 +333,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             batch_out_dict = editeval(
                 model_old, model, edit_ds_sofar, editor,
                 related_texts, related_images, related_r_gen_df,
-                edit_subsample_size=None if is_last else 20,
+                edit_subsample_size=None if is_last else 40,
             )
             batch_out_dict['batch_idx'] = batch_idx + 1
             batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())

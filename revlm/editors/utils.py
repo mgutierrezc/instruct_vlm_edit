@@ -233,8 +233,9 @@ def pad_with_mosaic(img, area_pct: float = DEFAULT_AREA_PCT, max_size: int = Non
     tile_size = max(new_w, new_h) // n_tiles
     tile_size = max(tile_size, 32)  # minimum 32px tiles
     
-    # Create mosaic background
-    canvas = create_mosaic_background((new_w, new_h), tile_size=tile_size)
+    # Create mosaic background (no noise for single tile)
+    noise_prob = 0.0 if n_tiles == 1 else 0.2
+    canvas = create_mosaic_background((new_w, new_h), tile_size=tile_size, noise_prob=noise_prob)
     
     # Random position for original image (anywhere that fits)
     max_x = new_w - orig_w
@@ -486,7 +487,7 @@ class Augmenter:
             self._llm.eval()
         return self._llm, self._llm_tok
 
-    def image(self, img, use_mosaic: bool = None, max_size: int = 512, area_pct: float = None):
+    def image(self, img, use_mosaic: bool = None, max_size: int = 512, area_pct: float = None, n_tiles: int = 4):
         """Apply random image augmentations.
         
         Args:
@@ -494,6 +495,7 @@ class Augmenter:
             use_mosaic: Force mosaic on/off. None = random based on mosaic_prob
             max_size: Resize large images to this max dimension for speed
             area_pct: Override area percentage for mosaic padding (default: DEFAULT_AREA_PCT)
+            n_tiles: Number of tiles per row/col for mosaic (1 = single tile, more natural)
         """
         if isinstance(img, str):
             img = PILImage.open(img).convert("RGB")
@@ -511,7 +513,7 @@ class Augmenter:
             if self.dataset_name == "midas":
                 img = pad_with_midas_mosaic(img, area_pct=pct)
             else:
-                img = pad_with_mosaic(img, area_pct=pct)
+                img = pad_with_mosaic(img, area_pct=pct, n_tiles=n_tiles)
         
         return self.img_aug(img)
 

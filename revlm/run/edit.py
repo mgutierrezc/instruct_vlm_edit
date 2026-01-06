@@ -19,7 +19,7 @@ from revlm import *
 from revlm.config_utils import configure_args
 from .edit_utils import *
 
-def run_edit(config, sequential=False):
+def run_edit(config, sequential=False, eval_every=100):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
     
     # Enable wandb if sequential mode is used
@@ -37,7 +37,7 @@ def run_edit(config, sequential=False):
 
     # Step 2-3: Edit and Evaluate on all errors
     if sequential:
-        out_dict = edit_n_eval_seq(config, model, edit_ds, out_path)
+        out_dict = edit_n_eval_seq(config, model, edit_ds, out_path, eval_every=eval_every)
     else:
         out_dict = edit_n_eval_all(config, model, edit_ds, out_path)
 

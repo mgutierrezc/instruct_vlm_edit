@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from PIL import Image
-from .utils import brackets_to_periods, parent_module, Augmenter
+from ..utils import brackets_to_periods, parent_module, Augmenter
 
 
 class IKE_CHAIN(nn.Module):
@@ -50,22 +50,25 @@ class IKE_CHAIN(nn.Module):
         # Augmentation config (0 = disabled)
         self.n_aug_entry = int(getattr(cfg, "n_aug_entry", 0))  # Augmented entry points per edit # 1 
         self.n_aug_sent = int(getattr(cfg, "n_aug_sent", 0))    # Augmented sentence keys per edit # 1
+        self.aug_area_pct = float(getattr(cfg, "aug_area_pct", 0.99))  # Image area % for mosaic padding
         needs_aug = self.n_aug_entry > 0 or self.n_aug_sent > 0 or self.auto_k_method == "radius"
         dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
         self.augmenter = Augmenter(self.wrapper, dataset_name=dataset_name) if needs_aug else None
         
-        # Switch: set to True to plot score distributions in apply_to_dataset
-        self.plot_k_dist = False
+        # Plot settings
+        self.plot_k_dist = False  # Plot score distributions in apply_to_dataset
+        self.plot_edge_pct = 75   # Percentile threshold for edges in plot_codebook (higher = fewer edges)
 
         # Hook for VLM activations (supports dual-layer: vision + language)
         model_cfg = getattr(config, "model", config)
-        inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
         inner_params_vision = getattr(model_cfg, "inner_params_vision", [])
-        if not inner_params_lang:
-            raise ValueError("Requires config.model.inner_params_lang")
+        inner_params_lang = getattr(model_cfg, "inner_params_lang", [])
+        if not inner_params_vision:
+            raise ValueError("Requires config.model.inner_params_vision")
         
-        # Dual-layer mode: inner_params_lang (language) + inner_params_vision (vision)
-        self._dual_layer = len(inner_params_vision) > 0
+        # Dual-layer mode: vision + weighted language concat
+        self._dual_layer = len(inner_params_lang) > 0
+        self.lang_scaler = float(getattr(model_cfg, "lang_scaler", 30.0))  # Scale language embedding
         self._vision_act = None
         self._lang_act = None
         
@@ -77,9 +80,9 @@ class IKE_CHAIN(nn.Module):
                 lambda m, i, o, an=attr_name: setattr(self, an, i[0].detach() if isinstance(i[0], torch.Tensor) else None)
             )
         
-        # Language layer from inner_params_lang, vision layer from inner_params_vision
-        self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act")
-        self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act") if self._dual_layer else None
+        # Vision layer always, language layer only if dual
+        self._vision_hook = _setup_hook(inner_params_vision[0], "_vision_act")
+        self._lang_hook = _setup_hook(inner_params_lang[0], "_lang_act") if self._dual_layer else None
         
         # Blank image for language-only embedding (gray 224x224)
         self._blank_image = Image.new('RGB', (224, 224), (128, 128, 128)) if self._dual_layer else None
@@ -127,32 +130,27 @@ class IKE_CHAIN(nn.Module):
     def _encode_vlm(self, images, texts):
         """Get VLM embedding for <image, text> pairs.
         
-        Dual-layer mode: concat(vision(<image,text>), language(<blank,text>))
-        Single-layer mode: language(<image,text>) only
+        Single-layer mode: vision(<image,text>) only
+        Dual-layer mode: concat(vision(<image,text>), lang_scaler * language(<blank,text>))
         """
         self.model.eval()
         batch_size = len(images) if isinstance(images, list) else 1
         
-        if not self._dual_layer:
-            # Single-layer: language only
-            self._lang_act = None
-            inputs = self.wrapper.encode(images, texts, tokenize=False)
-            self.model(**inputs)
-            return self._pool_act(self._lang_act, batch_size)
-        
-        # Dual-layer mode
-        # Pass 1: <image, text> -> vision embedding
+        # Pass 1: <image, text> -> vision embedding (always)
         self._vision_act = None
         inputs = self.wrapper.encode(images, texts, tokenize=False)
         self.model(**inputs)
         vision_emb = self._pool_act(self._vision_act, batch_size)
         
-        # Pass 2: <blank_image, text> -> language embedding
+        if not self._dual_layer:
+            return vision_emb
+        
+        # Pass 2: <blank_image, text> -> language embedding (scaled)
         self._lang_act = None
         blank_imgs = [self._blank_image] * batch_size
         inputs = self.wrapper.encode(blank_imgs, texts, tokenize=False)
         self.model(**inputs)
-        lang_emb = self._pool_act(self._lang_act, batch_size)
+        lang_emb = self._pool_act(self._lang_act, batch_size) * self.lang_scaler
         
         return torch.cat([vision_emb, lang_emb], dim=-1)
 
@@ -163,7 +161,7 @@ class IKE_CHAIN(nn.Module):
             return 0.0
         aug_keys = []
         for _ in range(self.n_radiusaug_samples):
-            aug_img = self.augmenter.image(img)
+            aug_img = self.augmenter.image(img, area_pct=self.aug_area_pct)
             aug_key = self._encode_vlm([aug_img], [text])
             aug_keys.append(aug_key)
         aug_keys = torch.cat(aug_keys, dim=0)  # [N, D]
@@ -176,7 +174,7 @@ class IKE_CHAIN(nn.Module):
         # Positive: augmented image + augmented text
         pos_dists = []
         for _ in range(self.n_positive_samples):
-            aug_img = self.augmenter.image(img)
+            aug_img = self.augmenter.image(img, area_pct=self.aug_area_pct)
             aug_text = self.augmenter.question(text) if text else ""
             pos_key = self._encode_vlm([aug_img], [aug_text])
             pos_dists.append(float(torch.norm(pos_key - key)))
@@ -198,7 +196,7 @@ class IKE_CHAIN(nn.Module):
         # Short: median dist to positive samples (augmented image + augmented text)
         pos_dists = []
         for _ in range(self.n_positive_samples):
-            aug_img = self.augmenter.image(img)
+            aug_img = self.augmenter.image(img, area_pct=self.aug_area_pct)
             aug_text = self.augmenter.question(text) if text else ""
             pos_key = self._encode_vlm([aug_img], [aug_text])
             pos_dists.append(float(torch.norm(pos_key - key)))
@@ -254,6 +252,7 @@ class IKE_CHAIN(nn.Module):
                 "downstream_idx": sent_indices[i+1:],
                 "retrieve": neighbors,
                 "is_aug": False,
+                "aug_idx": 0,  # 0 = raw (no augmentation)
                 "edit_idx": self._edit_count
             })
             imgs.append(img)
@@ -264,6 +263,7 @@ class IKE_CHAIN(nn.Module):
             "downstream_idx": sent_indices,
             "retrieve": [],
             "is_aug": False,
+            "aug_idx": 0,
             "edit_idx": self._edit_count
         })
         imgs.append(img)
@@ -275,6 +275,7 @@ class IKE_CHAIN(nn.Module):
             "downstream_idx": sent_indices,
             "retrieve": [answer_text] if answer_text else [],
             "is_aug": False,
+            "aug_idx": 0,
             "edit_idx": self._edit_count
         })
         imgs.append(img)
@@ -282,23 +283,26 @@ class IKE_CHAIN(nn.Module):
         
         # Augmented entry points (for text/image generality)
         if self.augmenter and self.n_aug_entry > 0:
-            for _ in range(self.n_aug_entry):
-                aug_img = self.augmenter.image(img)
+            for aug_round in range(self.n_aug_entry):
+                aug_img = self.augmenter.image(img, area_pct=self.aug_area_pct)
+                aug_idx = aug_round + 1  # 1, 2, 3, ...
                 # Augmented <img, ""> entry
                 self.codebook.append({
                     "downstream_idx": sent_indices,
                     "retrieve": [],
                     "is_aug": True,
+                    "aug_idx": aug_idx,
                     "edit_idx": self._edit_count
                 })
                 imgs.append(aug_img)
                 texts.append("")
-                # Augmented <img, question> entry (with text augmentation)
-                aug_q = self.augmenter.question(question) if question else ""
+                # Augmented <img, question> entry (image-only, no text augmentation)
+                aug_q = question
                 self.codebook.append({
                     "downstream_idx": sent_indices,
                     "retrieve": [answer_text] if answer_text else [],
                     "is_aug": True,
+                    "aug_idx": aug_idx,
                     "edit_idx": self._edit_count
                 })
                 imgs.append(aug_img)
@@ -306,8 +310,9 @@ class IKE_CHAIN(nn.Module):
         
         # Augmented sentence keys (for image generality on chain following)
         if self.augmenter and self.n_aug_sent > 0:
-            for _ in range(self.n_aug_sent):
-                aug_img = self.augmenter.image(img)
+            for aug_round in range(self.n_aug_sent):
+                aug_img = self.augmenter.image(img, area_pct=self.aug_area_pct)
+                aug_idx = aug_round + 1  # 1, 2, 3, ...
                 for i, s in enumerate(cot_sents):
                     # Same neighbor window as non-augmented
                     w = self.neighbor_window
@@ -319,6 +324,7 @@ class IKE_CHAIN(nn.Module):
                         "downstream_idx": sent_indices[i+1:],
                         "retrieve": neighbors,
                         "is_aug": True,
+                        "aug_idx": aug_idx,
                         "edit_idx": self._edit_count
                     })
                     imgs.append(aug_img)
@@ -624,8 +630,10 @@ class IKE_CHAIN(nn.Module):
         
         n_before = len(self.codebook)
         added = 0
+        data = getattr(edit_ds, "data", [])
+        total = len(data)
         
-        for ex in getattr(edit_ds, "data", []):
+        for i, ex in enumerate(data):
             # Skip already added edits (for sequential mode)
             uid = ex.get("uid") or (ex.get("image"), ex.get("question"))
             if uid in self._added_uids:
@@ -644,6 +652,7 @@ class IKE_CHAIN(nn.Module):
                 self._add_edit(img, q, sents, ans)
                 self._added_uids.add(uid)
                 added += 1
+                print(f"  [{i+1}/{total}] +{len(sents)} sents, {len(self.codebook)} keys", flush=True)
         
         n_after = len(self.codebook)
         mem_mb = self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0
@@ -686,7 +695,7 @@ class IKE_CHAIN(nn.Module):
             stats["radius_method"] = self.radius_method
         return stats
 
-    def plot_codebook(self, max_edits=20, figsize=(5, 3)):
+    def plot_codebook(self, max_edits=20, figsize=(6, 5)):
         """Plot force-directed network of keys based on pairwise L2 distance.
         
         Args:
@@ -721,10 +730,11 @@ class IKE_CHAIN(nn.Module):
         for i, idx in enumerate(indices):
             G.add_node(i, 
                        is_aug=self.codebook[idx].get("is_aug", False),
+                       aug_idx=self.codebook[idx].get("aug_idx", 0),
                        edit_idx=self.codebook[idx].get("edit_idx", 0))
         
         # Add edges (only keep stronger connections for cleaner layout)
-        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], 90)
+        thresh = np.percentile(sims[np.triu_indices(len(indices), k=1)], self.plot_edge_pct)
         for i in range(len(indices)):
             for j in range(i + 1, len(indices)):
                 if sims[i, j] > thresh:
@@ -733,28 +743,38 @@ class IKE_CHAIN(nn.Module):
         # Spring layout
         pos = nx.spring_layout(G, weight='weight', seed=42, k=2/np.sqrt(len(indices)))
         
-        # Split nodes by aug status
-        raw_nodes = [i for i in G.nodes if not G.nodes[i]['is_aug']]
-        aug_nodes = [i for i in G.nodes if G.nodes[i]['is_aug']]
+        # Shapes by aug_idx: 0=circle (raw), 1=triangle, 2=square, 3=diamond, 4=pentagon, ...
+        AUG_SHAPES = ['o', '^', 's', 'D', 'p', '*', 'h', 'v', '<', '>']  # 10 shapes
+        
+        # Group nodes by aug_idx
+        nodes_by_aug = {}
+        for i in G.nodes:
+            aug_idx = G.nodes[i]['aug_idx']
+            if aug_idx not in nodes_by_aug:
+                nodes_by_aug[aug_idx] = []
+            nodes_by_aug[aug_idx].append(i)
         
         # Colors by edit index
-        edit_indices = {i: G.nodes[i]['edit_idx'] for i in G.nodes}
         n_edits = len(selected_edits)
         cmap = plt.cm.get_cmap('tab20', n_edits)
-        raw_colors = [cmap(edit_indices[i] % 20) for i in raw_nodes]
-        aug_colors = [cmap(edit_indices[i] % 20) for i in aug_nodes]
         
         # Plot
         fig, ax = plt.subplots(figsize=figsize)
         nx.draw_networkx_edges(G, pos, alpha=0.15, width=0.1, ax=ax)
-        # Raw nodes: circles
-        nx.draw_networkx_nodes(G, pos, nodelist=raw_nodes, node_color=raw_colors, node_size=20, alpha=0.8, node_shape='o', ax=ax)
-        # Aug nodes: triangles
-        nx.draw_networkx_nodes(G, pos, nodelist=aug_nodes, node_color=aug_colors, node_size=20, alpha=0.8, node_shape='^', ax=ax)
+        
+        # Draw each aug_idx group with different shape
+        for aug_idx in sorted(nodes_by_aug.keys()):
+            nodes = nodes_by_aug[aug_idx]
+            colors = [cmap(G.nodes[i]['edit_idx'] % 20) for i in nodes]
+            shape = AUG_SHAPES[aug_idx % len(AUG_SHAPES)]
+            nx.draw_networkx_nodes(G, pos, nodelist=nodes, node_color=colors, 
+                                   node_size=20, alpha=0.8, node_shape=shape, ax=ax)
         
         # Legend
-        ax.scatter([], [], c='gray', s=15, marker='o', label=f'raw ({len(raw_nodes)})')
-        ax.scatter([], [], c='gray', s=15, marker='^', label=f'aug ({len(aug_nodes)})')
+        for aug_idx in sorted(nodes_by_aug.keys()):
+            shape = AUG_SHAPES[aug_idx % len(AUG_SHAPES)]
+            label = f'raw ({len(nodes_by_aug[aug_idx])})' if aug_idx == 0 else f'aug{aug_idx} ({len(nodes_by_aug[aug_idx])})'
+            ax.scatter([], [], c='gray', s=15, marker=shape, label=label)
         ax.legend(loc='lower left', fontsize=5, markerscale=0.7)
         ax.set_title(f'Codebook Space ({n_edits} edits)', fontsize=10)
         ax.axis('off')

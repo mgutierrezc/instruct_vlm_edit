@@ -23,6 +23,7 @@ Usage:
 from .modularity_core import ModularityCore, NetBone
 from .auto_scaler import AutoScaler
 from .auto_layer import AutoLayer
+from .bias_viz import BiasViz
 
-__all__ = ["ModularityCore", "NetBone", "AutoScaler", "AutoLayer"]
+__all__ = ["ModularityCore", "NetBone", "AutoScaler", "AutoLayer", "CodebookViz"]
 

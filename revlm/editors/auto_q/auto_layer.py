@@ -754,12 +754,11 @@ class AutoLayer(ModularityCore):
                 return isinstance(sample_val, dict) and "mean" in sample_val
         return False
 
-    def plot(self, scores, figsize=(15, 6)):
-        """Plot all Q scores vs layer index.
+    def plot(self, scores, figsize=(25, 4)):
+        """Plot Q scores vs layer index in 1 row, 5 columns.
         
         Supports both single-run scores and aggregated scores (with error bars).
-        Top row: Entangled scores (Vision Q, Language Q, Harmonic)
-        Bottom row: Pure scores (Pure Vision Q, Pure Language Q)
+        Columns: Bimodal AND Q, Vision Q, Language Q, Pure Vision Q, Pure Language Q
         """
         import matplotlib.pyplot as plt
         
@@ -784,38 +783,23 @@ class AutoLayer(ModularityCore):
         
         indices = np.arange(len(layers))
         
-        # Check if pure scores and shifted scores exist
+        # Check if scores exist
         sample_layer = layers[0]
-        has_pure = "pure_vision_Q" in scores[sample_layer]
         has_bimodal = "bimodal_and_Q" in scores[sample_layer]
-        has_shifted = "harmonic_shifted" in scores[sample_layer]
+        has_pure = "pure_vision_Q" in scores[sample_layer]
         
-        # Use shifted harmonic if available (more meaningful with negatives)
-        harmonic_key = "harmonic_shifted" if has_shifted else "harmonic"
+        fig, axes = plt.subplots(1, 5, figsize=figsize)
         
-        if has_pure:
-            fig, axes = plt.subplots(2, 4, figsize=(18, 8))
-            
-            plot_data = [
-                (axes[0, 0], "vision_Q", 'Vision Q\n(<image, text>)'),
-                (axes[0, 1], "language_Q", 'Language Q\n(<image, text>)'),
-                (axes[0, 2], "pure_vision_Q", 'Pure Vision Q\n(<image, "">)'),
-                (axes[0, 3], "pure_language_Q", 'Pure Language Q\n(<blank, text>)'),
-                (axes[1, 0], harmonic_key, 'Harmonic Mean\n(Vision & Language)'),
-                (axes[1, 1], "bimodal_and_Q" if has_bimodal else harmonic_key, 
-                 'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Harmonic'),
-                (axes[1, 2], "bimodal_or_Q" if has_bimodal else harmonic_key, 
-                 'Bimodal OR Q\n(same img OR text)' if has_bimodal else 'Harmonic'),
-                (axes[1, 3], "bimodal_and_or_Q" if has_bimodal else harmonic_key, 
-                 'Bimodal AND/OR Q\n(weighted)' if has_bimodal else 'Harmonic'),
-            ]
-        else:
-            fig, axes = plt.subplots(1, 3, figsize=(12, 4))
-            plot_data = [
-                (axes[0], "vision_Q", 'Vision Q'),
-                (axes[1], "language_Q", 'Language Q'),
-                (axes[2], harmonic_key, 'Harmonic'),
-            ]
+        plot_data = [
+            (axes[0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
+             'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
+            (axes[1], "vision_Q", 'Vision Q\n(<image, text>)'),
+            (axes[2], "language_Q", 'Language Q\n(<image, text>)'),
+            (axes[3], "pure_vision_Q" if has_pure else "vision_Q", 
+             'Pure Vision Q\n(<image, "">)' if has_pure else 'Vision Q'),
+            (axes[4], "pure_language_Q" if has_pure else "language_Q", 
+             'Pure Language Q\n(<blank, text>)' if has_pure else 'Language Q'),
+        ]
         
         for ax, key, title in plot_data:
             if is_agg:
@@ -863,14 +847,10 @@ class AutoLayer(ModularityCore):
                 ax.legend(fontsize=7, loc='best')
         
         # Legend on first plot
-        if has_pure:
-            ax0 = axes[0, 0]
-        else:
-            ax0 = axes[0]
-        ax0.scatter([], [], c='green', s=30, label='vision')
-        ax0.scatter([], [], c='orange', s=30, label='merger')
-        ax0.scatter([], [], c='blue', s=30, label='language')
-        ax0.legend(fontsize=8)
+        axes[0].scatter([], [], c='green', s=30, label='vision')
+        axes[0].scatter([], [], c='orange', s=30, label='merger')
+        axes[0].scatter([], [], c='blue', s=30, label='language')
+        axes[0].legend(fontsize=8)
         
         # Restore SBERT baseline to scores dict
         if sbert_lang_Q is not None:
