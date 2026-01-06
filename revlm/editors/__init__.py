@@ -7,7 +7,7 @@ from .balancedit import BalancEdit
 from .ike import IKE
 from .ike_cot import IKE_COT
 from .ike_chain import IKE_CHAIN
-from .auto_q import AutoLayer, AutoScaler, ModularityCore  # Layer/scaler selection tools
+from .auto_q import AutoLayer, AutoScaler, ModularityCore, BiasLayer  # Layer/scaler selection tools
 
 
 def get_editor(config, model):
