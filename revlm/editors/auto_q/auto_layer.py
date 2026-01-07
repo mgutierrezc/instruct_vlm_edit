@@ -754,11 +754,15 @@ class AutoLayer(ModularityCore):
                 return isinstance(sample_val, dict) and "mean" in sample_val
         return False
 
-    def plot(self, scores, figsize=(25, 4)):
-        """Plot Q scores vs layer index in 1 row, 5 columns.
+    def plot(self, scores, bias_scores=None, figsize=None):
+        """Plot Q scores vs layer index, optionally with bias scores.
         
         Supports both single-run scores and aggregated scores (with error bars).
-        Columns: Bimodal AND Q, Vision Q, Language Q, Pure Vision Q, Pure Language Q
+        
+        Args:
+            scores: Q scores dict from find_best() or load_results_k()
+            bias_scores: Optional bias scores from BiasLayer.load_results_k()
+            figsize: Optional figure size, defaults based on number of columns
         """
         import matplotlib.pyplot as plt
         
@@ -788,18 +792,85 @@ class AutoLayer(ModularityCore):
         has_bimodal = "bimodal_and_Q" in scores[sample_layer]
         has_pure = "pure_vision_Q" in scores[sample_layer]
         
-        fig, axes = plt.subplots(1, 5, figsize=figsize)
+        # Determine number of columns (skip pure scores if bias is included)
+        if bias_scores:
+            n_cols = 4  # Bias + Bimodal AND Q + Vision Q + Language Q
+        else:
+            n_cols = 5  # All 5 Q scores
+        if figsize is None:
+            figsize = (5 * n_cols, 4)
         
-        plot_data = [
-            (axes[0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
-             'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
-            (axes[1], "vision_Q", 'Vision Q\n(<image, text>)'),
-            (axes[2], "language_Q", 'Language Q\n(<image, text>)'),
-            (axes[3], "pure_vision_Q" if has_pure else "vision_Q", 
-             'Pure Vision Q\n(<image, "">)' if has_pure else 'Vision Q'),
-            (axes[4], "pure_language_Q" if has_pure else "language_Q", 
-             'Pure Language Q\n(<blank, text>)' if has_pure else 'Language Q'),
-        ]
+        fig, axes = plt.subplots(1, n_cols, figsize=figsize)
+        
+        # Column offset for Q plots (1 if bias, 0 otherwise)
+        col_offset = 1 if bias_scores else 0
+        
+        # Plot bias scores in first column if provided
+        if bias_scores:
+            ax_bias = axes[0]
+            # Check if bias is aggregated
+            sample_bias_layer = list(bias_scores.keys())[0]
+            bias_is_agg = isinstance(bias_scores[sample_bias_layer]["vision_bias"], dict)
+            
+            if bias_is_agg:
+                vis_bias = np.array([bias_scores[l]["vision_bias"]["mean"] for l in layers if l in bias_scores])
+                vis_bias_std = np.array([bias_scores[l]["vision_bias"]["std"] for l in layers if l in bias_scores])
+                txt_bias = np.array([bias_scores[l]["text_bias"]["mean"] for l in layers if l in bias_scores])
+                txt_bias_std = np.array([bias_scores[l]["text_bias"]["std"] for l in layers if l in bias_scores])
+            else:
+                vis_bias = np.array([bias_scores[l]["vision_bias"] for l in layers if l in bias_scores])
+                txt_bias = np.array([bias_scores[l]["text_bias"] for l in layers if l in bias_scores])
+            
+            bias_indices = np.arange(len(vis_bias))
+            
+            # Plot lines
+            ax_bias.plot(bias_indices, vis_bias, color='green', lw=1.5, alpha=0.8, label='vision_bias')
+            ax_bias.plot(bias_indices, txt_bias, color='blue', lw=1.5, alpha=0.8, label='text_bias')
+            
+            # Add error bands if aggregated
+            if bias_is_agg:
+                ax_bias.fill_between(bias_indices, vis_bias - vis_bias_std, vis_bias + vis_bias_std, 
+                                    color='green', alpha=0.2)
+                ax_bias.fill_between(bias_indices, txt_bias - txt_bias_std, txt_bias + txt_bias_std, 
+                                    color='blue', alpha=0.2)
+            
+            # Mark layer type regions
+            for i, l in enumerate(layers):
+                if l in bias_scores:
+                    if l in vis_layers:
+                        ax_bias.axvspan(i - 0.5, i + 0.5, color='green', alpha=0.05)
+                    elif l in merger_layers:
+                        ax_bias.axvspan(i - 0.5, i + 0.5, color='orange', alpha=0.15)
+                    elif l in lang_layers:
+                        ax_bias.axvspan(i - 0.5, i + 0.5, color='blue', alpha=0.05)
+            
+            ax_bias.axhline(y=0, color='red', linestyle='--', lw=1.5, alpha=0.7)
+            ax_bias.set_yscale('symlog', linthresh=10)
+            ax_bias.set_xlabel('Layer Index')
+            ax_bias.set_ylabel('Bias')
+            ax_bias.set_title('Uni-modality Bias (↑ worse)')
+            ax_bias.grid(alpha=0.3, which='both')
+            ax_bias.legend(fontsize=8, loc='best')
+        
+        # Q score plots (skip pure scores if bias is included)
+        if bias_scores:
+            plot_data = [
+                (axes[col_offset + 0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
+                 'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
+                (axes[col_offset + 1], "vision_Q", 'Vision Q\n(<image, text>)'),
+                (axes[col_offset + 2], "language_Q", 'Language Q\n(<image, text>)'),
+            ]
+        else:
+            plot_data = [
+                (axes[col_offset + 0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
+                 'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
+                (axes[col_offset + 1], "vision_Q", 'Vision Q\n(<image, text>)'),
+                (axes[col_offset + 2], "language_Q", 'Language Q\n(<image, text>)'),
+                (axes[col_offset + 3], "pure_vision_Q" if has_pure else "vision_Q", 
+                 'Pure Vision Q\n(<image, "">)' if has_pure else 'Vision Q'),
+                (axes[col_offset + 4], "pure_language_Q" if has_pure else "language_Q", 
+                 'Pure Language Q\n(<blank, text>)' if has_pure else 'Language Q'),
+            ]
         
         for ax, key, title in plot_data:
             if is_agg:
@@ -846,11 +917,12 @@ class AutoLayer(ModularityCore):
                               label=f'SBERT ({sbert_lang_Q:.3f})')
                 ax.legend(fontsize=7, loc='best')
         
-        # Legend on first plot
-        axes[0].scatter([], [], c='green', s=30, label='vision')
-        axes[0].scatter([], [], c='orange', s=30, label='merger')
-        axes[0].scatter([], [], c='blue', s=30, label='language')
-        axes[0].legend(fontsize=8)
+        # Legend on first Q plot (or second if bias is present)
+        legend_ax = axes[col_offset]
+        legend_ax.scatter([], [], c='green', s=30, label='vision')
+        legend_ax.scatter([], [], c='orange', s=30, label='merger')
+        legend_ax.scatter([], [], c='blue', s=30, label='language')
+        legend_ax.legend(fontsize=8)
         
         # Restore SBERT baseline to scores dict
         if sbert_lang_Q is not None:

@@ -24,13 +24,13 @@ from revlm.config_utils import configure_args
 from revlm.editors.auto_q.bias_layer import BiasLayer
 
 
-def run_bias_layer(config, n_runs=10, n_samples=3, pool_method="mean", overwrite=False):
+def run_bias_layer(config, n_runs=10, n_samples=10, pool_method="mean", overwrite=False):
     """Run BiasLayer analysis k times for error bars.
     
     Args:
         config: Config object
         n_runs: Number of bootstrap runs
-        n_samples: Samples per run (each = 13 forward passes with n_aug=3)
+        n_samples: Samples per run (uses 95th percentile across samples)
         pool_method: "mean" or "last" token pooling
         overwrite: If False, skip runs that already have saved results
     """
@@ -50,7 +50,7 @@ def run_bias_layer(config, n_runs=10, n_samples=3, pool_method="mean", overwrite
     # Run k times
     for run_id in range(n_runs):
         # Check if this run already exists
-        out_path = os.path.join(out_dir, f"{model_tag}_run{run_id}.json")
+        out_path = os.path.join(out_dir, f"{model_tag}_{pool_method}_run{run_id}.json")
         if not overwrite and os.path.exists(out_path):
             print(f"Run {run_id+1}/{n_runs} already exists, skipping", flush=True)
             continue
@@ -86,7 +86,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="all", choices=["train", "test", "all"])
     
     # BiasLayer params
-    parser.add_argument("--n_samples", type=int, default=3, help="Samples per run (default 3 for speed)")
+    parser.add_argument("--n_samples", type=int, default=10, help="Samples per run")
     parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
     parser.add_argument("--pool_method", type=str, default="mean", choices=["mean", "last"], help="Pool method for activations")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
