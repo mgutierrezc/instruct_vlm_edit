@@ -75,6 +75,9 @@ if __name__ == "__main__":
     config = configure_args(args, config_path="revlm/config/config.yaml")
     config.coe_pt = not args.no_coe_pt
     config.overwrite = False
+    config.subsample = 0
+    config.rationale = False
+    config.cot = False
     
     run_coe_only(config)
 
