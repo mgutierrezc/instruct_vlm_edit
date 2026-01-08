@@ -190,6 +190,7 @@ class GRACEAdaptor(torch.nn.Module):
         self.device = layer.weight.device
         self.config = config
         self.num_pert = getattr(config, 'num_pert', 10)
+        self.pool_method = getattr(config, 'pool_method', 'last')  # "mean" or "last"
         self.key_id = -1
     
         if transpose:
@@ -229,6 +230,16 @@ class GRACEAdaptor(torch.nn.Module):
         half = (sd / 2) - self.epsilons.new_tensor(1e-5)
         self.epsilons[nearest_key] = half
         self.epsilons[-1] = sd / 2
+
+    def _pool_activation(self, act, safe_key_id):
+        """Extract key/query from activation based on pool_method."""
+        if act.dim() == 3:
+            if self.pool_method == "mean":
+                return act.mean(dim=1)  # [B, H]
+            else:  # "last" - use position
+                return act[:, safe_key_id, :]
+        else:
+            return act.mean(dim=0, keepdim=True)
     
     def forward(self, *args):
         layer_out = self.layer(*args)
@@ -247,14 +258,8 @@ class GRACEAdaptor(torch.nn.Module):
                 return layer_out
 
             # Initialize on first forward pass during training (GRACE.edit sets edit_label & key_id)
-            if args[0].dim() == 3:
-                init_query = args[0][:, safe_key_id, :]
-            else:
-                init_query = args[0].mean(dim=0, keepdim=True)
-            if len(layer_out.shape) == 3:
-                init_value_out = layer_out[:, safe_key_id, :]
-            else:
-                init_value_out = layer_out
+            init_query = self._pool_activation(args[0], safe_key_id)
+            init_value_out = self._pool_activation(layer_out, safe_key_id)
 
             key, value, epsilon, key_label = self.init_key_value(init_query, init_value_out)
             self.keys = key
@@ -263,10 +268,7 @@ class GRACEAdaptor(torch.nn.Module):
             self.key_labels = key_label
 
         # Compute query for retrieval (handles both 2D and 3D activations)
-        if args[0].dim() == 3:
-            query = args[0][:, safe_key_id, :]
-        else:
-            query = args[0].mean(dim=0, keepdim=True)
+        query = self._pool_activation(args[0], safe_key_id)
         
         # --- compute distance from query to all keys and find the closest key ---
         if self.dist_fn == "euc":
@@ -283,19 +285,13 @@ class GRACEAdaptor(torch.nn.Module):
         if getattr(self, "iter", 0) == 0:
             if smallest_distance > (self.init_epsilon + self.epsilons[nearest_key]):
                 # No close key → make a new key
-                if len(layer_out.shape) == 3:
-                    value_out = layer_out[:, safe_key_id, :]
-                else:
-                    value_out = layer_out
+                value_out = self._pool_activation(layer_out, safe_key_id)
                 self.keys, self.values, self.epsilons, self.key_labels = self.add_key(query, value_out)
                 self.chosen_key = len(self.keys) - 1
             else:
                 # Handle conflicts with nearest key
                 if not self.label_match(self.edit_label, self.key_labels[nearest_key]):
-                    if len(layer_out.shape) == 3:
-                        value_out = layer_out[:, safe_key_id, :]
-                    else:
-                        value_out = layer_out
+                    value_out = self._pool_activation(layer_out, safe_key_id)
                     self.keys, self.values, self.epsilons, self.key_labels = self.add_key(query, value_out)
                     self.split_epsilons_in_half(nearest_key, smallest_distance)
                     self.chosen_key = len(self.keys) - 1

@@ -81,6 +81,7 @@ def editeval(
 		related_images: Mapping[int, Sequence[Any]],
 		related_r_gen_df: pd.DataFrame,
 		related_coe_df: pd.DataFrame,
+		coe_pt: bool = True,
 		unrelated_ds=None,
 		loc_sample_size=100,
 		use_hard_locality: bool = True,
@@ -88,6 +89,7 @@ def editeval(
 		lambda_loc: float = 1.0,
 		gen_agg: str = "harmonic",
 		edit_subsample_size: int = None,
+		edit_time: float = None,
 	) -> Dict[str, float]:
 	"""Combined metric: rel + λ_gen * gen + λ_loc * loc.
 	
@@ -95,6 +97,8 @@ def editeval(
 	use_hard_locality: if True, also compute hard_locality (top-k similar unrelated questions).
 	edit_subsample_size: if set, cap edit_ds to this many samples (for intermediate checkpoints).
 	related_coe_df: DataFrame from get_coe_gen_input for COE generality.
+	coe_pt: if True, perturb COE questions with rephrased variants.
+	edit_time: total time spent editing (seconds), used to compute time_per_edit.
 	"""
 
 	if hasattr(editor, "plot_codebook"):
@@ -130,9 +134,14 @@ def editeval(
 	print(f"Image Generality: {igen:.4f}", flush=True)
 
 	t_coe = time.time()
-	coe_gen = coe_generality(model_new, edit_ds, related_coe_df, editor=editor)
+	coe_gen = coe_generality(
+		model_new, edit_ds, related_coe_df,
+		related_texts=related_texts,
+		perturb_questions=coe_pt,
+		editor=editor,
+	)
 	print(f"[Timing] coe_generality: {time.time() - t_coe:.2f}s", flush=True)
-	print(f"COE Generality: {coe_gen:.4f}", flush=True)
+	print(f"COE Generality: {coe_gen:.4f} (coe_pt={coe_pt})", flush=True)
 
 	t_rgen = time.time()
 	rgen = rationale_generality(model_new, edit_ds, related_r_gen_df, editor=editor)
@@ -176,8 +185,9 @@ def editeval(
 		gen = 0.5 * (tgen + igen + rgen)
 
 	score = rel + lambda_gen * gen + lambda_loc * loc
+	n_edits = len(edit_ds.data)
 
-	return {
+	result = {
 		"reliability": float(rel),
 		"text_generality": float(tgen),
 		"image_generality": float(igen),
@@ -188,8 +198,12 @@ def editeval(
 		# "edit1_generality": float(edit1),
 		# "editk_generality": float(editk),
 		"hm": float(score),
-		"n_edits": float(len(edit_ds.data)),
+		"n_edits": float(n_edits),
 	}
+	if edit_time is not None and n_edits > 0:
+		result["edit_time"] = float(edit_time)
+		result["time_per_edit"] = float(edit_time / n_edits)
+	return result
 
 
 def reliability(model_new: Any, edit_ds: Any) -> float:
@@ -565,16 +579,36 @@ def coe_generality(
     model_new: Any,
     edit_ds: Any,
     related_coe_df: pd.DataFrame,
+    related_texts: Dict[str, List[str]] = None,
+    perturb_questions: bool = False,
     editor: Any = None,
 ) -> float:
     """Accuracy on COE-generated images (same question, synthetic images).
     related_coe_df: pd.DataFrame from get_coe_gen_input with uid, cid, image_path columns
+    related_texts: rephrased questions per uid (from text_generality input)
+    perturb_questions: if True, replace questions with random rephrased variants
     """
     if related_coe_df.empty:
         return 0.0
     ds = copy.deepcopy(edit_ds)
     edit_uids = {str(ex["uid"]) for ex in edit_ds.data}
     related_coe_df = related_coe_df[related_coe_df["uid"].isin(edit_uids)].copy()
+
+    # Optionally perturb questions with rephrased variants (3 random per uid)
+    if perturb_questions and related_texts:
+        rng = random.Random(333)
+        for uid in related_coe_df["uid"].unique():
+            variants = related_texts.get(str(uid), [])
+            mask = related_coe_df["uid"] == uid
+            n_samples = mask.sum()
+            if variants and n_samples > 0:
+                # Sample without replacement (pad with cycling if fewer variants)
+                k = min(n_samples, len(variants))
+                selected = rng.sample(variants, k)
+                while len(selected) < n_samples:
+                    selected.append(variants[len(selected) % len(variants)])
+                related_coe_df.loc[mask, "question"] = selected
+
     related_coe_df['uid'] = related_coe_df['cid'].astype(str)  # use cid as row id
 
     ds.data = ds.df2data(related_coe_df)

@@ -191,9 +191,10 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
             editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
         if hasattr(model, "model"):
             model.model.eval()
+    edit_time = time.time() - t2  # capture edit time before generation
     edit_ds.task_generate(model, use_cache=False)
     print10(edit_ds, label="model_new")
-    print(f"Total time: {time.time() - t2:.2f}s", flush=True)
+    print(f"Edit time: {edit_time:.2f}s", flush=True)
 
     # Snap post-edit predictions on the edit set to a separate folder, analogous to `pred`.
     # `configure_args` already guarantees `config.pred_postedit_dir` is a valid directory,
@@ -222,6 +223,8 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         related_images,
         related_r_gen_df,
         related_coe_df,
+        coe_pt=getattr(config, "coe_pt", True),
+        edit_time=edit_time,
     )
     # add a job finish time
     out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
@@ -271,6 +274,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     all_out_dicts = []
     seen_idxs = []
     seen_idx_set = set()
+    cumulative_edit_time = 0.0  # track total edit time across all batches
     # JSONL output: truncate/create file once, then append one JSON object per batch.
     with open(out_path, "w", encoding="utf-8") as f:
         f.write("")
@@ -313,6 +317,8 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             batch_history.append(tokens_copy)
             del tokens
 
+        batch_edit_time = time.time() - t2  # this batch's edit time
+        cumulative_edit_time += batch_edit_time  # accumulate total edit time
         is_last = ( (total_batches is not None and (batch_idx + 1) == total_batches) or (max_batches is not None and (batch_idx + 1) == max_batches) )
         should_eval = ( (eval_every is None) or (eval_every <= 0) or ((batch_idx + 1) % int(eval_every) == 0) or is_last )
         if should_eval:
@@ -325,7 +331,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             if hasattr(editor, "reset_counters"):
                 editor.reset_counters()
             print10(edit_ds_sofar, label="model_new")
-            print(f"Edit time: {time.time() - t2:.2f}s", flush=True)
+            print(f"Edit time (batch): {batch_edit_time:.2f}s, (cumulative): {cumulative_edit_time:.2f}s", flush=True)
 
             # Evaluate
             print("="*50, flush=True)
@@ -338,7 +344,9 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             batch_out_dict = editeval(
                 model_old, model, edit_ds_sofar, editor,
                 related_texts, related_images, related_r_gen_df, related_coe_df,
+                coe_pt=getattr(config, "coe_pt", True),
                 edit_subsample_size=None if is_last else 40,
+                edit_time=cumulative_edit_time,
             )
             batch_out_dict['batch_idx'] = batch_idx + 1
             batch_out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())

@@ -72,6 +72,7 @@ if __name__ == "__main__":
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
     parser.add_argument("--mode", type=str, default=None, choices=["vision", "language", "language_last", "dual_sbert"], help="Embedding mode for IKE_CHAIN")
     parser.add_argument("--pool_method", type=str, default=None, choices=["mean", "last"], help="Pooling method for IKE_CHAIN")
+    parser.add_argument("--no_coe_pt", action="store_true", help="Disable COE question perturbation (default: enabled)")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -96,4 +97,5 @@ if __name__ == "__main__":
     config.cot = args.cot
     config.pred_path = args.pred_path
     config.overwrite = args.overwrite
+    config.coe_pt = not args.no_coe_pt
     run_edit(config, sequential=args.sequential)
