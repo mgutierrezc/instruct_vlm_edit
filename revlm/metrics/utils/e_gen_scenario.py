@@ -7,26 +7,44 @@ import math
 import os
 from typing import List, Dict, Any
 
-from openai import OpenAI
+import pandas as pd
+from openai import AzureOpenAI
 from .e_gen import load_coe
+
+# Azure OpenAI defaults (batch deployment)
+AZURE_ENDPOINT = "https://jq2uw-openai.cognitiveservices.azure.com/"
+AZURE_API_VERSION = "2025-01-01-preview"
+AZURE_DEPLOYMENT = "gpt-4o-batch"  # batch-enabled deployment
 
 
 class COEScenarioGenerator:
-    def __init__(self, dataset_name: str, model_name: str, openai_key: str = None):
+    def __init__(self, dataset_name: str, model_name: str, 
+                 azure_key: str = None, azure_endpoint: str = None, 
+                 azure_deployment: str = None, api_version: str = None,
+                 merge_chains: bool = False):
         self.dataset_name = dataset_name
         self.model_name = model_name
-        self.base_dir = Path(f"./data/coe_gen/{model_name}/{dataset_name}")
+        self.merge_chains = merge_chains
+        merge_yes = "_merge" if merge_chains else ""
+        self.base_dir = Path(f"./data/coe_gen{merge_yes}/{model_name}/{dataset_name}")
         self.batch_dir = self.base_dir / "requests"
         self.meta_dir = self.base_dir / "meta"
         self.output_dir = self.base_dir / "outputs"
+        self.parquet_dir = Path(f"./data/coe_gen{merge_yes}/parquet")
+        self.parquet_path = self.parquet_dir / f"{model_name}_{dataset_name}.parquet"
         
-        for d in [self.batch_dir, self.meta_dir, self.output_dir]:
+        for d in [self.batch_dir, self.meta_dir, self.output_dir, self.parquet_dir]:
             d.mkdir(parents=True, exist_ok=True)
         
-        self.client = OpenAI(api_key=openai_key)
+        self.azure_deployment = azure_deployment or AZURE_DEPLOYMENT
+        self.client = AzureOpenAI(
+            api_key=azure_key,
+            api_version=api_version or AZURE_API_VERSION,
+            azure_endpoint=azure_endpoint or AZURE_ENDPOINT,
+        )
         self.n_batches = 20 # if dataset_name == "fvqa" else 40
         self.k = 3  # number of scenarios to generate
-        print(f"COEScenarioGenerator: {model_name}/{dataset_name}, {self.n_batches} batches")
+        print(f"COEScenarioGenerator: {model_name}/{dataset_name}, merge={merge_chains}, {self.n_batches} batches")
 
     # def format_prompt(self, error_chain: str) -> str:
     #     return (
@@ -73,23 +91,28 @@ class COEScenarioGenerator:
             "Respond as a numbered list:\n1. [scenario]\n2. [scenario]\n3. [scenario]"
         )
 
+    def _build_chain(self, sentences: List[str], indices: List[int], question: str, answer: str) -> str:
+        """Build chain string from sentence indices."""
+        chain = " ".join(sentences[i] for i in indices)
+        chain += f" {question.replace('?', '').strip()} is {answer.lower().strip()}."
+        return chain
+
     def _get_error_chains(self, ex: Dict) -> List[Dict]:
-        """Extract all error subsets as chains.
-        
-        Returns list of {indices: [...], chain: "sentence1 sentence2 ... question? answer."}
-        """
+        """Extract error chains. If merge_chains=True, union all error indices into one chain."""
         coe_pred = ex.get("coe_pred", {})
         sentences = coe_pred.get("sentences", [])
         question = ex.get("question", "")
         answer = ex.get("answer", "")
-        error_chains = []
-        for sub in coe_pred.get("subsets", []):
-            if sub["error"] == 1:
-                chain = " ".join(sentences[i] for i in sub["indices"])
-                # chain += f" The answer to '{question.lower().replace('?', '').strip()}' is '{answer.lower().strip()}'."
-                chain += f" {question.replace('?', '').strip()} is {answer.lower().strip()}."
-                error_chains.append({"indices": sub["indices"], "chain": chain})
-        return error_chains
+        
+        error_indices = [sub["indices"] for sub in coe_pred.get("subsets", []) if sub["error"] == 1]
+        if not error_indices:
+            return []
+        
+        if self.merge_chains:
+            merged = sorted(set(i for indices in error_indices for i in indices))
+            return [{"indices": merged, "chain": self._build_chain(sentences, merged, question, answer)}]
+        else:
+            return [{"indices": idx, "chain": self._build_chain(sentences, idx, question, answer)} for idx in error_indices]
 
     def gen_request(self, coe_results: List[Dict], max_sentences: int = None):
         """Generate batch request from COE prediction results."""
@@ -108,7 +131,7 @@ class COEScenarioGenerator:
                     "method": "POST",
                     "url": "/v1/chat/completions",
                     "body": {
-                        "model": "gpt-4o-mini",
+                        "model": self.azure_deployment,
                         "messages": [
                             {"role": "system", "content": "You generate creative visual scenarios from given facts."},
                             {"role": "user", "content": self.format_prompt(ec["chain"])},
@@ -233,7 +256,7 @@ class COEScenarioGenerator:
             else:
                 uid, indices = custom_id, []
             
-            text = payload.get("response", {}).get("body", {}).get("choices", [{}])[0].get("message", {}).get("content", "")
+            text = payload.get("response", {}).get("body", {}).get("choices", [{}])[0].get("message", {}).get("content") or ""
             # Parse numbered list
             scenarios = [s.strip() for s in text.split("\n") if s.strip() and s.strip()[0].isdigit()]
             scenarios = [s.split(". ", 1)[1] if ". " in s else s for s in scenarios]
@@ -244,16 +267,40 @@ class COEScenarioGenerator:
                 f.write(json.dumps(r) + "\n")
         return records
 
+    def save_parquet(self, scenarios: List[Dict] = None) -> pd.DataFrame:
+        """Convert scenarios to DataFrame and save as parquet.
+        
+        Each row: uid, indices (as string), scenario_1, scenario_2, scenario_3
+        """
+        if scenarios is None:
+            scenarios = self.get_scenarios()
+        
+        rows = []
+        for r in scenarios:
+            row = {
+                "uid": r["uid"],
+                "indices": ",".join(map(str, r["indices"])),
+            }
+            for i, s in enumerate(r.get("scenarios", []), 1):
+                row[f"scenario_{i}"] = s
+            rows.append(row)
+        
+        df = pd.DataFrame(rows)
+        df.to_parquet(self.parquet_path, index=False)
+        print(f"Saved {len(df)} rows to {self.parquet_path}")
+        return df
+
     # ----- Convenience: use config directly -----
     @classmethod
-    def from_config(cls, config: Any, openai_key: str = None) -> "COEScenarioGenerator":
+    def from_config(cls, config: Any, azure_key: str = None, 
+                    azure_endpoint: str = None, azure_deployment: str = None) -> "COEScenarioGenerator":
         """Create generator from config object."""
         # Extract model_name from config.pred_postedit_dir path
         # e.g., "results/pred_postedit/baseline/Qwen3-VL-8B-Instruct/fvqa" -> "Qwen3-VL-8B-Instruct"
         parts = config.pred_postedit_dir.split("/")
         model_name = parts[-2]
         dataset_name = parts[-1]
-        return cls(dataset_name, model_name, openai_key)
+        return cls(dataset_name, model_name, azure_key, azure_endpoint, azure_deployment)
 
     def run_from_config(self, config: Any, max_sentences: int = None):
         """Load COE results from config and prepare batch input."""
