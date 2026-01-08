@@ -5,9 +5,11 @@ Standalone job: load prediction snapshot → VLM verify each COT sentence → sa
 import re
 import json
 import os
+from pathlib import Path
 from typing import List, Dict, Tuple, Any
 from itertools import combinations
 from PIL import Image
+import pandas as pd
 
 
 def parse_cot_sentences(cot: str) -> List[str]:
@@ -127,4 +129,63 @@ def load_coe(config: Any) -> List[Dict]:
     print_coe_results(results, max_print=3)
     
     return results, coe_rate
+
+
+def get_coe_gen_input(dataset_name: str, model_name: str, edit_ds) -> pd.DataFrame:
+    """
+    Build COE generality DataFrame: same question/answer, different (synthetic) images.
+    
+    For each uid with generated scenario images, creates up to 3 rows (one per scenario).
+    
+    Args:
+        dataset_name: Dataset name (fvqa, aokvqa)
+        model_name: VLM model name (full HF path like "Qwen/Qwen3-VL-4B-Instruct")
+        edit_ds: VQADataset with load_df() method
+    
+    Returns DataFrame with columns:
+        uid, cid, question, answer, choices, idx_choices, rationale, image_path
+    """
+    full_df = edit_ds.load_df()
+    
+    # Extract model name from full HF path (e.g., "Qwen/Qwen3-VL-4B-Instruct" -> "Qwen3-VL-4B-Instruct")
+    model_name_short = model_name.split("/")[-1] if "/" in model_name else model_name
+    
+    # Scan image directory for uid folders
+    image_base = Path(f"data/coe_gen_merge/image/{dataset_name}/{model_name_short}")
+    if not image_base.exists():
+        return pd.DataFrame()
+    
+    # Filter to edit_ds uids
+    edit_uids = {str(ex["uid"]) for ex in edit_ds.data}
+    
+    rows = []
+    for uid_dir in image_base.iterdir():
+        if not uid_dir.is_dir():
+            continue
+        uid = uid_dir.name
+        if uid not in edit_uids:
+            continue
+        
+        # Find matching row in full_df
+        match = full_df[full_df["uid"].astype(str) == uid]
+        if match.empty:
+            continue
+        orig_row = match.iloc[0]
+        
+        # Check for scenario images
+        for i in range(3):
+            img_path = uid_dir / f"scenario_{i}.png"
+            if img_path.exists():
+                rows.append({
+                    "uid": uid,
+                    "cid": f"{uid}_{i}",
+                    "question": orig_row.get("question", ""),
+                    "answer": orig_row.get("answer", ""),
+                    "choices": orig_row.get("choices", ""),
+                    "idx_choices": orig_row.get("idx_choices", ""),
+                    "rationale": orig_row.get("rationale", ""),
+                    "image_path": str(img_path),
+                })
+    
+    return pd.DataFrame(rows)
 

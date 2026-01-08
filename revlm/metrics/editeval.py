@@ -80,6 +80,7 @@ def editeval(
 		related_texts: Mapping[int, Sequence[str]],
 		related_images: Mapping[int, Sequence[Any]],
 		related_r_gen_df: pd.DataFrame,
+		related_coe_df: pd.DataFrame,
 		unrelated_ds=None,
 		loc_sample_size=100,
 		use_hard_locality: bool = True,
@@ -93,6 +94,7 @@ def editeval(
 	gen can be mean or harmonic of text/image generality.
 	use_hard_locality: if True, also compute hard_locality (top-k similar unrelated questions).
 	edit_subsample_size: if set, cap edit_ds to this many samples (for intermediate checkpoints).
+	related_coe_df: DataFrame from get_coe_gen_input for COE generality.
 	"""
 
 	if hasattr(editor, "plot_codebook"):
@@ -127,11 +129,16 @@ def editeval(
 	print(f"[Timing] image_generality: {time.time() - t_igen:.2f}s", flush=True)
 	print(f"Image Generality: {igen:.4f}", flush=True)
 
+	t_coe = time.time()
+	coe_gen = coe_generality(model_new, edit_ds, related_coe_df, editor=editor)
+	print(f"[Timing] coe_generality: {time.time() - t_coe:.2f}s", flush=True)
+	print(f"COE Generality: {coe_gen:.4f}", flush=True)
+
 	t_rgen = time.time()
 	rgen = rationale_generality(model_new, edit_ds, related_r_gen_df, editor=editor)
 	print(f"[Timing] rationale_generality: {time.time() - t_rgen:.2f}s", flush=True)
 	print(f"Rationale Generality: {rgen:.4f}", flush=True)
-
+	
 	# t_edit1 = time.time()
 	# edit1 = 0.0
 	# # edit1 = edit1_generality(model_old, edit_ds, editor)
@@ -175,6 +182,7 @@ def editeval(
 		"text_generality": float(tgen),
 		"image_generality": float(igen),
 		"rationale_generality": float(rgen),
+		"coe_generality": float(coe_gen),
 		"locality": float(loc),
 		"hard_locality": float(hard_loc),
 		# "edit1_generality": float(edit1),
@@ -546,6 +554,30 @@ def rationale_generality(
     related_r_gen_df['uid'] = related_r_gen_df['sid'].astype(str)
 
     ds.data = ds.df2data(related_r_gen_df)
+    ds.set_dataloader(shuffle_choices=False)
+
+    _maybe_apply_ike(editor, ds, edit_ds)
+
+    return reliability(model_new, ds)
+
+
+def coe_generality(
+    model_new: Any,
+    edit_ds: Any,
+    related_coe_df: pd.DataFrame,
+    editor: Any = None,
+) -> float:
+    """Accuracy on COE-generated images (same question, synthetic images).
+    related_coe_df: pd.DataFrame from get_coe_gen_input with uid, cid, image_path columns
+    """
+    if related_coe_df.empty:
+        return 0.0
+    ds = copy.deepcopy(edit_ds)
+    edit_uids = {str(ex["uid"]) for ex in edit_ds.data}
+    related_coe_df = related_coe_df[related_coe_df["uid"].isin(edit_uids)].copy()
+    related_coe_df['uid'] = related_coe_df['cid'].astype(str)  # use cid as row id
+
+    ds.data = ds.df2data(related_coe_df)
     ds.set_dataloader(shuffle_choices=False)
 
     _maybe_apply_ike(editor, ds, edit_ds)

@@ -208,9 +208,11 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
     t3 = time.time()
     model_new = model
     dataset_name = config.experiment.dataset_name
+    model_name = config.model.name
     related_texts = get_t_gen_input(dataset_name, edit_ds)
     related_images = get_i_gen_input(dataset_name, edit_ds, k_per_model=2)
     related_r_gen_df = get_r_gen_input(dataset_name)
+    related_coe_df = get_coe_gen_input(dataset_name, model_name, edit_ds)
     out_dict = editeval(
         model_old,
         model_new,
@@ -219,6 +221,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         related_texts,
         related_images,
         related_r_gen_df,
+        related_coe_df,
     )
     # add a job finish time
     out_dict['finish_time'] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
@@ -238,7 +241,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
 
 
 
-def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 100):
+def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_every: int = 200):
     """Edit sequentially, evaluating every `eval_every` batchess."""
     editor_name_check = getattr(config.editor, "_name", "").lower()
     # Retrieval-based editors don't modify weights - skip expensive deepcopy
@@ -250,6 +253,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     pristine_edit_ds = copy.deepcopy(edit_ds)
     editor_name = getattr(config.editor, "_name", "")
     dataset_name = config.experiment.dataset_name
+    model_name = config.model.name
     total_batches = len(edit_ds.loader) if hasattr(edit_ds.loader, "__len__") else None
 
     # Initialize wandb if enabled
@@ -330,9 +334,10 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             related_texts = get_t_gen_input(dataset_name, edit_ds_sofar)
             related_images = get_i_gen_input(dataset_name, edit_ds_sofar, k_per_model=2)
             related_r_gen_df = get_r_gen_input(dataset_name)
+            related_coe_df = get_coe_gen_input(dataset_name, model_name, edit_ds_sofar)
             batch_out_dict = editeval(
                 model_old, model, edit_ds_sofar, editor,
-                related_texts, related_images, related_r_gen_df,
+                related_texts, related_images, related_r_gen_df, related_coe_df,
                 edit_subsample_size=None if is_last else 40,
             )
             batch_out_dict['batch_idx'] = batch_idx + 1

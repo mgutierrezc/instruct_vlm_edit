@@ -198,7 +198,7 @@ from huggingface_hub import snapshot_download
 import pandas as pd
 import os
 
-def get_t_gen_input(dataset_name, edit_ds):
+def get_t_gen_input(dataset_name, edit_ds, k: int = 5):
     edit_uids = [str(ex["uid"]) for ex in edit_ds.data]
     repo_id = "JJoy333/RationaleVQA"
     local_root = snapshot_download(
@@ -211,7 +211,7 @@ def get_t_gen_input(dataset_name, edit_ds):
     t_gen = t_gen[t_gen["uid"].isin(edit_uids)]
     # engineer into related_texts: {"uid": ["q1", "q2", ...]}
     related_texts = {
-        str(row["uid"]): list(row["variants"])
+        str(row["uid"]): list(row["variants"])[:k]
         for _, row in t_gen.iterrows()
     }
     return related_texts
