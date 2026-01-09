@@ -192,6 +192,9 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         if hasattr(model, "model"):
             model.model.eval()
     edit_time = time.time() - t2  # capture edit time before generation
+    # Apply IKE_CHAIN retrieval once before generation (deferred from edit() for efficiency)
+    if editor_name == "ike_chain" and editor is not None and hasattr(editor, "apply_to_dataset"):
+        editor.apply_to_dataset(edit_ds)
     edit_ds.task_generate(model, use_cache=False)
     print10(edit_ds, label="model_new")
     print(f"Edit time: {edit_time:.2f}s", flush=True)
@@ -324,6 +327,9 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         if should_eval:
             if hasattr(model, "model"):
                 model.model.eval()
+            # Apply IKE_CHAIN retrieval once before generation (deferred from edit() for efficiency)
+            if editor_name == "ike_chain" and editor is not None and hasattr(editor, "apply_to_dataset"):
+                editor.apply_to_dataset(edit_ds_sofar)
             edit_ds_sofar.task_generate(model, use_cache=False)
             # Print edit application stats inline (for GRACE/BalancEdit)
             if hasattr(editor, "print_stats"):

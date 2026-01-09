@@ -918,7 +918,8 @@ class IKE_CHAIN(nn.Module):
                   "augment": f"augment(n={self.n_radius_samples})"}.get(self.radius_method, "")
         print(f"\n[IKE_CHAIN] +{len(valid_exs)} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
-        self.apply_to_dataset(edit_ds)
+        # NOTE: apply_to_dataset is called externally in edit_utils.py before evaluation
+        # to avoid O(N²) hubness recomputation after each edit batch
         return self.model
     
     def save_index(self, path):
