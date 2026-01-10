@@ -55,7 +55,7 @@ class IKE_CHAIN(nn.Module):
         self.cap_keys = int(getattr(cfg, "cap_keys", 5))                    # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
         self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
-        self.query_radius_method = getattr(cfg, "query_radius_method", "balance")  # "patch_spread", "balance", or "augment"
+        self.query_radius_method = getattr(cfg, "query_radius_method", "patch_spread")  # "patch_spread" or "augment"
         self.hubness_keys = getattr(cfg, "hubness_keys", True)
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
@@ -68,29 +68,19 @@ class IKE_CHAIN(nn.Module):
         self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0))
         
-        # Radius Estimation
-        self.radius_method = getattr(cfg, "radius_method", "augment")  # "fixed", "augment", or "balance"
-        self.fixed_radius = float(getattr(cfg, "fixed_radius", 100.0))
+        # Radius & Merging (radius_area_pct = -1 disables merging)
         self.radius_area_pct = float(getattr(cfg, "radius_area_pct", 0.9))
         self.n_radius_samples = int(getattr(cfg, "n_radius_samples", 1))
-        self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
         self.radius_percentile = float(getattr(cfg, "radius_percentile", 50))
-        self.n_positive_samples = int(getattr(cfg, "n_positive_samples", 5))
-        self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.9))
+        self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
+        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))
+        self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
 
         # Patchification
+        self.grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
         self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.95))
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
         self.use_orig_rationale_keys = getattr(cfg, "use_orig_rationale_keys", False)  # <orig, si> keys
-
-        # Key Management
-        self.merge_keys = getattr(cfg, "merge_keys", True)
-        self.merge_ioa_threshold = float(getattr(cfg, "merge_ioa_threshold", 0.9))
-        self.merge_dist_pct = float(getattr(cfg, "merge_dist_pct", 0.1))
-        if self.merge_keys:
-            self.radius_method = "augment"
-            self.radius_area_pct = 0.9
-            self.n_radius_samples = 1
 
         # Internal State
         self._added_uids = set()
@@ -114,7 +104,7 @@ class IKE_CHAIN(nn.Module):
         self.plot_codebook_pct_threshold = 85
 
         # Setup Hooks & Tools
-        self.patchifier = ImagePatchifier()
+        self.patchifier = ImagePatchifier(grid_size=self.grid_size)
         dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
         self.augmenter = Augmenter(self.wrapper, seed=self.seed, mosaic_prob=1.0, dataset_name=dataset_name)
         
@@ -153,6 +143,11 @@ class IKE_CHAIN(nn.Module):
             self._hook = _setup_hook(inner_params_vision[0])
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
+
+    @property
+    def merge_keys(self) -> bool:
+        """Dynamic: merge_keys = True iff radius_area_pct > 0."""
+        return self.radius_area_pct > 0
 
     def forward(self, *a, **kw):
         return self.model(*a, **kw)
@@ -313,25 +308,7 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _estimate_radius(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True) -> float:
-        """Estimate radius using fixed, augment, or balance method."""
-        if self.radius_method == "fixed":
-            return self.fixed_radius * self.radius_scaler
-        
-        if self.radius_method == "balance":
-            # Positive samples
-            pos_dists = []
-            for _ in range(self.n_positive_samples):
-                aug_img = self.augmenter.image(img)
-                aug_text = self.augmenter.question(text) if is_question else self.augmenter.rationale(text) if text else ""
-                pos_emb = self._encode_vlm([aug_img], [aug_text])
-                pos_dists.append(float(torch.norm(pos_emb.cpu() - key_emb.cpu())))
-            d_pos = float(np.median(pos_dists)) if pos_dists else 0.0
-            # Negative sample
-            neg_emb = self._encode_vlm([self._blank_image], [text])
-            d_neg = float(torch.norm(neg_emb.cpu() - key_emb.cpu()))
-            return ((1 - self.balance_alpha) * d_pos + self.balance_alpha * d_neg) * self.radius_scaler
-        
-        # Augment method
+        """Estimate radius using augmented samples."""
         aug_dists = []
         for _ in range(self.n_radius_samples):
             aug_img = self.augmenter.image(img, area_pct=self.radius_area_pct)
@@ -342,18 +319,13 @@ class IKE_CHAIN(nn.Module):
 
     @torch.no_grad()
     def _estimate_query_radii(self, q_embs: torch.Tensor, query_patches: List, question: str) -> torch.Tensor:
-        """Estimate radii for query patches (no LLM text aug for speed)."""
+        """Estimate radii for query patches."""
         n = len(query_patches)
         if self.query_radius_method == "patch_spread":
             # Patches as natural augmentations - use max pairwise distance (0 extra VLM calls)
             max_dist = torch.cdist(q_embs, q_embs, p=2).max().item() if n > 1 else 0.0
             return torch.full((n,), max_dist * self.radius_scaler)
-        if self.query_radius_method == "balance":
-            neg_emb = self._encode_vlm([self._blank_image], [question])
-            if self.distance == "cosine":
-                neg_emb = F.normalize(neg_emb, dim=-1)
-            return torch.norm(q_embs - neg_emb.cpu(), dim=1) * self.balance_alpha * self.radius_scaler
-        # augment
+        # augment method
         radii = []
         for i, patch in enumerate(query_patches):
             aug_emb = self._encode_vlm([self.augmenter.image(patch, area_pct=self.radius_area_pct)], [question])
@@ -417,7 +389,7 @@ class IKE_CHAIN(nn.Module):
         self.codebook[idx]["merge_count"] = self.codebook[idx].get("merge_count", 1) + 1
 
     @torch.no_grad()
-    def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str]):
+    def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str], uid=None):
         """Add keys for one edit."""
         answer_value = f"The answer to '{question}' is {answer}." if answer else ""
         
@@ -489,7 +461,10 @@ class IKE_CHAIN(nn.Module):
                 self.key_embs = torch.cat([self.key_embs, emb], dim=0)
                 self.key_radii = torch.cat([self.key_radii, torch.tensor([radius])])
         
-        print(f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)")
+        log_msg = f"[Keys] +{n_added} added, {n_merged} merged (from {len(new_entries)} candidates)"
+        if n_added > 20 and uid is not None:
+            log_msg += f" [uid={uid}]"
+        print(log_msg)
         
         # Update edit centroids for two-level retrieval
         if self.cap_edits > 0:
@@ -796,7 +771,7 @@ class IKE_CHAIN(nn.Module):
         if edit_ds is None:
             return self.model
         
-        print(f"[IKE_CHAIN] mode={self.mode}, pool_method={self.pool_method}")
+        print(f"[IKE_CHAIN] mode={self.mode}, pool_method={self.pool_method}, merge_keys={self.merge_keys} (area={self.radius_area_pct})")
         n_before = len(self.codebook)
         
         # Filter valid examples
@@ -815,15 +790,13 @@ class IKE_CHAIN(nn.Module):
         for i, (ex, sents, uid) in enumerate(valid_exs):
             print(f"\r[IKE_CHAIN] edit {i+1}/{len(valid_exs)}...", end="", flush=True)
             self._add_edit(ex.get("image"), ex.get("question", ""), 
-                          ex.get("answer") or ex.get("target") or "", sents)
+                          ex.get("answer") or ex.get("target") or "", sents, uid=uid)
             self._added_uids.add(uid)
         
         n_after = len(self.codebook)
         mem_mb = self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0
-        r_info = {"fixed": f"fixed={self.fixed_radius}", 
-                  "balance": f"balance(n={self.n_positive_samples},α={self.balance_alpha})",
-                  "augment": f"augment(n={self.n_radius_samples})"}.get(self.radius_method, "")
-        print(f"[IKE_CHAIN] +{len(valid_exs)} edits (p_yes>{self.p_yes_threshold}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
+        r_info = f"augment(area={self.radius_area_pct})" if self.merge_keys else "no_merge"
+        print(f"[IKE_CHAIN] +{len(valid_exs)} edits (p_yes>{self.p_yes_threshold}, {r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
         # NOTE: apply_to_dataset is called externally in edit_utils.py before evaluation
         # to avoid O(N²) hubness recomputation after each edit batch

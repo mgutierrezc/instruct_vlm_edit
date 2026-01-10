@@ -300,17 +300,18 @@ class ImagePatchifier:
                                 - 2×2: 9
     """
     
-    GRID_SIZE = 4  # Change to 4 for finer patches (but slower)
     KERNEL_ORDER = ["1x1", "1x2", "2x1", "2x2"]
     
-    def __init__(self, output_size: Tuple[int, int] = None):
+    def __init__(self, grid_size: int = 4, output_size: Tuple[int, int] = None):
         """
         Args:
+            grid_size: Grid dimension (3 or 4). Default 4 for finer patches.
             output_size: Optional (H, W) to resize all patches. If None, keeps original crop size.
         """
+        self.grid_size = grid_size
         self.output_size = output_size
-        # Compute kernel positions based on GRID_SIZE
-        g = self.GRID_SIZE
+        # Compute kernel positions based on grid_size
+        g = self.grid_size
         self.KERNELS = {
             "1x1": (1, 1, [(r, c) for r in range(g) for c in range(g)]),          # g²
             "1x2": (1, 2, [(r, c) for r in range(g) for c in range(g - 1)]),      # g × (g-1)
@@ -356,7 +357,7 @@ class ImagePatchifier:
         """
         img = self._load_image(img)
         w, h = img.size
-        cell_w, cell_h = w // self.GRID_SIZE, h // self.GRID_SIZE
+        cell_w, cell_h = w // self.grid_size, h // self.grid_size
         
         # Auto-filter kernels based on aspect ratio (kernel format: rows x cols)
         if kernels is None:
