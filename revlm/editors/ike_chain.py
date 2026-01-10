@@ -77,7 +77,7 @@ class IKE_CHAIN(nn.Module):
         self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
 
         # Patchification
-        self.grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
+        self.grid_size = int(getattr(cfg, "grid_size", 4))  # 3 or 4
         self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.95))
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
         self.use_orig_rationale_keys = getattr(cfg, "use_orig_rationale_keys", False)  # <orig, si> keys
@@ -269,39 +269,40 @@ class IKE_CHAIN(nn.Module):
         return np.array([self._get_nll(p, self.patch_select_prompt, sentence) for p in patches])
 
     @torch.no_grad()
-    def _select_patches_for_sentence(self, image, sentence: str, is_first_sentence: bool = True) -> List[Image.Image]:
-        """Select patches via two routes: smallest-unit and highest-NLL, union results.
+    def _select_patches_for_sentence(self, image, sentence: str, keep_one: bool = False) -> List[Image.Image]:
+        """Select patches via two routes.
         
-        Optimized: NLL only computed for patches passing p_yes threshold.
+        Route 1: smallest unit → best NLL → (keep_one ? first : all)
+        Route 2: best NLL → smallest unit → (keep_one ? first : all)
         """
         patches = self.patchifier.patchify_exclude_full(image)
         units = self.patchifier.get_patch_units(image)[:-1]
         
-        # VQA question - compute p_yes for all patches
+        # Compute p_yes and filter
         vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
         p_yes = self._compute_p_yes(patches, vqa_q)
-        
-        # Filter by p_yes threshold
-        passed_idx = [i for i, p in enumerate(p_yes) if p > self.p_yes_threshold]
-        if not passed_idx:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        passed = [i for i, p in enumerate(p_yes) if p > self.p_yes_threshold]
+        if not passed:
             return []
         
-        selected = set()
+        # Compute NLL for passed patches
+        nlls = self._compute_nll_probs([patches[i] for i in passed], sentence)
+        nll = {i: nlls[j] for j, i in enumerate(passed)}
         
-        # Route 1: Smallest unit among passed
-        min_unit = min(units[i] for i in passed_idx)
-        selected.update(i for i in passed_idx if units[i] == min_unit)
+        def pick(candidates, key1, key2):
+            """Pick by key1, tie-break by key2, then first if keep_one."""
+            best1 = min(key1(i) for i in candidates)
+            c = [i for i in candidates if key1(i) == best1]
+            best2 = min(key2(i) for i in c)
+            c = [i for i in c if key2(i) == best2]
+            return [c[0]] if keep_one else c
         
-        # Route 2: NLL only for passed patches (lazy computation)
-        passed_patches = [patches[i] for i in passed_idx]
-        nlls = self._compute_nll_probs(passed_patches, sentence)
-        best_nll = nlls.min()
-        for j, i in enumerate(passed_idx):
-            if nlls[j] == best_nll:
-                selected.add(i)
+        # Route 1: smallest unit → best NLL
+        r1 = pick(passed, lambda i: units[i], lambda i: nll[i])
+        # Route 2: best NLL → smallest unit
+        r2 = pick(passed, lambda i: nll[i], lambda i: units[i])
         
+        selected = set(r1 + r2)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return [patches[i] for i in selected]
@@ -416,7 +417,7 @@ class IKE_CHAIN(nn.Module):
         
         # 2. Sentence-specific patch keys
         for i, sent in enumerate(rationale_sents):
-            patches = self._select_patches_for_sentence(img, sent, is_first_sentence=(i == 0))
+            patches = self._select_patches_for_sentence(img, sent)
             for patch in patches:
                 new_entries.append({
                     "value": sent, "is_patch": True, "edit_idx": self._edit_count,
@@ -881,32 +882,37 @@ class IKE_CHAIN(nn.Module):
         fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
         axes = axes.flatten()
         
-        p_yes_scores, nlls, route1, route2 = None, None, set(), set()
+        p_yes_scores, nlls, route1, route2 = None, None, [], []
         if sentence:
             vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
             print(f"[VQA] Q: {vqa_q}")
             
-            # Compute p_yes and NLL for all patches (exclude full image for selection)
+            # Compute p_yes and NLL for all patches (exclude full image)
             p_yes_scores = np.array(self._compute_p_yes(patches[:-1], vqa_q))
             nlls = self._compute_nll_probs(patches[:-1], sentence)
             
-            passed_idx = [i for i, p in enumerate(p_yes_scores) if p > self.p_yes_threshold]
-            print(f"[Passed p_yes>{self.p_yes_threshold}]: {len(passed_idx)} patches")
+            passed = [i for i, p in enumerate(p_yes_scores) if p > self.p_yes_threshold]
+            print(f"[Passed p_yes>{self.p_yes_threshold}]: {len(passed)} patches")
             
-            # Route 1: Smallest unit
-            if passed_idx:
-                min_unit = min(units[i] for i in passed_idx)
-                route1 = {i for i in passed_idx if units[i] == min_unit}
-                print(f"[Route1 - Smallest unit ({min_unit})]: {[patch_names[i] for i in route1]}")
-            
-            # Route 2: Highest NLL prob (keep ties)
-            if passed_idx:
-                best_nll = min(nlls[i] for i in passed_idx)
-                route2 = {i for i in passed_idx if nlls[i] == best_nll}
-                print(f"[Route2 - Best NLL]: {[patch_names[i] for i in route2]}")
-            
-            selected = route1 | route2
-            print(f"[Selected]: {len(selected)} patches")
+            if passed:
+                nll = {i: nlls[i] for i in passed}
+                
+                # Route 1: smallest unit → best NLL
+                min_u = min(units[i] for i in passed)
+                r1 = [i for i in passed if units[i] == min_u]
+                best_n = min(nll[i] for i in r1)
+                route1 = [i for i in r1 if nll[i] == best_n]
+                print(f"[Route1 - Smallest unit ({min_u}), best NLL]: {[patch_names[i] for i in route1]}")
+                
+                # Route 2: best NLL → smallest unit
+                best_n = min(nll[i] for i in passed)
+                r2 = [i for i in passed if nll[i] == best_n]
+                min_u = min(units[i] for i in r2)
+                route2 = [i for i in r2 if units[i] == min_u]
+                print(f"[Route2 - Best NLL, smallest unit ({min_u})]: {[patch_names[i] for i in route2]}")
+                
+                selected = set(route1 + route2)
+                print(f"[Selected]: {len(selected)} patches")
         
         for idx, ax in enumerate(axes):
             if idx < n_patches:
@@ -916,11 +922,12 @@ class IKE_CHAIN(nn.Module):
                     title = f"{patch_names[idx]}\np={p_yes_scores[idx]:.0%} u={units[idx]}"
                 ax.set_title(title, fontsize=6)
                 # Highlight: green=both routes, blue=route1 only, orange=route2 only
-                if idx in route1 and idx in route2:
+                in_r1, in_r2 = idx in route1, idx in route2
+                if in_r1 and in_r2:
                     color = 'limegreen'
-                elif idx in route1:
+                elif in_r1:
                     color = 'deepskyblue'
-                elif idx in route2:
+                elif in_r2:
                     color = 'orange'
                 else:
                     color = None
@@ -929,7 +936,8 @@ class IKE_CHAIN(nn.Module):
                                           linewidth=8, edgecolor=color, facecolor='none'))
             ax.axis('off')
         
-        title = f"Patches ({n_patches} total, p_yes>{self.p_yes_threshold}, selected={len(route1|route2)})"
+        n_selected = len(set(route1 + route2))
+        title = f"Patches ({n_patches} total, p_yes>{self.p_yes_threshold}, selected={n_selected})"
         if sentence:
             title += f"\nsentence: {sentence}"
         title += "\n(green=both, blue=smallest, orange=best-NLL)"
