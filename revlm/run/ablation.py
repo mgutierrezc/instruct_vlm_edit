@@ -47,23 +47,21 @@ ABLATION_DEFAULTS = {
 
 
 def detect_ablation(args) -> tuple:
-    """Detect which ablation param was set (differs from default).
+    """Detect which ablation param was set.
     
-    Returns: (param_name, param_value) or (None, None) if using defaults.
+    Returns: (param_name, param_value) or (None, None) if nothing passed.
+    Note: Returns the param even if it matches default (for consistent result paths).
     """
     # Special case: mode ablation (mode + pool_method combined as "vision_mean", etc.)
     if args.mode is not None:
         pool = args.pool_method or "mean"
         combined_value = f"{args.mode}_{pool}"
-        # Check if it's different from default (dual_sbert_mean)
-        default_combined = f"{ABLATION_DEFAULTS['mode']}_{ABLATION_DEFAULTS['pool_method']}"
-        if combined_value != default_combined:
-            return "mode", combined_value
+        return "mode", combined_value
     
-    # Check other params
+    # Check other params - return if explicitly set (even if matches default)
     for param in ["cap_keys", "radius_area_pct", "top_k_patches", "reject_threshold_pct"]:
         cli_val = getattr(args, param, None)
-        if cli_val is not None and cli_val != ABLATION_DEFAULTS[param]:
+        if cli_val is not None:
             return param, cli_val
     
     return None, None

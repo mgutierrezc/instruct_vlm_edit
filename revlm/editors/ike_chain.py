@@ -52,16 +52,15 @@ class IKE_CHAIN(nn.Module):
         # Core Retrieval
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
         self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
-        self.cap_keys = int(getattr(cfg, "cap_keys", 3))                    # final max keys to retrieve
+        self.cap_keys = int(getattr(cfg, "cap_keys", 5))                    # final max keys to retrieve
         self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
-        self.query_kernels = getattr(cfg, "query_kernels", ['3x3'])# '1x1', '2x2', 
         self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
         self.query_radius_method = getattr(cfg, "query_radius_method", "balance")  # "patch_spread", "balance", or "augment"
         self.hubness_keys = getattr(cfg, "hubness_keys", True)
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
         self.hubness_knn = int(getattr(cfg, "hubness_knn", 30))
-        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 0))  # 0=disabled, e.g. 25
+        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 25))  # 0=disabled, e.g. 25
 
         # Embedding Config
         self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
@@ -80,8 +79,9 @@ class IKE_CHAIN(nn.Module):
         self.balance_alpha = float(getattr(cfg, "balance_alpha", 0.9))
 
         # Patchification
-        self.top_k_patches = int(getattr(cfg, "top_k_patches", 3))  # patches per sentence
+        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.95))
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
+        self.use_orig_rationale_keys = getattr(cfg, "use_orig_rationale_keys", False)  # <orig, si> keys
 
         # Key Management
         self.merge_keys = getattr(cfg, "merge_keys", True)
@@ -92,11 +92,6 @@ class IKE_CHAIN(nn.Module):
             self.radius_area_pct = 0.9
             self.n_radius_samples = 1
 
-        # Image-Only Fallback
-        self.image_only_retrieval = getattr(cfg, "image_only_retrieval", False)
-        self.top_i_image_only = int(getattr(cfg, "top_i_image_only_entry", 1))
-
-        
         # Internal State
         self._added_uids = set()
         self._edit_count = 0
@@ -265,37 +260,56 @@ class IKE_CHAIN(nn.Module):
 
     # ==================== 3. KEY MANAGEMENT ====================
 
-    @torch.no_grad()
-    def _select_patches_for_sentence(self, image, sentence: str, is_first_sentence: bool = True) -> List[Image.Image]:
-        """Select up to k patches by log-likelihood of sentence, then VQA-verify."""
-        patches = self.patchifier.patchify_exclude_full(image)
-        
-        # Stage 1: Rank by NLL
-        nlls = np.array([self._get_nll(p, self.patch_select_prompt, sentence) for p in patches])
-        top_k_idx = np.argsort(nlls)[:self.top_k_patches]
-        candidates = [patches[i] for i in top_k_idx]
-        
-        # Stage 2: VQA verification
-        if is_first_sentence:
-            vqa_q = f"Does {sentence.lower().replace('.', '?')}"
-        else:
-            vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
-        
-        verified, yes_probs = [], []
-        for patch in candidates:
+    def _compute_p_yes(self, patches: List, vqa_q: str) -> List[float]:
+        """Compute p_yes for all patches."""
+        p_yes = []
+        for patch in patches:
             nll_yes = self._get_nll(patch, vqa_q, "Yes")
             nll_no = self._get_nll(patch, vqa_q, "No")
-            p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
-            yes_probs.append(p_yes)
-            if p_yes > 0.5:
-                verified.append(patch)
+            p_yes.append(1.0 / (1.0 + np.exp(nll_yes - nll_no)))
+        return p_yes
+
+    def _compute_nll_probs(self, patches: List, sentence: str) -> np.ndarray:
+        """Compute NLL probabilities for all patches."""
+        return np.array([self._get_nll(p, self.patch_select_prompt, sentence) for p in patches])
+
+    @torch.no_grad()
+    def _select_patches_for_sentence(self, image, sentence: str, is_first_sentence: bool = True) -> List[Image.Image]:
+        """Select patches via two routes: smallest-unit and highest-NLL, union results.
         
-        if not verified:
-            verified = [candidates[int(np.argmax(yes_probs))]]
+        Optimized: NLL only computed for patches passing p_yes threshold.
+        """
+        patches = self.patchifier.patchify_exclude_full(image)
+        units = self.patchifier.get_patch_units(image)[:-1]
+        
+        # VQA question - compute p_yes for all patches
+        vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
+        p_yes = self._compute_p_yes(patches, vqa_q)
+        
+        # Filter by p_yes threshold
+        passed_idx = [i for i, p in enumerate(p_yes) if p > self.p_yes_threshold]
+        if not passed_idx:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return []
+        
+        selected = set()
+        
+        # Route 1: Smallest unit among passed
+        min_unit = min(units[i] for i in passed_idx)
+        selected.update(i for i in passed_idx if units[i] == min_unit)
+        
+        # Route 2: NLL only for passed patches (lazy computation)
+        passed_patches = [patches[i] for i in passed_idx]
+        nlls = self._compute_nll_probs(passed_patches, sentence)
+        best_nll = nlls.min()
+        for j, i in enumerate(passed_idx):
+            if nlls[j] == best_nll:
+                selected.add(i)
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return verified
+        return [patches[i] for i in selected]
 
     @torch.no_grad()
     def _estimate_radius(self, key_emb: torch.Tensor, img, text: str, is_question: bool = True) -> float:
@@ -412,30 +426,21 @@ class IKE_CHAIN(nn.Module):
         # 1. Original image keys: <orig, question> and <orig, si>
         new_entries.append({
             "value": answer_value, "is_patch": False, "edit_idx": self._edit_count,
-            "key_text": question, "is_image_only": False, "is_question": True
+            "key_text": question, "is_question": True
         })
         new_imgs.append(img)
         new_texts.append(question)
         new_is_question.append(True)
         
-        for sent in rationale_sents:
-            new_entries.append({
-                "value": sent, "is_patch": False, "edit_idx": self._edit_count,
-                "key_text": sent, "is_image_only": False, "is_question": False
-            })
-            new_imgs.append(img)
-            new_texts.append(sent)
-            new_is_question.append(False)
-        
-        # Optional: image-only key
-        if self.image_only_retrieval:
-            new_entries.append({
-                "value": "", "is_patch": False, "edit_idx": self._edit_count,
-                "key_text": "", "is_image_only": True, "is_question": False
-            })
-            new_imgs.append(img)
-            new_texts.append("")
-            new_is_question.append(False)
+        if self.use_orig_rationale_keys:
+            for sent in rationale_sents:
+                new_entries.append({
+                    "value": sent, "is_patch": False, "edit_idx": self._edit_count,
+                    "key_text": sent, "is_question": False
+                })
+                new_imgs.append(img)
+                new_texts.append(sent)
+                new_is_question.append(False)
         
         # 2. Sentence-specific patch keys
         for i, sent in enumerate(rationale_sents):
@@ -443,7 +448,7 @@ class IKE_CHAIN(nn.Module):
             for patch in patches:
                 new_entries.append({
                     "value": sent, "is_patch": True, "edit_idx": self._edit_count,
-                    "key_text": sent, "is_image_only": False, "is_question": False
+                    "key_text": sent, "is_question": False
                 })
                 new_imgs.append(patch)
                 new_texts.append(sent)
@@ -505,8 +510,6 @@ class IKE_CHAIN(nn.Module):
         # Group key indices by edit_idx
         edit_to_keys = {}
         for i, entry in enumerate(self.codebook):
-            if entry.get("is_image_only", False):
-                continue  # Skip image-only keys for centroid
             edit_idx = entry["edit_idx"]
             edit_to_keys.setdefault(edit_idx, []).append(i)
         
@@ -545,7 +548,7 @@ class IKE_CHAIN(nn.Module):
         self._compute_reject_threshold()
 
     def _compute_reject_threshold(self, max_sample: int = 2000):
-        """Compute rejection threshold as percentile of pairwise key distances."""
+        """Compute rejection threshold as percentile of pairwise key distances (hubness-scaled if enabled)."""
         if self.reject_threshold_pct <= 0 or self.key_embs is None or len(self.key_embs) < 2:
             self.key_dist_threshold = None
             return
@@ -553,9 +556,13 @@ class IKE_CHAIN(nn.Module):
         idx = torch.randperm(N)[:min(max_sample, N)]
         sample = self.key_embs[idx].float()
         dists = torch.cdist(sample, sample, p=2)
+        # Apply hubness scaling to match retrieval distances
+        if self.hubness_keys and self.key_sigmas is not None:
+            sigmas = self.key_sigmas[idx]
+            dists = dists / (sigmas + self.hubness_eps)  # scale by target key's sigma
         dists = dists[torch.triu(torch.ones_like(dists), diagonal=1) == 1]  # upper triangle
         self.key_dist_threshold = float(np.percentile(dists.numpy(), self.reject_threshold_pct))
-        print(f"[Reject] threshold={self.key_dist_threshold:.2f} (p{self.reject_threshold_pct:.0f} of {len(dists)} pairs)")
+        print(f"[Reject] threshold={self.key_dist_threshold:.2f} (p{self.reject_threshold_pct:.0f} of {len(dists)} pairs, hubness={self.hubness_keys})")
 
     def _compute_centroid_sigmas(self):
         """Compute centroid sigma as mean of constituent key sigmas."""
@@ -565,9 +572,8 @@ class IKE_CHAIN(nn.Module):
         n_edits = len(self.edit_centroids)
         sums, counts = torch.zeros(n_edits), torch.zeros(n_edits)
         for i, e in enumerate(self.codebook):
-            if not e.get("is_image_only", False):
-                sums[e["edit_idx"]] += self.key_sigmas[i]
-                counts[e["edit_idx"]] += 1
+            sums[e["edit_idx"]] += self.key_sigmas[i]
+            counts[e["edit_idx"]] += 1
         self.centroid_sigmas = sums / counts.clamp(min=1)
         print(f"[Hubness] computed sigma for {n_edits} centroids (median={self.centroid_sigmas.median():.2f})")
 
@@ -656,17 +662,8 @@ class IKE_CHAIN(nn.Module):
         if self.key_embs is None or len(self.codebook) == 0:
             return []
         
-        query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
-        
-        # Stage 1: Text-aware retrieval
-        results = self._retrieve_from_keys(query_patches, question)
-        if results:
-            return results
-        
-        # Stage 2 & 3: Image-only fallback
-        if self.image_only_retrieval:
-            return self._retrieve_image_only_fallback(query_patches, question)
-        return []
+        query_patches = [image]  # Use whole image for query
+        return self._retrieve_from_keys(query_patches, question)
 
     @torch.no_grad()
     def _retrieve_from_keys(self, query_patches: List, question: str, 
@@ -684,10 +681,9 @@ class IKE_CHAIN(nn.Module):
                 top_edit_ids = set(self._get_top_edits(q_embs))
                 if not top_edit_ids:
                     return []
-                key_indices = [i for i, e in enumerate(self.codebook) 
-                              if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
+                key_indices = [i for i, e in enumerate(self.codebook) if e["edit_idx"] in top_edit_ids]
             else:
-                key_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
+                key_indices = list(range(len(self.codebook)))
         if not key_indices:
             return []
         
@@ -722,124 +718,35 @@ class IKE_CHAIN(nn.Module):
         return list(retrieved)
 
     @torch.no_grad()
-    def _retrieve_image_only_fallback(self, query_patches: List, question: str) -> List[str]:
-        """Image-only gate then text re-matching."""
-        img_only_indices = [i for i, e in enumerate(self.codebook) if e.get("is_image_only", False)]
-        if not img_only_indices:
-            return []
-        
-        # Encode query with empty text
-        q_embs = self._encode_vlm(query_patches, [""] * len(query_patches))
-        if self.distance == "cosine":
-            q_embs = F.normalize(q_embs, dim=-1)
-        q_embs = q_embs.cpu()
-        
-        # Compute distances
-        dist_matrix = self._compute_distances(q_embs, img_only_indices)
-        img_key_radii = self.key_radii[torch.tensor(img_only_indices)]
-        
-        in_radius = dist_matrix <= img_key_radii
-        matched_mask = in_radius.any(dim=0)
-        if not matched_mask.any():
-            return []
-        
-        # Get top_i matches
-        matched_local = torch.where(matched_mask)[0]
-        min_dists = dist_matrix[:, matched_local].min(dim=0).values
-        top_i_local = matched_local[min_dists.argsort()][:self.top_i_image_only].tolist()
-        
-        matched_edit_ids = {self.codebook[img_only_indices[i]]["edit_idx"] for i in top_i_local}
-        
-        # Re-match with candidate edit's texts
-        retrieved = set()
-        for edit_idx in matched_edit_ids:
-            edit_text_keys = [i for i, e in enumerate(self.codebook) 
-                            if e.get("edit_idx") == edit_idx and not e.get("is_image_only", False)]
-            if not edit_text_keys:
-                continue
-            
-            edit_texts = list(set(self.codebook[i]["key_text"] for i in edit_text_keys))
-            for text in edit_texts:
-                text_key_indices = [i for i in edit_text_keys if self.codebook[i]["key_text"] == text]
-                results = self._retrieve_from_keys(query_patches, text, key_indices=text_key_indices)
-                retrieved.update(results)
-        
-        return list(retrieved)
-
-    @torch.no_grad()
-    def _get_matched_indices(self, image, question: str, apply_cap_k: bool = True) -> Tuple[set, set]:
-        """Get matched key indices for plotting. Returns (text_matched, img_fallback_matched)."""
-        text_matched, img_matched = set(), set()
+    def _get_matched_indices(self, image, question: str, apply_cap_k: bool = True) -> set:
+        """Get matched key indices for plotting."""
         if self.key_embs is None or len(self.codebook) == 0:
-            return text_matched, img_matched
+            return set()
         
-        query_patches = self.patchifier.patchify(image, kernels=self.query_kernels)
+        query_patches = [image]  # Use whole image for query
         
-        # Stage 1: Text-aware
         q_embs = self._encode_vlm(query_patches, [question] * len(query_patches)).cpu()
         if self.distance == "cosine":
             q_embs = F.normalize(q_embs, dim=-1)
         
-        # Level 1: Filter to top edits (if enabled)
+        # Filter to top edits if enabled
         if self.cap_edits > 0 and self.edit_centroids is not None:
             top_edit_ids = set(self._get_top_edits(q_embs))
             if not top_edit_ids:
-                return text_matched, img_matched  # No edit matched
-            text_indices = [i for i, e in enumerate(self.codebook) 
-                           if not e.get("is_image_only", False) and e["edit_idx"] in top_edit_ids]
+                return set()
+            key_indices = [i for i, e in enumerate(self.codebook) if e["edit_idx"] in top_edit_ids]
         else:
-            text_indices = [i for i, e in enumerate(self.codebook) if not e.get("is_image_only", False)]
+            key_indices = list(range(len(self.codebook)))
         
-        if text_indices:
-            dist_matrix = self._compute_distances(q_embs, text_indices)
-            min_dists = dist_matrix.min(dim=0).values
-            top_k = min_dists.argsort()
-            if apply_cap_k:
-                top_k = top_k[:self.cap_keys]
-            text_matched = {text_indices[i.item()] for i in top_k}
+        if not key_indices:
+            return set()
         
-        if text_matched or not self.image_only_retrieval:
-            return text_matched, img_matched
-        
-        # Stage 2+3: Image-only fallback
-        img_only_idx = [i for i, e in enumerate(self.codebook) if e.get("is_image_only", False)]
-        if not img_only_idx:
-            return text_matched, img_matched
-        
-        q_empty = self._encode_vlm(query_patches, [""] * len(query_patches)).cpu()
-        if self.distance == "cosine":
-            q_empty = F.normalize(q_empty, dim=-1)
-        
-        dm = self._compute_distances(q_empty, img_only_idx)
-        img_radii = self.key_radii[torch.tensor(img_only_idx)]
-        matched = dm <= img_radii
-        if not matched.any():
-            return text_matched, img_matched
-        
-        matched_local = torch.where(matched.any(dim=0))[0]
-        min_d = dm[:, matched_local].min(dim=0).values
-        top_local = matched_local[min_d.argsort()][:self.top_i_image_only].tolist()
-        edit_ids = {self.codebook[img_only_idx[i]]["edit_idx"] for i in top_local}
-        
-        for eid in edit_ids:
-            edit_keys = [i for i, e in enumerate(self.codebook) if e.get("edit_idx") == eid and not e.get("is_image_only", False)]
-            for text in set(self.codebook[i]["key_text"] for i in edit_keys):
-                t_idx = [i for i in edit_keys if self.codebook[i]["key_text"] == text]
-                q_t = self._encode_vlm(query_patches, [text] * len(query_patches)).cpu()
-                if self.distance == "cosine":
-                    q_t = F.normalize(q_t, dim=-1)
-                dm = self._compute_distances(q_t, t_idx)
-                t_radii = self.key_radii[torch.tensor(t_idx)]
-                matched = dm <= t_radii
-                matched_local = torch.where(matched.any(dim=0))[0]
-                if matched_local.numel() > 0:
-                    min_dists = dm[:, matched_local].min(dim=0).values
-                    top_k = matched_local[min_dists.argsort()]
-                    if apply_cap_k:
-                        top_k = top_k[:self.cap_keys]
-                    img_matched.update(t_idx[i.item()] for i in top_k)
-        
-        return text_matched, img_matched
+        dist_matrix = self._compute_distances(q_embs, key_indices)
+        min_dists = dist_matrix.min(dim=0).values
+        top_k = min_dists.argsort()
+        if apply_cap_k:
+            top_k = top_k[:self.cap_keys]
+        return {key_indices[i.item()] for i in top_k}
 
     def _effective_distances(self, indices: List[int] = None) -> np.ndarray:
         """Compute effective pairwise distances: max(0, d - (r1+r2))."""
@@ -916,7 +823,7 @@ class IKE_CHAIN(nn.Module):
         r_info = {"fixed": f"fixed={self.fixed_radius}", 
                   "balance": f"balance(n={self.n_positive_samples},α={self.balance_alpha})",
                   "augment": f"augment(n={self.n_radius_samples})"}.get(self.radius_method, "")
-        print(f"\n[IKE_CHAIN] +{len(valid_exs)} edits (k={self.top_k_patches}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
+        print(f"[IKE_CHAIN] +{len(valid_exs)} edits (p_yes>{self.p_yes_threshold}, r={r_info}), {n_before}->{n_after} keys, {mem_mb:.1f} MB", flush=True)
         
         # NOTE: apply_to_dataset is called externally in edit_utils.py before evaluation
         # to avoid O(N²) hubness recomputation after each edit batch
@@ -932,7 +839,7 @@ class IKE_CHAIN(nn.Module):
             "centroid_sigmas": self.centroid_sigmas,
             "key_dist_threshold": self.key_dist_threshold,
             "edit_centroids": self.edit_centroids,
-            "top_k_patches": self.top_k_patches,
+            "p_yes_threshold": self.p_yes_threshold,
             "_edit_count": self._edit_count,
         }, path)
         print(f"[IKE_CHAIN] saved {len(self.codebook)} keys to {path}", flush=True)
@@ -959,9 +866,8 @@ class IKE_CHAIN(nn.Module):
     def get_stats(self) -> Dict:
         """Return statistics about stored keys."""
         n_patch = sum(1 for e in self.codebook if e.get("is_patch", False))
-        n_img_only = sum(1 for e in self.codebook if e.get("is_image_only", False))
         n_question = sum(1 for e in self.codebook if e.get("is_question", False))
-        n_rationale = sum(1 for e in self.codebook if not e.get("is_question", True) and not e.get("is_image_only", False))
+        n_rationale = sum(1 for e in self.codebook if not e.get("is_question", True))
         n_merged = sum(1 for e in self.codebook if e.get("is_merged", False))
         
         stats = {
@@ -971,13 +877,11 @@ class IKE_CHAIN(nn.Module):
             "num_merged_keys": n_merged,
             "num_question_keys": n_question,
             "num_rationale_keys": n_rationale,
-            "num_image_only_keys": n_img_only,
             "num_edits": len(self._added_uids),
-            "top_k_patches": self.top_k_patches,
+            "p_yes_threshold": self.p_yes_threshold,
             "merge_keys": self.merge_keys,
             "cap_edits": self.cap_edits,
             "cap_keys": self.cap_keys,
-            "image_only_retrieval": self.image_only_retrieval,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
         if self.key_radii is not None:
@@ -989,60 +893,73 @@ class IKE_CHAIN(nn.Module):
     # ==================== 6. VISUALIZATION ====================
 
     @torch.no_grad()
-    def visualize_patches(self, image, sentence: str = None, is_first_sentence: bool = True, 
-                          figsize=(16, 10), score_type="softmax"):
-        """Visualize patchification with scores and top-k highlighted."""
+    def visualize_patches(self, image, sentence: str = None, figsize=(16, 10)):
+        """Visualize patchification with two-route selection highlighted."""
         import matplotlib.pyplot as plt
         from matplotlib.patches import Rectangle
-        from scipy.special import softmax
         
         patches = self.patchifier.patchify(image)
-        patch_names = self.patchifier.get_patch_names()
+        patch_names = self.patchifier.get_patch_names(image)
+        units = self.patchifier.get_patch_units(image)
         n_patches = len(patches)
         
-        n_cols = 6
+        n_cols = 7
         n_rows = (n_patches + n_cols - 1) // n_cols
         fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
         axes = axes.flatten()
         
-        scores, top_k_idx, vqa_passed = None, [], set()
+        p_yes_scores, nlls, route1, route2 = None, None, set(), set()
         if sentence:
-            nlls = np.array([self._get_nll(p, self.patch_select_prompt, sentence) for p in patches[:-1]])
-            
-            if score_type == "softmax":
-                scores = softmax(-nlls)
-                top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
-            else:
-                scores = -nlls
-                top_k_idx = np.argsort(scores)[::-1][:self.top_k_patches].tolist()
-            
-            vqa_q = f"Does {sentence.lower().replace('.', '?')}" if is_first_sentence else f"Does the image show {sentence.lower().replace('.', '?')}"
+            vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
             print(f"[VQA] Q: {vqa_q}")
-            for i, idx in enumerate(top_k_idx):
-                nll_yes = self._get_nll(patches[idx], vqa_q, "Yes")
-                nll_no = self._get_nll(patches[idx], vqa_q, "No")
-                p_yes = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
-                status = "✓" if p_yes > 0.9 else "✗"
-                print(f"  [{i}] {patch_names[idx]}: score={scores[idx]:.1%}, p_yes={p_yes:.3f} {status}")
-                if p_yes > 0.9:
-                    vqa_passed.add(idx)
+            
+            # Compute p_yes and NLL for all patches (exclude full image for selection)
+            p_yes_scores = np.array(self._compute_p_yes(patches[:-1], vqa_q))
+            nlls = self._compute_nll_probs(patches[:-1], sentence)
+            
+            passed_idx = [i for i, p in enumerate(p_yes_scores) if p > self.p_yes_threshold]
+            print(f"[Passed p_yes>{self.p_yes_threshold}]: {len(passed_idx)} patches")
+            
+            # Route 1: Smallest unit
+            if passed_idx:
+                min_unit = min(units[i] for i in passed_idx)
+                route1 = {i for i in passed_idx if units[i] == min_unit}
+                print(f"[Route1 - Smallest unit ({min_unit})]: {[patch_names[i] for i in route1]}")
+            
+            # Route 2: Highest NLL prob (keep ties)
+            if passed_idx:
+                best_nll = min(nlls[i] for i in passed_idx)
+                route2 = {i for i in passed_idx if nlls[i] == best_nll}
+                print(f"[Route2 - Best NLL]: {[patch_names[i] for i in route2]}")
+            
+            selected = route1 | route2
+            print(f"[Selected]: {len(selected)} patches")
         
         for idx, ax in enumerate(axes):
             if idx < n_patches:
                 ax.imshow(patches[idx])
                 title = patch_names[idx]
-                if scores is not None and idx < len(scores):
-                    title = f"{patch_names[idx]}\n{'P' if score_type == 'softmax' else 'LL'}={scores[idx]:.1%}" if score_type == "softmax" else f"{patch_names[idx]}\nLL={scores[idx]:.1f}"
+                if p_yes_scores is not None and idx < len(p_yes_scores):
+                    title = f"{patch_names[idx]}\np={p_yes_scores[idx]:.0%} u={units[idx]}"
                 ax.set_title(title, fontsize=6)
-                if idx in top_k_idx:
-                    color = 'limegreen' if idx in vqa_passed else 'red'
+                # Highlight: green=both routes, blue=route1 only, orange=route2 only
+                if idx in route1 and idx in route2:
+                    color = 'limegreen'
+                elif idx in route1:
+                    color = 'deepskyblue'
+                elif idx in route2:
+                    color = 'orange'
+                else:
+                    color = None
+                if color:
                     ax.add_patch(Rectangle((0, 0), patches[idx].width-1, patches[idx].height-1, 
                                           linewidth=8, edgecolor=color, facecolor='none'))
             ax.axis('off')
         
-        title = f"Patches ({n_patches} total, top-k={self.top_k_patches}, VQA passed={len(vqa_passed)})"
+        title = f"Patches ({n_patches} total, p_yes>{self.p_yes_threshold}, selected={len(route1|route2)})"
         if sentence:
             title += f"\nsentence: {sentence}"
+        title += "\n(green=both, blue=smallest, orange=best-NLL)"
         plt.suptitle(title, fontsize=10)
         plt.tight_layout()
         plt.show()
@@ -1072,16 +989,15 @@ class IKE_CHAIN(nn.Module):
         n_keys = len(indices)
         
         # Get matched indices
-        text_global, img_global, q_emb = set(), set(), None
+        matched_global, q_emb = set(), None
         if query_img is not None and query_text is not None:
-            text_global, img_global = self._get_matched_indices(query_img, query_text, apply_cap_k=apply_cap_k)
-            query_patches = self.patchifier.patchify(query_img, kernels=self.query_kernels)
+            matched_global = self._get_matched_indices(query_img, query_text, apply_cap_k=apply_cap_k)
+            query_patches = [query_img]  # Use whole image for query
             q_embs = self._encode_vlm(query_patches, [query_text] * len(query_patches)).cpu()
             if self.distance == "cosine":
                 q_embs = F.normalize(q_embs, dim=-1)
             q_emb = q_embs[0].numpy()
-        text_local = {idx_to_local[g] for g in text_global if g in idx_to_local}
-        img_local = {idx_to_local[g] for g in img_global if g in idx_to_local}
+        matched_local = {idx_to_local[g] for g in matched_global if g in idx_to_local}
         
         # Build graph
         if use_effective_dist:
@@ -1129,8 +1045,8 @@ class IKE_CHAIN(nn.Module):
             if not nodelist:
                 continue
             colors = [cmap(edit_to_color[self.codebook[indices[i]].get("edit_idx", 0)]) for i in nodelist]
-            edgecolors = ['black' if i in text_local else 'red' if i in img_local else 'none' for i in nodelist]
-            linewidths = [1.5 if i in text_local or i in img_local else 0 for i in nodelist]
+            edgecolors = ['black' if i in matched_local else 'none' for i in nodelist]
+            linewidths = [1.5 if i in matched_local else 0 for i in nodelist]
             nx.draw_networkx_nodes(G, pos, nodelist=nodelist, node_color=colors, node_shape=marker,
                                    node_size=size, alpha=0.8, ax=ax, edgecolors=edgecolors, linewidths=linewidths)
         
@@ -1143,14 +1059,12 @@ class IKE_CHAIN(nn.Module):
         ax.scatter([], [], c='gray', s=15, marker='s', label='merged')
         if q_node is not None:
             ax.scatter([], [], c='black', s=40, marker='*', label='query')
-        if text_local:
-            ax.scatter([], [], c='gray', s=30, marker='o', edgecolors='black', linewidths=1.5, label='text retrieval')
-        if img_local:
-            ax.scatter([], [], c='gray', s=30, marker='o', edgecolors='red', linewidths=1.5, label='image fallback')
+        if matched_local:
+            ax.scatter([], [], c='gray', s=30, marker='o', edgecolors='black', linewidths=1.5, label='retrieved')
         ax.legend(loc='lower left', fontsize=6, frameon=False, handletextpad=0.1)
         
         dist_mode = "eff" if use_effective_dist else "raw"
-        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {len(text_local)}+{len(img_local)} retrieved, {dist_mode})', fontsize=8)
+        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {len(matched_local)} retrieved, {dist_mode})', fontsize=8)
         ax.axis('off')
         plt.tight_layout()
         plt.show()
