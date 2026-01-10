@@ -51,9 +51,14 @@ def detect_ablation(args) -> tuple:
     
     Returns: (param_name, param_value) or (None, None) if using defaults.
     """
-    # Special case: mode ablation (mode + pool_method go together)
-    if args.mode is not None and args.mode != ABLATION_DEFAULTS["mode"]:
-        return "mode", args.mode
+    # Special case: mode ablation (mode + pool_method combined as "vision_mean", etc.)
+    if args.mode is not None:
+        pool = args.pool_method or "mean"
+        combined_value = f"{args.mode}_{pool}"
+        # Check if it's different from default (dual_sbert_mean)
+        default_combined = f"{ABLATION_DEFAULTS['mode']}_{ABLATION_DEFAULTS['pool_method']}"
+        if combined_value != default_combined:
+            return "mode", combined_value
     
     # Check other params
     for param in ["cap_keys", "radius_area_pct", "top_k_patches", "reject_threshold_pct"]:
@@ -274,6 +279,8 @@ def run_ablation(args):
     # Add metadata
     out_dict['ablation_param'] = ablation_param
     out_dict['ablation_value'] = ablation_value
+    out_dict['mode'] = args.mode or ABLATION_DEFAULTS["mode"]
+    out_dict['pool_method'] = args.pool_method or ABLATION_DEFAULTS["pool_method"]
     out_dict['n_edits'] = len(edit_ds.data)
     out_dict['model_name'] = args.model_name
     out_dict['dataset_name'] = args.dataset_name
@@ -315,7 +322,7 @@ if __name__ == "__main__":
     
     # Ablation hyperparameters (set ONE per run)
     parser.add_argument("--mode", type=str, default=None,
-                        choices=["vision", "language_last", "dual_sbert"],
+                        choices=["vision", "language", "language_last", "dual_sbert"],
                         help="Embedding mode")
     parser.add_argument("--pool_method", type=str, default=None,
                         choices=["mean", "last"],
