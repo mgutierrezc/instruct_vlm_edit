@@ -78,9 +78,10 @@ class IKE_CHAIN(nn.Module):
 
         # Patchification
         self.grid_size = int(getattr(cfg, "grid_size", 4))  # 3 or 4
-        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.95))
+        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.5))
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
         self.use_orig_rationale_keys = getattr(cfg, "use_orig_rationale_keys", False)  # <orig, si> keys
+        self.skip_tiebreak = getattr(cfg, "skip_tiebreak", False)  # skip NLL/unit tie-breakers, default false
 
         # Internal State
         self._added_uids = set()
@@ -269,11 +270,11 @@ class IKE_CHAIN(nn.Module):
         return np.array([self._get_nll(p, self.patch_select_prompt, sentence) for p in patches])
 
     @torch.no_grad()
-    def _select_patches_for_sentence(self, image, sentence: str, keep_one: bool = False) -> List[Image.Image]:
+    def _select_patches_for_sentence(self, image, sentence: str) -> List[Image.Image]:
         """Select patches via two routes.
         
-        Route 1: smallest unit → best NLL → (keep_one ? first : all)
-        Route 2: best NLL → smallest unit → (keep_one ? first : all)
+        skip_tiebreak=True:  Route1=all smallest unit, Route2=all best NLL
+        skip_tiebreak=False: Route1=smallest unit→best NLL, Route2=best NLL→smallest unit
         """
         patches = self.patchifier.patchify_exclude_full(image)
         units = self.patchifier.get_patch_units(image)[:-1]
@@ -289,18 +290,25 @@ class IKE_CHAIN(nn.Module):
         nlls = self._compute_nll_probs([patches[i] for i in passed], sentence)
         nll = {i: nlls[j] for j, i in enumerate(passed)}
         
-        def pick(candidates, key1, key2):
-            """Pick by key1, tie-break by key2, then first if keep_one."""
+        def pick(candidates, key1, key2=None):
+            """Pick by key1, optionally tie-break by key2."""
             best1 = min(key1(i) for i in candidates)
             c = [i for i in candidates if key1(i) == best1]
-            best2 = min(key2(i) for i in c)
-            c = [i for i in c if key2(i) == best2]
-            return [c[0]] if keep_one else c
+            if key2 is not None:
+                best2 = min(key2(i) for i in c)
+                c = [i for i in c if key2(i) == best2]
+            return c
         
-        # Route 1: smallest unit → best NLL
-        r1 = pick(passed, lambda i: units[i], lambda i: nll[i])
-        # Route 2: best NLL → smallest unit
-        r2 = pick(passed, lambda i: nll[i], lambda i: units[i])
+        if self.skip_tiebreak:
+            # Route 1: all with smallest unit
+            r1 = pick(passed, lambda i: units[i])
+            # Route 2: all with best NLL
+            r2 = pick(passed, lambda i: nll[i])
+        else:
+            # Route 1: smallest unit → best NLL
+            r1 = pick(passed, lambda i: units[i], lambda i: nll[i])
+            # Route 2: best NLL → smallest unit
+            r2 = pick(passed, lambda i: nll[i], lambda i: units[i])
         
         selected = set(r1 + r2)
         if torch.cuda.is_available():

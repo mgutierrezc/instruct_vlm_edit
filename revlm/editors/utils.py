@@ -277,47 +277,34 @@ def pad_with_midas_mosaic(img, area_pct: float = DEFAULT_AREA_PCT) -> PILImage.I
 
 
 class ImagePatchifier:
-    """Configurable g×g grid patchifier with roughly-square patches (|w-h|<=1, max 2×2).
+    """Configurable g×g grid patchifier.
     
-    Kernels: 1×1, 1×2, 2×1, 2×2 (dynamically computed based on grid_size)
-    Aspect ratio filtering: excludes 1×2 on landscape, 2×1 on portrait.
+    grid_size=3: 30 patches (1x1:9, 1x2:6, 2x1:6, 2x2:4, 2x3:2, 3x2:2, 3x3:1)
+    grid_size=4: 49 patches (1x1:16, 1x2:12, 2x1:12, 2x2:9)
     
-    Grid layout (3×3):          Grid layout (4×4):
-    ┌───┬───┬───┐               ┌───┬───┬───┬───┐
-    │ 0 │ 1 │ 2 │               │ 0 │ 1 │ 2 │ 3 │
-    ├───┼───┼───┤               ├───┼───┼───┼───┤
-    │ 3 │ 4 │ 5 │               │ 4 │ 5 │ 6 │ 7 │
-    ├───┼───┼───┤               ├───┼───┼───┼───┤
-    │ 6 │ 7 │ 8 │               │ 8 │ 9 │10 │11 │
-    └───┴───┴───┘               ├───┼───┼───┼───┤
-                                │12 │13 │14 │15 │
-    Patches: 25 total           └───┴───┴───┴───┘
-    - 1×1: 9                    
-    - 1×2: 6                    Patches: 49 total
-    - 2×1: 6                    - 1×1: 16
-    - 2×2: 4                    - 1×2: 12
-                                - 2×1: 12
-                                - 2×2: 9
+    Aspect ratio filtering: excludes 1x2 on landscape, 2x1 on portrait.
     """
     
-    KERNEL_ORDER = ["1x1", "1x2", "2x1", "2x2"]
-    
     def __init__(self, grid_size: int = 4, output_size: Tuple[int, int] = None):
-        """
-        Args:
-            grid_size: Grid dimension (3 or 4). Default 4 for finer patches.
-            output_size: Optional (H, W) to resize all patches. If None, keeps original crop size.
-        """
         self.grid_size = grid_size
         self.output_size = output_size
-        # Compute kernel positions based on grid_size
         g = self.grid_size
+        
+        # Base kernels (all grid sizes)
         self.KERNELS = {
-            "1x1": (1, 1, [(r, c) for r in range(g) for c in range(g)]),          # g²
-            "1x2": (1, 2, [(r, c) for r in range(g) for c in range(g - 1)]),      # g × (g-1)
-            "2x1": (2, 1, [(r, c) for r in range(g - 1) for c in range(g)]),      # (g-1) × g
-            "2x2": (2, 2, [(r, c) for r in range(g - 1) for c in range(g - 1)]),  # (g-1)²
+            "1x1": (1, 1, [(r, c) for r in range(g) for c in range(g)]),
+            "1x2": (1, 2, [(r, c) for r in range(g) for c in range(g - 1)]),
+            "2x1": (2, 1, [(r, c) for r in range(g - 1) for c in range(g)]),
+            "2x2": (2, 2, [(r, c) for r in range(g - 1) for c in range(g - 1)]),
         }
+        self.KERNEL_ORDER = ["1x1", "1x2", "2x1", "2x2"]
+        
+        # Extra kernels for grid_size=3
+        if g == 3:
+            self.KERNELS["2x3"] = (2, 3, [(r, 0) for r in range(g - 1)])  # 2 wide rects
+            self.KERNELS["3x2"] = (3, 2, [(0, c) for c in range(g - 1)])  # 2 tall rects
+            self.KERNELS["3x3"] = (3, 3, [(0, 0)])                        # 1 full
+            self.KERNEL_ORDER += ["2x3", "3x2", "3x3"]
     
     def _load_image(self, img, max_size: int = 512) -> PILImage.Image:
         """Ensure image is PIL Image in RGB, resized if too large."""
@@ -359,13 +346,13 @@ class ImagePatchifier:
         w, h = img.size
         cell_w, cell_h = w // self.grid_size, h // self.grid_size
         
-        # Auto-filter kernels based on aspect ratio (kernel format: rows x cols)
+        # Auto-filter kernels based on aspect ratio
         if kernels is None:
             use_kernels = list(self.KERNEL_ORDER)
             if w > h:
-                use_kernels = [k for k in use_kernels if k != "1x2"]  # exclude wide patches on landscape
+                use_kernels = [k for k in use_kernels if k not in ("1x2", "2x3")]
             elif h > w:
-                use_kernels = [k for k in use_kernels if k != "2x1"]  # exclude tall patches on portrait
+                use_kernels = [k for k in use_kernels if k not in ("2x1", "3x2")]
         else:
             use_kernels = kernels
         
@@ -379,14 +366,14 @@ class ImagePatchifier:
         return patches
     
     def _get_kernels_for_image(self, img) -> List[str]:
-        """Get filtered kernel list based on image aspect ratio (kernel format: rows x cols)."""
+        """Get filtered kernel list based on image aspect ratio."""
         img = self._load_image(img)
         w, h = img.size
         kernels = list(self.KERNEL_ORDER)
         if w > h:
-            kernels = [k for k in kernels if k != "1x2"]  # exclude wide patches on landscape
+            kernels = [k for k in kernels if k not in ("1x2", "2x3")]  # exclude wide patches on landscape
         elif h > w:
-            kernels = [k for k in kernels if k != "2x1"]  # exclude tall patches on portrait
+            kernels = [k for k in kernels if k not in ("2x1", "3x2")]  # exclude tall patches on portrait
         return kernels
     
     def patchify_exclude_full(self, img) -> List[PILImage.Image]:
