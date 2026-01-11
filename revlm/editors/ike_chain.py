@@ -77,11 +77,11 @@ class IKE_CHAIN(nn.Module):
         self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
 
         # Patchification
-        self.grid_size = int(getattr(cfg, "grid_size", 4))  # 3 or 4
+        self.grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
         self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.5))
         self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
-        self.use_orig_rationale_keys = getattr(cfg, "use_orig_rationale_keys", False)  # <orig, si> keys
-        self.skip_tiebreak = getattr(cfg, "skip_tiebreak", False)  # skip NLL/unit tie-breakers, default false
+        self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "patch")  # "orig", "patch", "both"
+        self.keep_ties = getattr(cfg, "keep_ties", False)  # keep NLL/unit ties
 
         # Internal State
         self._added_uids = set()
@@ -272,9 +272,20 @@ class IKE_CHAIN(nn.Module):
     @torch.no_grad()
     def _select_patches_for_sentence(self, image, sentence: str) -> List[Image.Image]:
         """Select patches via two routes.
-        
-        skip_tiebreak=True:  Route1=all smallest unit, Route2=all best NLL
-        skip_tiebreak=False: Route1=smallest unit→best NLL, Route2=best NLL→smallest unit
+        1. Compute p_yes for ALL patches
+        2. Filter patches with p_yes > threshold (self.p_yes_threshold)
+        3. If none pass → return []
+        4. Compute NLL for PASSED patches only (lazy optimization)
+
+        If self.keep_ties = True:
+            Route 1: Keep ALL with smallest unit count (no tiebreak)
+            Route 2: Keep ALL with best NLL (no tiebreak)
+
+        If self.keep_ties = False:
+            Route 1: smallest unit → tiebreak by best NLL → keep ALL tied
+            Route 2: best NLL → tiebreak by smallest unit → keep ALL tied
+
+        Final Output: set(Route1) ∪ set(Route2)
         """
         patches = self.patchifier.patchify_exclude_full(image)
         units = self.patchifier.get_patch_units(image)[:-1]
@@ -299,7 +310,7 @@ class IKE_CHAIN(nn.Module):
                 c = [i for i in c if key2(i) == best2]
             return c
         
-        if self.skip_tiebreak:
+        if self.keep_ties:
             # Route 1: all with smallest unit
             r1 = pick(passed, lambda i: units[i])
             # Route 2: all with best NLL
@@ -413,10 +424,10 @@ class IKE_CHAIN(nn.Module):
         new_texts.append(question)
         new_is_question.append(True)
         
-        # 2. Rationale keys: EITHER <orig, si> OR <patch, si>, not both
-        if self.use_orig_rationale_keys:
-            # No patchification: use original image with rationale sentences
-            for sent in rationale_sents:
+        # 2. Rationale keys: "orig", "patch", or "both"
+        for sent in rationale_sents:
+            # Add original image keys if "orig" or "both"
+            if self.pair_rationale_w in ("orig", "both"):
                 new_entries.append({
                     "value": sent, "is_patch": False, "edit_idx": self._edit_count,
                     "key_text": sent, "is_question": False
@@ -424,9 +435,9 @@ class IKE_CHAIN(nn.Module):
                 new_imgs.append(img)
                 new_texts.append(sent)
                 new_is_question.append(False)
-        else:
-            # With patchification: use patches with rationale sentences
-            for sent in rationale_sents:
+            
+            # Add patch keys if "patch" or "both"
+            if self.pair_rationale_w in ("patch", "both"):
                 patches = self._select_patches_for_sentence(img, sent)
                 for patch in patches:
                     new_entries.append({
@@ -782,7 +793,7 @@ class IKE_CHAIN(nn.Module):
         if edit_ds is None:
             return self.model
         
-        print(f"[IKE_CHAIN] mode={self.mode}, pool_method={self.pool_method}, merge_keys={self.merge_keys} (area={self.radius_area_pct})")
+        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, rationale={self.pair_rationale_w}, merge={self.merge_keys} (area={self.radius_area_pct})")
         n_before = len(self.codebook)
         
         # Filter valid examples
