@@ -1,10 +1,18 @@
 import pandas as pd
 import os
+import json
 from huggingface_hub import snapshot_download
 import string
 
-def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0):
-    """Load caption dataframe from HuggingFace dataset."""
+def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = False):
+    """Load caption dataframe from HuggingFace dataset.
+    
+    Args:
+        dataset_name: Name of the dataset (e.g., "aokvqa", "fvqa")
+        edit_ds: Optional VQADataset to filter by uids
+        s: Minimum number of sentences in rationale (0 = no filter)
+        filter_bad: If True, filter out bad sids from data/r_gen/remove/{dataset_name}.json
+    """
     repo_id = "JJoy333/RationaleVQA"
     local_root = snapshot_download(
         repo_id=repo_id,
@@ -18,6 +26,15 @@ def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0):
         r = r_gen_df["rationale"].fillna("").astype(str)
         n = r.str.split(r"[.!?]+\s*").apply(lambda x: len([p for p in x if p.strip()]))
         r_gen_df = r_gen_df[n >= int(s)]
+    # Filter out bad sids if requested
+    if filter_bad:
+        bad_sids_path = f"data/r_gen/remove/{dataset_name}.json"
+        if os.path.exists(bad_sids_path):
+            with open(bad_sids_path, "r") as f:
+                bad_sids = set(json.load(f))
+            before_count = len(r_gen_df)
+            r_gen_df = r_gen_df[~r_gen_df["sid"].astype(str).isin(bad_sids)]
+            print(f"Filtered out {before_count - len(r_gen_df)} bad sids from r_gen_df")
     # Filter by edit_ds uids if provided
     if edit_ds is not None:
         edit_uids = [str(ex["uid"]) for ex in edit_ds.data]

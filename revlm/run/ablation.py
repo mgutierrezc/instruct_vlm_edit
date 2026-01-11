@@ -41,7 +41,7 @@ ABLATION_DEFAULTS = {
     "pool_method": "mean",
     "cap_keys": 3,
     "radius_area_pct": 0.9,
-    "top_k_patches": 3,
+    "use_orig_rationale_keys": False,
     "reject_threshold_pct": 0,
 }
 
@@ -59,7 +59,7 @@ def detect_ablation(args) -> tuple:
         return "mode", combined_value
     
     # Check other params - return if explicitly set (even if matches default)
-    for param in ["cap_keys", "radius_area_pct", "top_k_patches", "reject_threshold_pct"]:
+    for param in ["cap_keys", "radius_area_pct", "use_orig_rationale_keys", "reject_threshold_pct"]:
         cli_val = getattr(args, param, None)
         if cli_val is not None:
             return param, cli_val
@@ -135,8 +135,8 @@ def run_ablation(args):
         config.editor.cap_keys = args.cap_keys
     if args.radius_area_pct is not None:
         config.editor.radius_area_pct = args.radius_area_pct
-    if args.top_k_patches is not None:
-        config.editor.top_k_patches = args.top_k_patches
+    if args.use_orig_rationale_keys is not None:
+        config.editor.use_orig_rationale_keys = args.use_orig_rationale_keys
     if args.reject_threshold_pct is not None:
         config.editor.reject_threshold_pct = args.reject_threshold_pct
     
@@ -329,8 +329,8 @@ if __name__ == "__main__":
                         help="Max KNN keys to retrieve")
     parser.add_argument("--radius_area_pct", type=float, default=None,
                         help="Augmentation strength for radius estimation")
-    parser.add_argument("--top_k_patches", type=int, default=None,
-                        help="Max patches per rationale sentence")
+    parser.add_argument("--use_orig_rationale_keys", type=lambda x: x.lower() == 'true',
+                        default=None, help="Use original image instead of patches (True/False)")
     parser.add_argument("--reject_threshold_pct", type=float, default=None,
                         help="Rejection percentile threshold")
     

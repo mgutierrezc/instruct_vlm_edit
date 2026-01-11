@@ -405,7 +405,9 @@ class IKE_CHAIN(nn.Module):
         new_texts.append(question)
         new_is_question.append(True)
         
+        # 2. Rationale keys: EITHER <orig, si> OR <patch, si>, not both
         if self.use_orig_rationale_keys:
+            # No patchification: use original image with rationale sentences
             for sent in rationale_sents:
                 new_entries.append({
                     "value": sent, "is_patch": False, "edit_idx": self._edit_count,
@@ -414,18 +416,18 @@ class IKE_CHAIN(nn.Module):
                 new_imgs.append(img)
                 new_texts.append(sent)
                 new_is_question.append(False)
-        
-        # 2. Sentence-specific patch keys
-        for i, sent in enumerate(rationale_sents):
-            patches = self._select_patches_for_sentence(img, sent)
-            for patch in patches:
-                new_entries.append({
-                    "value": sent, "is_patch": True, "edit_idx": self._edit_count,
-                    "key_text": sent, "is_question": False
-                })
-                new_imgs.append(patch)
-                new_texts.append(sent)
-                new_is_question.append(False)
+        else:
+            # With patchification: use patches with rationale sentences
+            for sent in rationale_sents:
+                patches = self._select_patches_for_sentence(img, sent)
+                for patch in patches:
+                    new_entries.append({
+                        "value": sent, "is_patch": True, "edit_idx": self._edit_count,
+                        "key_text": sent, "is_question": False
+                    })
+                    new_imgs.append(patch)
+                    new_texts.append(sent)
+                    new_is_question.append(False)
         
         self._edit_count += 1
         

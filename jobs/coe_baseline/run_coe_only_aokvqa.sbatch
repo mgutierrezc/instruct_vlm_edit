@@ -23,7 +23,7 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
-MODELS=("blip" "llava" "qwen_4b" "qwen3")
+MODELS=("blip" "llava" "qwen3_4b" "qwen3")
 
 for MODEL in "${MODELS[@]}"; do
   echo "=========================================="
