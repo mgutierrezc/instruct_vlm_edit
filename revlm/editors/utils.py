@@ -279,10 +279,18 @@ def pad_with_midas_mosaic(img, area_pct: float = DEFAULT_AREA_PCT) -> PILImage.I
 class ImagePatchifier:
     """Configurable g×g grid patchifier.
     
-    grid_size=3: 30 patches (1x1:9, 1x2:6, 2x1:6, 2x2:4, 2x3:2, 3x2:2, 3x3:1)
-    grid_size=4: 49 patches (1x1:16, 1x2:12, 2x1:12, 2x2:9)
+    grid_size=3 (30 patches):                grid_size=4 (49 patches):
+    ┌───┬───┬───┐                            ┌───┬───┬───┬───┐
+    │ 0 │ 1 │ 2 │  1x1: 9 patches            │ 0 │ 1 │ 2 │ 3 │  1x1: 16 patches
+    ├───┼───┼───┤  1x2: 6 patches            ├───┼───┼───┼───┤  1x2: 12 patches
+    │ 3 │ 4 │ 5 │  2x1: 6 patches            │ 4 │ 5 │ 6 │ 7 │  2x1: 12 patches
+    ├───┼───┼───┤  2x2: 4 patches            ├───┼───┼───┼───┤  2x2: 9 patches
+    │ 6 │ 7 │ 8 │  2x3: 2 patches            │ 8 │ 9 │10 │11 │
+    └───┴───┴───┘  3x2: 2 patches            ├───┼───┼───┼───┤
+                   3x3: 1 patch              │12 │13 │14 │15 │
+                                             └───┴───┴───┴───┘
     
-    Aspect ratio filtering: excludes 1x2 on landscape, 2x1 on portrait.
+    Aspect ratio filtering: excludes 1x2/2x3 on landscape, 2x1/3x2 on portrait.
     """
     
     def __init__(self, grid_size: int = 4, output_size: Tuple[int, int] = None):
@@ -401,56 +409,6 @@ class ImagePatchifier:
             units.extend([rows * cols] * len(positions))
         return units
 
-
-# class Augmenter:
-#     """Online augmentation for images, questions, and rationales."""
-
-#     def __init__(self, wrapper=None):
-#         self.wrapper = wrapper
-#         self.img_aug = T.Compose([
-#             T.RandomResizedCrop(size=(384, 384), scale=(0.7, 1.0)),
-#             T.RandomHorizontalFlip(p=0.5),
-#             T.RandomRotation(15),
-#             T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-#         ])
-#         self._blank = PILImage.new("RGB", (364, 364), color="black")
-#         self.temp = 1.5
-#         self.n_chain = 5  # augment n times in sequence
-
-#     def image(self, img):
-#         """Apply random image augmentations."""
-#         if isinstance(img, str):
-#             img = PILImage.open(img).convert("RGB")
-#         elif hasattr(img, "convert"):
-#             img = img.convert("RGB")
-#         return self.img_aug(img)
-#         # return img
-
-#     def rephrase(self, text):
-#         """Rephrase text using VLM."""
-#         import random
-#         if not self.wrapper or not text:
-#             return text
-#         candidates = []
-#         for c in range(self.n_chain):
-#             prev = candidates[-1] if candidates else text
-#             prompt = f"Rephrase this sentence while keeping the same meaning:\n\n{prev}\n\nRephrased:"
-#             try:
-#                 out = self.wrapper.generate([self._blank], [prompt], max_new_tokens=64, temperature=self.temp)[0]
-#                 out = str(out).strip()
-#                 if out and out != text:
-#                     candidates.append(out)
-#             except Exception:
-#                 pass
-#         result = random.choice(candidates) if candidates else text
-#         print(f"[AUG] orig: {text!r}  →  aug: {result!r} (from {len(candidates)} candidates)")  # DEBUG
-#         return result
-
-#     def question(self, q):
-#         return self.rephrase(q)
-
-#     def rationale(self, sent):
-#         return self.rephrase(sent)
 
 
 class Augmenter:

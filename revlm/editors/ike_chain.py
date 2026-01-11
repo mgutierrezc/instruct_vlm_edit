@@ -50,22 +50,22 @@ class IKE_CHAIN(nn.Module):
         self.seed = getattr(cfg, "seed", None)
 
         # Core Retrieval
-        self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
-        self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
         self.cap_keys = int(getattr(cfg, "cap_keys", 5))                    # final max keys to retrieve
-        self.prefix = getattr(cfg, "cot_prefix", "")                            # prefix for retrieved facts
-        self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
-        self.query_radius_method = getattr(cfg, "query_radius_method", "patch_spread")  # "patch_spread" or "augment"
         self.hubness_keys = getattr(cfg, "hubness_keys", True)
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
         self.hubness_knn = int(getattr(cfg, "hubness_knn", 30))
-        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 25))  # 0=disabled, e.g. 25
-
+        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 10))  # 0=disabled, e.g. at least one query-key distance shorter than 5 percentile of key-key distances
+        # --- legacy params (not use) ---
+        self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
+        self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
+        self.query_radius_filter = getattr(cfg, "query_radius_filter", False)
+        self.query_radius_method = getattr(cfg, "query_radius_method", "patch_spread")  # "patch_spread" or "augment"
+        
         # Embedding Config
-        self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
         self.mode = getattr(cfg, "mode", "dual_sbert")              # "vision", "language", "language_last", "dual_sbert"
         self.pool_method = getattr(cfg, "pool_method", "mean")      # "mean" or "last"
+        self.distance = getattr(cfg, "distance", "l2")              # "l2" or "cosine"
         self.lang_scaler = float(getattr(config.model, "lang_scaler_sbert", 30.0))
         
         # Radius & Merging (radius_area_pct = -1 disables merging)
@@ -77,11 +77,11 @@ class IKE_CHAIN(nn.Module):
         self.radius_scaler = float(getattr(cfg, "radius_scaler", 1.0))
 
         # Patchification
-        self.grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
-        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.5))
-        self.patch_select_prompt = getattr(cfg, "patch_select_prompt", "Describe this image.")
+        self._grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
+        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.95))
         self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "patch")  # "orig", "patch", "both"
         self.keep_ties = getattr(cfg, "keep_ties", False)  # keep NLL/unit ties
+        self.aug_as_keys = getattr(cfg, "aug_as_keys", True)  # add augmented versions as keys
 
         # Internal State
         self._added_uids = set()
@@ -102,10 +102,10 @@ class IKE_CHAIN(nn.Module):
         
         # Logging
         self.last_retrieval_log = None
-        self.plot_codebook_pct_threshold = 85
+        self.plot_codebook_pct_threshold = 90
 
         # Setup Hooks & Tools
-        self.patchifier = ImagePatchifier(grid_size=self.grid_size)
+        self.patchifier = ImagePatchifier(grid_size=self._grid_size)
         dataset_name = getattr(getattr(config, "experiment", None), "dataset_name", None)
         self.augmenter = Augmenter(self.wrapper, seed=self.seed, mosaic_prob=1.0, dataset_name=dataset_name)
         
@@ -149,6 +149,16 @@ class IKE_CHAIN(nn.Module):
     def merge_keys(self) -> bool:
         """Dynamic: merge_keys = True iff radius_area_pct > 0."""
         return self.radius_area_pct > 0
+
+    @property
+    def grid_size(self) -> int:
+        return self._grid_size
+    
+    @grid_size.setter
+    def grid_size(self, value: int):
+        """Update grid_size and recreate patchifier."""
+        self._grid_size = int(value)
+        self.patchifier = ImagePatchifier(grid_size=self._grid_size)
 
     def forward(self, *a, **kw):
         return self.model(*a, **kw)
@@ -267,7 +277,7 @@ class IKE_CHAIN(nn.Module):
 
     def _compute_nll_probs(self, patches: List, sentence: str) -> np.ndarray:
         """Compute NLL probabilities for all patches."""
-        return np.array([self._get_nll(p, self.patch_select_prompt, sentence) for p in patches])
+        return np.array([self._get_nll(p, "Describe this image.", sentence) for p in patches])
 
     @torch.no_grad()
     def _select_patches_for_sentence(self, image, sentence: str) -> List[Image.Image]:
@@ -275,15 +285,11 @@ class IKE_CHAIN(nn.Module):
         1. Compute p_yes for ALL patches
         2. Filter patches with p_yes > threshold (self.p_yes_threshold)
         3. If none pass → return []
-        4. Compute NLL for PASSED patches only (lazy optimization)
+        4. Compute NLL for PASSED patches only
 
-        If self.keep_ties = True:
-            Route 1: Keep ALL with smallest unit count (no tiebreak)
-            Route 2: Keep ALL with best NLL (no tiebreak)
-
-        If self.keep_ties = False:
-            Route 1: smallest unit → tiebreak by best NLL → keep ALL tied
-            Route 2: best NLL → tiebreak by smallest unit → keep ALL tied
+        Route 1 (keep_ties=True):  ALL with smallest unit
+        Route 1 (keep_ties=False): smallest unit → tiebreak by best NLL
+        Route 2: ALL with best NLL (no tiebreak)
 
         Final Output: set(Route1) ∪ set(Route2)
         """
@@ -310,16 +316,14 @@ class IKE_CHAIN(nn.Module):
                 c = [i for i in c if key2(i) == best2]
             return c
         
+        # Route 1: smallest unit (optionally tiebreak by NLL)
         if self.keep_ties:
-            # Route 1: all with smallest unit
             r1 = pick(passed, lambda i: units[i])
-            # Route 2: all with best NLL
-            r2 = pick(passed, lambda i: nll[i])
         else:
-            # Route 1: smallest unit → best NLL
             r1 = pick(passed, lambda i: units[i], lambda i: nll[i])
-            # Route 2: best NLL → smallest unit
-            r2 = pick(passed, lambda i: nll[i], lambda i: units[i])
+        
+        # Route 2: best NLL (no tiebreak)
+        r2 = pick(passed, lambda i: nll[i])
         
         selected = set(r1 + r2)
         if torch.cuda.is_available():
@@ -451,7 +455,8 @@ class IKE_CHAIN(nn.Module):
         self._edit_count += 1
         
         # Compute embeddings and radii (clean text for embedding only)
-        clean_texts = [self._clean_key_text(t) for t in new_texts]
+        # clean_texts = [self._clean_key_text(t) for t in new_texts]
+        clean_texts = new_texts
         new_embs = self._encode_vlm(new_imgs, clean_texts)
         if self.distance == "cosine":
             new_embs = F.normalize(new_embs, dim=-1)
@@ -462,6 +467,20 @@ class IKE_CHAIN(nn.Module):
             new_radii.append(r)
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         new_embs = new_embs.cpu()
+        
+        # Add augmented versions as keys
+        if self.aug_as_keys:
+            aug_imgs = [self.augmenter.image(img, area_pct=self.radius_area_pct) for img in new_imgs]
+            aug_texts = [self.augmenter.question(t) if is_q else self.augmenter.rationale(t)
+                         for t, is_q in zip(new_texts, new_is_question)]
+            aug_embs = self._encode_vlm(aug_imgs, aug_texts)
+            if self.distance == "cosine":
+                aug_embs = F.normalize(aug_embs, dim=-1)
+            aug_embs = aug_embs.cpu()
+            aug_entries = [{**e, "is_aug": True} for e in new_entries]
+            new_entries.extend(aug_entries)
+            new_embs = torch.cat([new_embs, aug_embs], dim=0)
+            new_radii = torch.cat([new_radii, new_radii.clone()])
         
         # Add to codebook
         n_merged, n_added = 0, 0
@@ -740,6 +759,11 @@ class IKE_CHAIN(nn.Module):
         
         dist_matrix = self._compute_distances(q_embs, key_indices)
         min_dists = dist_matrix.min(dim=0).values
+        
+        # Rejection gate: query too far from all keys
+        if self.key_dist_threshold is not None and min_dists.min() > self.key_dist_threshold:
+            return set()
+        
         top_k = min_dists.argsort()
         if apply_cap_k:
             top_k = top_k[:self.cap_keys]
@@ -776,7 +800,7 @@ class IKE_CHAIN(nn.Module):
             
             if facts:
                 ex["prompt_orig"] = prompt_orig
-                ex["prompt"] = f"{self.prefix}{' '.join(facts)} {prompt_orig}"
+                ex["prompt"] = f"{' '.join(facts)} {prompt_orig}"
                 applied += 1
             else:
                 ex["prompt"] = prompt_orig
@@ -793,7 +817,7 @@ class IKE_CHAIN(nn.Module):
         if edit_ds is None:
             return self.model
         
-        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, rationale={self.pair_rationale_w}, merge={self.merge_keys} (area={self.radius_area_pct})")
+        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, rationale={self.pair_rationale_w}, merge={self.merge_keys}, aug_as_keys={self.aug_as_keys}")
         n_before = len(self.codebook)
         
         # Filter valid examples
@@ -864,6 +888,7 @@ class IKE_CHAIN(nn.Module):
         n_question = sum(1 for e in self.codebook if e.get("is_question", False))
         n_rationale = sum(1 for e in self.codebook if not e.get("is_question", True))
         n_merged = sum(1 for e in self.codebook if e.get("is_merged", False))
+        n_aug = sum(1 for e in self.codebook if e.get("is_aug", False))
         
         stats = {
             "num_keys": len(self.codebook),
@@ -872,11 +897,13 @@ class IKE_CHAIN(nn.Module):
             "num_merged_keys": n_merged,
             "num_question_keys": n_question,
             "num_rationale_keys": n_rationale,
+            "num_aug_keys": n_aug,
             "num_edits": len(self._added_uids),
             "p_yes_threshold": self.p_yes_threshold,
             "merge_keys": self.merge_keys,
             "cap_edits": self.cap_edits,
             "cap_keys": self.cap_keys,
+            "aug_as_keys": self.aug_as_keys,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
         if self.key_radii is not None:
@@ -898,7 +925,7 @@ class IKE_CHAIN(nn.Module):
         units = self.patchifier.get_patch_units(image)
         n_patches = len(patches)
         
-        n_cols = 7
+        n_cols = 8
         n_rows = (n_patches + n_cols - 1) // n_cols
         fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
         axes = axes.flatten()
@@ -918,29 +945,40 @@ class IKE_CHAIN(nn.Module):
             if passed:
                 nll = {i: nlls[i] for i in passed}
                 
-                # Route 1: smallest unit → best NLL
+                # Route 1: smallest unit (optionally tiebreak by NLL)
                 min_u = min(units[i] for i in passed)
                 r1 = [i for i in passed if units[i] == min_u]
-                best_n = min(nll[i] for i in r1)
-                route1 = [i for i in r1 if nll[i] == best_n]
-                print(f"[Route1 - Smallest unit ({min_u}), best NLL]: {[patch_names[i] for i in route1]}")
+                if self.keep_ties:
+                    route1 = r1
+                    print(f"[Route1 - Smallest unit ({min_u})]: {[patch_names[i] for i in route1]}")
+                else:
+                    best_n = min(nll[i] for i in r1)
+                    route1 = [i for i in r1 if nll[i] == best_n]
+                    print(f"[Route1 - Smallest unit ({min_u}) → best NLL]: {[patch_names[i] for i in route1]}")
                 
-                # Route 2: best NLL → smallest unit
+                # Route 2: best NLL (no tiebreak)
                 best_n = min(nll[i] for i in passed)
-                r2 = [i for i in passed if nll[i] == best_n]
-                min_u = min(units[i] for i in r2)
-                route2 = [i for i in r2 if units[i] == min_u]
-                print(f"[Route2 - Best NLL, smallest unit ({min_u})]: {[patch_names[i] for i in route2]}")
+                route2 = [i for i in passed if nll[i] == best_n]
+                print(f"[Route2 - Best NLL]: {[patch_names[i] for i in route2]}")
                 
                 selected = set(route1 + route2)
                 print(f"[Selected]: {len(selected)} patches")
+        
+        # Compute NLL softmax probs (p_sent) for display
+        p_sent = {}
+        if nlls is not None:
+            from scipy.special import softmax
+            probs = softmax(-nlls)  # lower NLL = higher prob
+            for i, p in enumerate(probs):
+                p_sent[i] = p
         
         for idx, ax in enumerate(axes):
             if idx < n_patches:
                 ax.imshow(patches[idx])
                 title = patch_names[idx]
                 if p_yes_scores is not None and idx < len(p_yes_scores):
-                    title = f"{patch_names[idx]}\np={p_yes_scores[idx]:.0%} u={units[idx]}"
+                    sent_info = f" s={p_sent[idx]:.00%}" if idx in p_sent else ""
+                    title = f"{patch_names[idx]}\nyes={p_yes_scores[idx]:.00%}{sent_info}"
                 ax.set_title(title, fontsize=6)
                 # Highlight: green=both routes, blue=route1 only, orange=route2 only
                 in_r1, in_r2 = idx in route1, idx in route2
@@ -1035,15 +1073,20 @@ class IKE_CHAIN(nn.Module):
         edit_to_color = {e: i for i, e in enumerate(edit_list)}
         cmap = plt.cm.get_cmap('tab20', max(len(edit_list), 1))
         
-        for node_type, size, marker in [("original", 60, 'o'), ("patch", 15, 'o'), ("merged", 20, 's')]:
-            if node_type == "merged":
-                nodelist = [i for i in range(n_keys) if self.codebook[indices[i]].get("is_merged", False)]
-            elif node_type == "original":
-                nodelist = [i for i in range(n_keys) if not self.codebook[indices[i]].get("is_patch", False) 
-                           and not self.codebook[indices[i]].get("is_merged", False)]
-            else:
-                nodelist = [i for i in range(n_keys) if self.codebook[indices[i]].get("is_patch", False)
-                           and not self.codebook[indices[i]].get("is_merged", False)]
+        # Node types: (name, size, marker, filter_fn)
+        def _filter(i, is_patch, is_aug, is_merged):
+            e = self.codebook[indices[i]]
+            return e.get("is_patch", False) == is_patch and e.get("is_aug", False) == is_aug and e.get("is_merged", False) == is_merged
+        
+        node_types = [
+            ("original", 60, 'o', lambda i: _filter(i, False, False, False)),
+            ("patch", 60, '^', lambda i: _filter(i, True, False, False)),
+            ("aug_orig", 30, 'o', lambda i: _filter(i, False, True, False)),
+            ("aug_patch", 30, '^', lambda i: _filter(i, True, True, False)),
+            ("merged", 50, 's', lambda i: self.codebook[indices[i]].get("is_merged", False)),
+        ]
+        for node_type, size, marker, filter_fn in node_types:
+            nodelist = [i for i in range(n_keys) if filter_fn(i)]
             if not nodelist:
                 continue
             colors = [cmap(edit_to_color[self.codebook[indices[i]].get("edit_idx", 0)]) for i in nodelist]
@@ -1057,8 +1100,8 @@ class IKE_CHAIN(nn.Module):
         
         # Legend
         ax.scatter([], [], c='gray', s=40, marker='o', label='original')
-        ax.scatter([], [], c='gray', s=12, marker='o', label='patch')
-        ax.scatter([], [], c='gray', s=15, marker='s', label='merged')
+        ax.scatter([], [], c='gray', s=40, marker='^', label='patch')
+        ax.scatter([], [], c='gray', s=18, marker='s', label='merged')
         if q_node is not None:
             ax.scatter([], [], c='black', s=40, marker='*', label='query')
         if matched_local:
