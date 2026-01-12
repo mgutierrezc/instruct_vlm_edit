@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Submit all ablation jobs for Qwen3-VL-4B
+set -euo pipefail
+cd "$(dirname "$0")"
+
+echo "=========================================="
+echo "Submitting Qwen3-VL-4B ablation jobs"
+echo "=========================================="
+
+for PARAM in cap_keys mode radius_area_pct pair_rationale_w aug_as_keys reject_threshold_pct; do
+  SBATCH="aokvqa/$PARAM/qwen3_4b.sbatch"
+  if [[ -f "$SBATCH" ]]; then
+    echo "Submitting $SBATCH"
+    sbatch "$SBATCH"
+  else
+    echo "Skipping $PARAM (no qwen3_4b.sbatch found)"
+  fi
+done
+
+echo ""
+echo "Done!"

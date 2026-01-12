@@ -754,7 +754,7 @@ class AutoLayer(ModularityCore):
                 return isinstance(sample_val, dict) and "mean" in sample_val
         return False
 
-    def plot(self, scores, bias_scores=None, figsize=None):
+    def plot(self, scores, bias_scores=None, figsize=None, show=True):
         """Plot Q scores vs layer index, optionally with bias scores.
         
         Supports both single-run scores and aggregated scores (with error bars).
@@ -763,6 +763,11 @@ class AutoLayer(ModularityCore):
             scores: Q scores dict from find_best() or load_results_k()
             bias_scores: Optional bias scores from BiasLayer.load_results_k()
             figsize: Optional figure size, defaults based on number of columns
+            show: If True, call plt.show(). If False, return fig and axes for external use.
+        
+        Returns:
+            If show=False: (fig, axes) tuple for external manipulation
+            If show=True: None
         """
         import matplotlib.pyplot as plt
         
@@ -846,6 +851,8 @@ class AutoLayer(ModularityCore):
             
             ax_bias.axhline(y=0, color='red', linestyle='--', lw=1.5, alpha=0.7)
             ax_bias.set_yscale('symlog', linthresh=10)
+            ax_bias.yaxis.set_major_formatter(plt.ScalarFormatter())
+            ax_bias.ticklabel_format(axis='y', style='plain')
             ax_bias.set_xlabel('Layer Index')
             ax_bias.set_ylabel('Bias')
             ax_bias.set_title('Uni-modality Bias (↑ worse)')
@@ -856,16 +863,16 @@ class AutoLayer(ModularityCore):
         if bias_scores:
             plot_data = [
                 (axes[col_offset + 0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
-                 'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
-                (axes[col_offset + 1], "vision_Q", 'Vision Q\n(<image, text>)'),
-                (axes[col_offset + 2], "language_Q", 'Language Q\n(<image, text>)'),
+                 'Bimodal Q (↑ better)' if has_bimodal else 'Vision Q (↑ better)'),
+                (axes[col_offset + 1], "vision_Q", 'Vision Q (↑ better)'),
+                (axes[col_offset + 2], "language_Q", 'Language Q (↑ better)'),
             ]
         else:
             plot_data = [
-                (axes[col_offset + 0], "bimodal_and_Q" if has_bimodal else "vision_Q", 
-                 'Bimodal AND Q\n(same img AND text)' if has_bimodal else 'Vision Q'),
-                (axes[col_offset + 1], "vision_Q", 'Vision Q\n(<image, text>)'),
-                (axes[col_offset + 2], "language_Q", 'Language Q\n(<image, text>)'),
+                (axes[col_offset + 0], "bimodal_Q" if has_bimodal else "vision_Q", 
+                 'Bimodal Q (↑ better)' if has_bimodal else 'Vision Q (↑ better)'),
+                (axes[col_offset + 1], "vision_Q", 'Vision Q (↑ better)'),
+                (axes[col_offset + 2], "language_Q", 'Language Q (↑ better)'),
                 (axes[col_offset + 3], "pure_vision_Q" if has_pure else "vision_Q", 
                  'Pure Vision Q\n(<image, "">)' if has_pure else 'Vision Q'),
                 (axes[col_offset + 4], "pure_language_Q" if has_pure else "language_Q", 
@@ -893,6 +900,15 @@ class AutoLayer(ModularityCore):
             ax.set_title(title)
             ax.grid(alpha=0.3)
             
+            # Set y-axis limits based on metric type
+            if key in ["bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"]:
+                ax.set_ylim(-0.01, 0.05)
+            elif key in ["vision_Q", "pure_vision_Q"]:
+                ax.set_ylim(-0.05, 0.3)
+            elif key in ["language_Q", "pure_language_Q"] and sbert_lang_Q is None:
+                # Set ylim when no SBERT baseline (symlog won't be triggered)
+                ax.set_ylim(-0.05, 0.15)
+            
             # Draw SBERT baseline on language Q plots
             if sbert_lang_Q is not None and key in ["language_Q", "pure_language_Q"]:
                 sbert_val = sbert_lang_Q["mean"] if isinstance(sbert_lang_Q, dict) else sbert_lang_Q
@@ -902,6 +918,9 @@ class AutoLayer(ModularityCore):
                 if sbert_val > vlm_max * 2:
                     linthresh = max(0.01, vlm_max * 0.5)  # Linear region covers VLM data
                     ax.set_yscale('symlog', linthresh=linthresh)
+                else:
+                    # Set ylim only when not using symlog scale
+                    ax.set_ylim(-0.05, 0.15)
                 
                 # Handle both scalar and aggregated (dict with mean/std) formats
                 if isinstance(sbert_lang_Q, dict):
@@ -929,7 +948,12 @@ class AutoLayer(ModularityCore):
             scores["__sbert_lang_Q__"] = sbert_lang_Q
         
         plt.tight_layout()
-        plt.show()
+        
+        if show:
+            plt.show()
+            return None
+        else:
+            return fig, axes
 
     def cleanup(self):
         self._remove_hooks()

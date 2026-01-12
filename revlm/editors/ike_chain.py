@@ -55,7 +55,7 @@ class IKE_CHAIN(nn.Module):
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
         self.hubness_knn = int(getattr(cfg, "hubness_knn", 30))
-        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 10))  # 0=disabled, e.g. at least one query-key distance shorter than 5 percentile of key-key distances
+        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 25))  # 0=disabled, e.g. at least one query-key distance shorter than 5 percentile of key-key distances
         # --- legacy params (not use) ---
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
         self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
@@ -78,10 +78,10 @@ class IKE_CHAIN(nn.Module):
 
         # Patchification
         self._grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
-        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.95))
-        self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "patch")  # "orig", "patch", "both"
+        self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.5))
+        self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "both")  # "orig", "patch", "both"
         self.keep_ties = getattr(cfg, "keep_ties", False)  # keep NLL/unit ties
-        self.aug_as_keys = getattr(cfg, "aug_as_keys", True)  # add augmented versions as keys
+        self.aug_as_keys = getattr(cfg, "aug_as_keys", False)  # add augmented versions as keys
 
         # Internal State
         self._added_uids = set()
@@ -468,19 +468,21 @@ class IKE_CHAIN(nn.Module):
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         new_embs = new_embs.cpu()
         
-        # Add augmented versions as keys
+        # Add augmented versions as keys (patches only)
         if self.aug_as_keys:
-            aug_imgs = [self.augmenter.image(img, area_pct=self.radius_area_pct) for img in new_imgs]
-            aug_texts = [self.augmenter.question(t) if is_q else self.augmenter.rationale(t)
-                         for t, is_q in zip(new_texts, new_is_question)]
-            aug_embs = self._encode_vlm(aug_imgs, aug_texts)
-            if self.distance == "cosine":
-                aug_embs = F.normalize(aug_embs, dim=-1)
-            aug_embs = aug_embs.cpu()
-            aug_entries = [{**e, "is_aug": True} for e in new_entries]
-            new_entries.extend(aug_entries)
-            new_embs = torch.cat([new_embs, aug_embs], dim=0)
-            new_radii = torch.cat([new_radii, new_radii.clone()])
+            patch_idxs = [i for i, e in enumerate(new_entries) if e.get("is_patch", False)]
+            if patch_idxs:
+                aug_imgs = [self.augmenter.image(new_imgs[i], area_pct=self.radius_area_pct) for i in patch_idxs]
+                aug_texts = [self.augmenter.question(new_texts[i]) if new_is_question[i] 
+                             else self.augmenter.rationale(new_texts[i]) for i in patch_idxs]
+                aug_embs = self._encode_vlm(aug_imgs, aug_texts)
+                if self.distance == "cosine":
+                    aug_embs = F.normalize(aug_embs, dim=-1)
+                aug_embs = aug_embs.cpu()
+                aug_entries = [{**new_entries[i], "is_aug": True} for i in patch_idxs]
+                new_entries.extend(aug_entries)
+                new_embs = torch.cat([new_embs, aug_embs], dim=0)
+                new_radii = torch.cat([new_radii, torch.tensor([new_radii[i] for i in patch_idxs])])
         
         # Add to codebook
         n_merged, n_added = 0, 0
@@ -817,7 +819,7 @@ class IKE_CHAIN(nn.Module):
         if edit_ds is None:
             return self.model
         
-        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, rationale={self.pair_rationale_w}, merge={self.merge_keys}, aug_as_keys={self.aug_as_keys}")
+        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, pair_rationale_w={self.pair_rationale_w}, merge={self.merge_keys}, aug_as_keys={self.aug_as_keys}")
         n_before = len(self.codebook)
         
         # Filter valid examples

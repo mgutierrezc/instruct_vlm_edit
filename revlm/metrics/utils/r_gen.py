@@ -4,7 +4,7 @@ import json
 from huggingface_hub import snapshot_download
 import string
 
-def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = False):
+def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = True):
     """Load caption dataframe from HuggingFace dataset.
     
     Args:

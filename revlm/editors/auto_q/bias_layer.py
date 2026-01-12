@@ -84,7 +84,7 @@ class BiasLayer:
         """Lazy init augmenter."""
         if self._augmenter is None:
             dataset_name = getattr(getattr(self.config, "experiment", None), "dataset_name", None)
-            self._augmenter = Augmenter(self.wrapper, mosaic_prob=1.0, dataset_name=dataset_name)
+            self._augmenter = Augmenter(self.wrapper, mosaic_prob=0.0, dataset_name=dataset_name)
         return self._augmenter
 
     def get_candidate_layers(self, include_all=False):
@@ -359,7 +359,7 @@ class BiasLayer:
         import json
         import os
         
-        out_dir = out_dir or "results/bias_layer"
+        out_dir = out_dir or "results/auto_q_ckpts/bias_layer"
         model_tag = self._get_model_tag()
         os.makedirs(out_dir, exist_ok=True)
         
@@ -473,8 +473,8 @@ class BiasLayer:
         ax.set_yscale('symlog', linthresh=10)
         
         ax.set_xlabel('Layer Index')
-        ax.set_ylabel('Bias (↑ worse)')
-        ax.set_title('Modality Bias')
+        ax.set_ylabel('Bias')
+        ax.set_title('Modality Bias (↑ worse)')
         ax.grid(alpha=0.3, which='both')
         
         # Simple legend - just the two bias lines
