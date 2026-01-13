@@ -24,13 +24,14 @@ from revlm.config_utils import configure_args
 from revlm.editors.auto_q.bias_layer import BiasLayer
 
 
-def run_bias_layer(config, n_runs=10, n_samples=10, pool_method="mean", overwrite=False):
+def run_bias_layer(config, n_runs=10, n_samples=10, n_aug=None, pool_method="mean", overwrite=False):
     """Run BiasLayer analysis k times for error bars.
     
     Args:
         config: Config object
         n_runs: Number of bootstrap runs
-        n_samples: Samples per run (uses 95th percentile across samples)
+        n_samples: Samples per run
+        n_aug: Augmentations per type (default: n_samples)
         pool_method: "mean" or "last" token pooling
         overwrite: If False, skip runs that already have saved results
     """
@@ -44,7 +45,7 @@ def run_bias_layer(config, n_runs=10, n_samples=10, pool_method="mean", overwrit
     bias = BiasLayer(config, model, pool_method=pool_method)
     layers = bias.get_candidate_layers()
     
-    out_dir = "results/bias_layer"
+    out_dir = f"results/bias_layer_{n_samples}"
     model_tag = bias._get_model_tag()
     
     # Run k times
@@ -56,7 +57,7 @@ def run_bias_layer(config, n_runs=10, n_samples=10, pool_method="mean", overwrit
             continue
         
         # Compute bias (samples fresh data each time internally)
-        scores = bias.compute(dataset, layers, n_samples=n_samples, verbose=(run_id == 0))
+        scores = bias.compute(dataset, layers, n_samples=n_samples, n_aug=n_aug, verbose=(run_id == 0))
         bias.save_results(scores, run_id=run_id, out_dir=out_dir)
         print(f"Run {run_id+1}/{n_runs} done", flush=True)
     
@@ -87,6 +88,7 @@ if __name__ == "__main__":
     
     # BiasLayer params
     parser.add_argument("--n_samples", type=int, default=10, help="Samples per run")
+    parser.add_argument("--n_aug", type=int, default=None, help="Augmentations per type (default: n_samples)")
     parser.add_argument("--n_runs", type=int, default=10, help="Number of bootstrap runs")
     parser.add_argument("--pool_method", type=str, default="mean", choices=["mean", "last"], help="Pool method for activations")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing run results")
@@ -99,6 +101,6 @@ if __name__ == "__main__":
     
     config = configure_args(args, config_path=args.config)
 
-    run_bias_layer(config, n_runs=args.n_runs, n_samples=args.n_samples, 
+    run_bias_layer(config, n_runs=args.n_runs, n_samples=args.n_samples, n_aug=args.n_aug,
                    pool_method=args.pool_method, overwrite=args.overwrite)
 
