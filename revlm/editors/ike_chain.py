@@ -81,7 +81,9 @@ class IKE_CHAIN(nn.Module):
         self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.5))
         self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "both")  # "orig", "patch", "both"
         self.keep_ties = getattr(cfg, "keep_ties", False)  # keep NLL/unit ties
-        self.aug_as_keys = getattr(cfg, "aug_as_keys", False)  # add augmented versions as keys
+        self.aug_as_keys = getattr(cfg, "aug_as_keys", False)  # add augmented patch keys
+        # --- legacy params (not used) only for viz ---
+        self.aug_orig_as_keys = getattr(cfg, "aug_orig_as_keys", False)  # add augmented original image keys
 
         # Internal State
         self._added_uids = set()
@@ -468,21 +470,24 @@ class IKE_CHAIN(nn.Module):
         new_radii = torch.tensor(new_radii, dtype=torch.float32)
         new_embs = new_embs.cpu()
         
-        # Add augmented versions as keys (patches only)
-        if self.aug_as_keys:
-            patch_idxs = [i for i, e in enumerate(new_entries) if e.get("is_patch", False)]
-            if patch_idxs:
-                aug_imgs = [self.augmenter.image(new_imgs[i], area_pct=self.radius_area_pct) for i in patch_idxs]
-                aug_texts = [self.augmenter.question(new_texts[i]) if new_is_question[i] 
-                             else self.augmenter.rationale(new_texts[i]) for i in patch_idxs]
-                aug_embs = self._encode_vlm(aug_imgs, aug_texts)
-                if self.distance == "cosine":
-                    aug_embs = F.normalize(aug_embs, dim=-1)
-                aug_embs = aug_embs.cpu()
-                aug_entries = [{**new_entries[i], "is_aug": True} for i in patch_idxs]
-                new_entries.extend(aug_entries)
-                new_embs = torch.cat([new_embs, aug_embs], dim=0)
-                new_radii = torch.cat([new_radii, torch.tensor([new_radii[i] for i in patch_idxs])])
+        # Add augmented versions as keys
+        aug_idxs = []
+        if self.aug_as_keys:  # augment patch keys
+            aug_idxs.extend([i for i, e in enumerate(new_entries) if e.get("is_patch", False)])
+        if self.aug_orig_as_keys:  # augment original image keys
+            aug_idxs.extend([i for i, e in enumerate(new_entries) if not e.get("is_patch", False)])
+        if aug_idxs:
+            aug_imgs = [self.augmenter.image(new_imgs[i], area_pct=self.radius_area_pct) for i in aug_idxs]
+            aug_texts = [self.augmenter.question(new_texts[i]) if new_is_question[i] 
+                         else self.augmenter.rationale(new_texts[i]) for i in aug_idxs]
+            aug_embs = self._encode_vlm(aug_imgs, aug_texts)
+            if self.distance == "cosine":
+                aug_embs = F.normalize(aug_embs, dim=-1)
+            aug_embs = aug_embs.cpu()
+            aug_entries = [{**new_entries[i], "is_aug": True} for i in aug_idxs]
+            new_entries.extend(aug_entries)
+            new_embs = torch.cat([new_embs, aug_embs], dim=0)
+            new_radii = torch.cat([new_radii, torch.tensor([new_radii[i] for i in aug_idxs])])
         
         # Add to codebook
         n_merged, n_added = 0, 0
@@ -819,7 +824,7 @@ class IKE_CHAIN(nn.Module):
         if edit_ds is None:
             return self.model
         
-        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, pair_rationale_w={self.pair_rationale_w}, merge={self.merge_keys}, aug_as_keys={self.aug_as_keys}")
+        print(f"[IKE_CHAIN] mode={self.mode}, pool={self.pool_method}, pair_rationale_w={self.pair_rationale_w}, merge={self.merge_keys}, aug_patch={self.aug_as_keys}, aug_orig={self.aug_orig_as_keys}")
         n_before = len(self.codebook)
         
         # Filter valid examples
@@ -906,6 +911,7 @@ class IKE_CHAIN(nn.Module):
             "cap_edits": self.cap_edits,
             "cap_keys": self.cap_keys,
             "aug_as_keys": self.aug_as_keys,
+            "aug_orig_as_keys": self.aug_orig_as_keys,
             "emb_size_mb": self.key_embs.numel() * 2 / 1024 / 1024 if self.key_embs is not None else 0,
         }
         if self.key_radii is not None:
@@ -1100,10 +1106,16 @@ class IKE_CHAIN(nn.Module):
         if q_node is not None:
             ax.scatter(pos[q_node][0], pos[q_node][1], c='black', s=80, marker='*', zorder=10)
         
-        # Legend
+        # Legend - only show items that exist in the plot
+        has_patch = any(self.codebook[indices[i]].get("is_patch", False) for i in range(n_keys))
+        has_aug = any(self.codebook[indices[i]].get("is_aug", False) for i in range(n_keys))
         ax.scatter([], [], c='gray', s=40, marker='o', label='original')
-        ax.scatter([], [], c='gray', s=40, marker='^', label='patch')
-        ax.scatter([], [], c='gray', s=18, marker='s', label='merged')
+        if has_patch:
+            ax.scatter([], [], c='gray', s=40, marker='^', label='patch')
+        if has_aug:
+            ax.scatter([], [], c='gray', s=18, marker='o', label='augmented (smaller)')
+        if self.merge_keys:
+            ax.scatter([], [], c='gray', s=18, marker='s', label='merged')
         if q_node is not None:
             ax.scatter([], [], c='black', s=40, marker='*', label='query')
         if matched_local:
