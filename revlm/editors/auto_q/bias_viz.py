@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 from PIL import Image
 from typing import List, Dict, Optional
 from ..utils import parent_module, brackets_to_periods, Augmenter
+from .bias_layer import FACT_POOL
 
 class BiasViz:
     """Measure embedding bias for VLM representations."""
@@ -99,7 +100,7 @@ class BiasViz:
 
     def _get_augmenter(self):
         if self._augmenter is None:
-            self._augmenter = Augmenter(self.wrapper, mosaic_prob=1.0, dataset_name=self._dataset_name)
+            self._augmenter = Augmenter(self.wrapper, mosaic_prob=0.0, dataset_name=self._dataset_name)
         return self._augmenter
 
     def _pool(self, act, batch_size):
@@ -552,113 +553,4 @@ class BiasViz:
             self._hook.remove()
         self._sbert = None
         self._augmenter = None
-
-
-
-
-# 200 irrelevant common fact sentences for diff_text="pool"
-FACT_POOL = [
-    "The sky appears blue during daytime.", "Water freezes at zero degrees Celsius.",
-    "The Earth orbits around the Sun.", "Humans have five fingers on each hand.",
-    "Grass is typically green in color.", "The moon reflects sunlight at night.",
-    "Fish breathe through their gills.", "Birds have feathers covering their bodies.",
-    "Ice floats on liquid water.", "The heart pumps blood through the body.",
-    "Trees produce oxygen through photosynthesis.", "Sound travels faster in water than air.",
-    "Bees collect nectar from flowers.", "The Pacific is the largest ocean.",
-    "Diamonds are made of carbon atoms.", "Cats are obligate carnivores.",
-    "The sun rises in the east.", "Spiders have eight legs total.",
-    "Gold is a precious metal.", "Whales are mammals not fish.",
-    "Lightning precedes thunder sounds.", "Salt dissolves easily in water.",
-    "The Amazon is the largest rainforest.", "Penguins cannot fly in air.",
-    "Iron rusts when exposed to moisture.", "The Sahara is the largest hot desert.",
-    "Elephants are the largest land animals.", "Coffee contains caffeine naturally.",
-    "Venus is the hottest planet.", "Bamboo is the fastest growing plant.",
-    "Octopuses have three hearts.", "The Great Wall is in China.",
-    "Honey never spoils naturally.", "Dolphins sleep with one eye open.",
-    "Mount Everest is the tallest mountain.", "Bananas are technically berries.",
-    "Owls can rotate their heads significantly.", "The Nile is the longest river.",
-    "Kangaroos cannot walk backwards.", "Glass is made from sand.",
-    "Crocodiles cannot stick out their tongues.", "Mars is called the red planet.",
-    "Flamingos are born with gray feathers.", "Paper is made from wood pulp.",
-    "Sharks have no bones.", "The human body has 206 bones.",
-    "Snails can sleep for years.", "Chocolate comes from cacao beans.",
-    "Starfish have no brains.", "Giraffes have the same neck vertebrae as humans.",
-    "Rubber comes from tree sap.", "Mosquitoes are attracted to carbon dioxide.",
-    "The Eiffel Tower is in Paris.", "Tomatoes are fruits not vegetables.",
-    "Camels store fat in their humps.", "Pearls come from oysters.",
-    "Bats are the only flying mammals.", "Lemons contain citric acid.",
-    "The Dead Sea is extremely salty.", "Koalas sleep about twenty hours daily.",
-    "Copper conducts electricity well.", "Strawberries have seeds on the outside.",
-    "Antarctica is the coldest continent.", "Mushrooms are fungi not plants.",
-    "The human brain uses twenty percent of oxygen.", "Polar bears have black skin.",
-    "Silk comes from silkworms.", "Carrots were originally purple.",
-    "Hummingbirds can fly backwards.", "The Titanic sank in 1912.",
-    "Cows have four stomach compartments.", "Maple syrup comes from tree sap.",
-    "Seahorses mate for life.", "Bronze is a copper alloy.",
-    "Ostriches have the largest eyes.", "Pineapples take two years to grow.",
-    "The human nose can detect trillion scents.", "Jellyfish are ninety-five percent water.",
-    "Cotton grows on plants.", "Sloths are surprisingly good swimmers.",
-    "The Mona Lisa is in the Louvre.", "Avocados are berries technically.",
-    "Fireflies produce cold light.", "Wool comes from sheep.",
-    "Platypuses lay eggs.", "Corn has even row numbers.",
-    "The Atlantic Ocean is expanding.", "Cashews grow on apples.",
-    "Butterflies taste with their feet.", "Concrete strengthens over time.",
-    "Frogs absorb water through skin.", "The piano has eighty-eight keys.",
-    "Almonds are related to peaches.", "Cockroaches can live without heads.",
-    "Honey is bee vomit essentially.", "Vanilla comes from orchids.",
-    "Rattlesnakes add a rattle yearly.", "Steel is an iron alloy.",
-    "Lobsters were once prison food.", "The violin has four strings.",
-    "Peanuts grow underground.", "Dragonflies have six legs.",
-    "The Colosseum is in Rome.", "Cranberries bounce when ripe.",
-    "Earthworms have five hearts.", "Aluminum is very abundant.",
-    "Hippos secrete red sweat.", "Rice feeds half the world.",
-    "The clarinet is a woodwind.", "Walnuts look like brains.",
-    "Ants can lift fifty times weight.", "Limestone is sedimentary rock.",
-    "Seahorse males carry the babies.", "Tea originated in China.",
-    "The cello has four strings.", "Apples float in water.",
-    "Scorpions glow under UV light.", "Granite is igneous rock.",
-    "Shrimp hearts are in heads.", "Wheat is a type of grass.",
-    "The flute is very ancient.", "Cucumbers are ninety-six percent water.",
-    "Turtles can breathe through butts.", "Marble is metamorphic rock.",
-    "Parrotfish create beach sand.", "Barley is used in beer.",
-    "Harps have forty-seven strings.", "Watermelons are mostly water.",
-    "Reindeer eyes change color seasonally.", "Basalt is volcanic rock.",
-    "Hagfish produce lots of slime.", "Oats are a cereal grain.",
-    "Drums are percussion instruments.", "Grapes can explode in microwaves.",
-    "Chameleons change color for mood.", "Sandstone is sedimentary rock.",
-    "Electric eels are not eels.", "Rye is related to wheat.",
-    "Trumpets are brass instruments.", "Onions make people cry.",
-    "Axolotls can regenerate limbs.", "Obsidian is volcanic glass.",
-    "Pistol shrimp create sonic booms.", "Millet is drought resistant.",
-    "Saxophones are technically woodwinds.", "Garlic repels some insects.",
-    "Tardigrades survive extreme conditions.", "Quartz is very common.",
-    "Mantis shrimp see many colors.", "Sorghum feeds many people.",
-    "Oboes use double reeds.", "Potatoes are stem tubers.",
-    "Immortal jellyfish can reverse aging.", "Feldspar is in granite.",
-    "Box jellyfish are very venomous.", "Quinoa is a pseudocereal.",
-    "Bassoons are double reed instruments.", "Beets contain natural sugars.",
-    "Mimic octopuses impersonate other species.", "Mica splits into sheets.",
-    "Blue whales are largest ever.", "Buckwheat is not wheat.",
-    "French horns are difficult instruments.", "Spinach contains iron.",
-    "Cuttlefish have W-shaped pupils.", "Talc is the sofite mineral.",
-    "Greenland sharks live very long.", "Amaranth is very nutritious.",
-    "Bagpipes originated in Middle East.", "Kale is very healthy.",
-    "Giant squid have huge eyes.", "Diamond is the hardest mineral.",
-    "Narwhals have spiral tusks.", "Teff is an Ethiopian grain.",
-    "Accordions have bellows.", "Broccoli is a flower.",
-    "Goblin sharks have projectile jaws.", "Corundum includes rubies sapphires.",
-    "Vampire squid are not squid.", "Fonio is African ancient grain.",
-    "Banjos have five strings typically.", "Asparagus grows very quickly.",
-    "Blanket octopuses are sexually dimorphic.", "Topaz comes in many colors.",
-    "Anglerfish males fuse to females.", "Spelt is ancient wheat.",
-    "Ukuleles have four strings.", "Celery has negative calories myth.",
-    "Barreleye fish have transparent heads.", "Emeralds are green beryls.",
-    "Leafy seadragons camouflage perfectly.", "Freekeh is roasted wheat.",
-    "Mandolins have eight strings.", "Artichokes are flower buds.",
-    "Blobfish look normal underwater.", "Sapphires can be many colors.",
-    "Yeti crabs farm bacteria.", "Einkorn is ancient wheat.",
-    "Sitars have sympathetic strings.", "Fennel tastes like licorice.",
-    "Christmas tree worms are colorful.", "Rubies are red corundum.",
-    "Dumbo octopuses live deep.", "Kamut is ancient wheat.",
-]
 

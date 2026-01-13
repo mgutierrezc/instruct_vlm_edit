@@ -30,23 +30,74 @@ EXCLUDE_PATTERNS = [
     "qformer", "intermediate", "up_proj", "down_proj"
 ]
 
-# Fact pool for t- (different texts) - subset from bias_viz
+# Fact pool for t- (different texts) - 120 generic facts for sufficient coverage
 FACT_POOL = [
+    # Nature & Environment (20)
     "The sky appears blue during daytime.", "Water freezes at zero degrees Celsius.",
-    "The Earth orbits around the Sun.", "Humans have five fingers on each hand.",
     "Grass is typically green in color.", "The moon reflects sunlight at night.",
-    "Fish breathe through their gills.", "Birds have feathers covering their bodies.",
-    "Ice floats on liquid water.", "The heart pumps blood through the body.",
-    "Trees produce oxygen through photosynthesis.", "Sound travels faster in water than air.",
-    "Bees collect nectar from flowers.", "The Pacific is the largest ocean.",
-    "Diamonds are made of carbon atoms.", "Cats are obligate carnivores.",
-    "The sun rises in the east.", "Spiders have eight legs total.",
-    "Gold is a precious metal.", "Whales are mammals not fish.",
+    "Trees produce oxygen through photosynthesis.", "The sun rises in the east.",
     "Lightning precedes thunder sounds.", "Salt dissolves easily in water.",
-    "The Amazon is the largest rainforest.", "Penguins cannot fly in air.",
-    "Iron rusts when exposed to moisture.", "The Sahara is the largest hot desert.",
-    "Elephants are the largest land animals.", "Coffee contains caffeine naturally.",
-    "Venus is the hottest planet.", "Bamboo is the fastest growing plant.",
+    "The Amazon is the largest rainforest.", "The Sahara is the largest hot desert.",
+    "Ice floats on liquid water.", "Sound travels faster in water than air.",
+    "Iron rusts when exposed to moisture.", "Bamboo is the fastest growing plant.",
+    "Volcanoes release molten lava.", "Rainbows appear after rain showers.",
+    "Snow is frozen water crystals.", "Deserts receive very little rainfall.",
+    "Rivers flow toward the ocean.", "Mountains form from tectonic activity.",
+    # Animals (20)
+    "Fish breathe through their gills.", "Birds have feathers covering their bodies.",
+    "Bees collect nectar from flowers.", "Cats are obligate carnivores.",
+    "Spiders have eight legs total.", "Whales are mammals not fish.",
+    "Penguins cannot fly in air.", "Elephants are the largest land animals.",
+    "Snakes have no legs at all.", "Dolphins communicate using clicks.",
+    "Owls can rotate their heads.", "Cheetahs are the fastest land animals.",
+    "Octopuses have eight tentacles.", "Kangaroos carry babies in pouches.",
+    "Bats navigate using echolocation.", "Frogs undergo metamorphosis from tadpoles.",
+    "Ants live in organized colonies.", "Butterflies start as caterpillars.",
+    "Sharks have cartilage not bones.", "Crocodiles are ancient reptiles.",
+    # Space & Astronomy (20)
+    "The Earth orbits around the Sun.", "Venus is the hottest planet.",
+    "Mars is called the red planet.", "Jupiter is the largest planet.",
+    "Saturn has prominent ring systems.", "The moon causes ocean tides.",
+    "Stars produce light through fusion.", "Galaxies contain billions of stars.",
+    "Black holes trap even light.", "Comets have tails near sun.",
+    "Asteroids orbit between Mars Jupiter.", "Mercury is closest to sun.",
+    "Neptune is the farthest planet.", "Uranus rotates on its side.",
+    "The sun is a star.", "Pluto is a dwarf planet.",
+    "Meteors burn in the atmosphere.", "The Milky Way is spiral shaped.",
+    "Light takes time to travel.", "Space has no atmosphere.",
+    # Human Body (20)
+    "Humans have five fingers on each hand.", "The heart pumps blood through the body.",
+    "Bones provide structural support.", "Muscles enable body movement.",
+    "The brain controls all functions.", "Lungs exchange oxygen and carbon dioxide.",
+    "Skin is the largest organ.", "Blood carries oxygen to cells.",
+    "Teeth help chew food.", "Eyes detect light for vision.",
+    "Ears detect sound vibrations.", "The nose detects various smells.",
+    "Hair grows from follicles.", "Nails protect finger tips.",
+    "The liver filters blood toxins.", "Kidneys filter waste from blood.",
+    "The stomach digests food.", "Intestines absorb nutrients from food.",
+    "Nerves transmit electrical signals.", "Joints connect bones together.",
+    # Science & Chemistry (20)
+    "Diamonds are made of carbon atoms.", "Gold is a precious metal.",
+    "Water is made of hydrogen oxygen.", "Oxygen supports combustion reactions.",
+    "Helium is lighter than air.", "Acids have low pH values.",
+    "Metals conduct electricity well.", "Glass is made from sand.",
+    "Plastic is a synthetic polymer.", "Rubber comes from tree sap.",
+    "Steel is an iron alloy.", "Copper conducts heat efficiently.",
+    "Nitrogen makes up most air.", "Carbon dioxide is a greenhouse gas.",
+    "Hydrogen is the lightest element.", "Sodium reacts violently with water.",
+    "Lead is a heavy metal.", "Silver has antibacterial properties.",
+    "Aluminum is lightweight and strong.", "Mercury is liquid at room temperature.",
+    # Geography & Nature (20)
+    "The Pacific is the largest ocean.", "Mountains have snow at peaks.",
+    "Caves form in limestone rock.", "Glaciers are slow moving ice.",
+    "Islands are surrounded by water.", "Continents drift over millions years.",
+    "Earthquakes occur at fault lines.", "Tsunamis are giant ocean waves.",
+    "Coral reefs support marine life.", "Wetlands filter water naturally.",
+    "Forests cover large land areas.", "Prairies are flat grassland regions.",
+    "Tundra is cold treeless land.", "Deltas form at river mouths.",
+    "Canyons are carved by rivers.", "Geysers erupt hot water periodically.",
+    "Waterfalls drop water vertically.", "Lakes are inland water bodies.",
+    "Swamps have saturated wet soil.", "Fjords are glacially carved inlets.",
 ]
 
 
@@ -286,7 +337,7 @@ class BiasLayer:
         }
 
     @torch.no_grad()
-    def compute(self, dataset, layers, n_samples=10, verbose=True):
+    def compute(self, dataset, layers, n_samples=10, n_aug=None, verbose=True):
         """Compute vision_bias and text_bias at each layer efficiently.
         
         Optimized: hooks all layers, single forward per augmented pair.
@@ -295,11 +346,15 @@ class BiasLayer:
             dataset: VQADataset with image/question pairs
             layers: List of layer names to compute bias for
             n_samples: Number of samples
+            n_aug: Augmentations per type (default: n_samples)
             verbose: Print progress
         
         Returns:
             Dict[layer, {"vision_bias": float, "text_bias": float, ...}]
         """
+        # Default n_aug to n_samples if not specified
+        self.n_aug = n_aug if n_aug is not None else n_samples
+        
         # Sample data
         data = getattr(dataset, "data", dataset)
         samples = random.sample(list(data), min(n_samples, len(data)))

@@ -754,7 +754,7 @@ class AutoLayer(ModularityCore):
                 return isinstance(sample_val, dict) and "mean" in sample_val
         return False
 
-    def plot(self, scores, bias_scores=None, figsize=None, show=True):
+    def plot(self, scores, bias_scores=None, figsize=None, show=True, output_dir=None):
         """Plot Q scores vs layer index, optionally with bias scores.
         
         Supports both single-run scores and aggregated scores (with error bars).
@@ -764,12 +764,31 @@ class AutoLayer(ModularityCore):
             bias_scores: Optional bias scores from BiasLayer.load_results_k()
             figsize: Optional figure size, defaults based on number of columns
             show: If True, call plt.show(). If False, return fig and axes for external use.
+            output_dir: Directory string to infer n_sample for y-axis limits.
+                        Checks for "5", "10", or "20" in the string.
         
         Returns:
             If show=False: (fig, axes) tuple for external manipulation
             If show=True: None
         """
         import matplotlib.pyplot as plt
+        
+        # Y-limits by n_sample (extracted from output_dir)
+        ylim_config = {
+            20: {"bimodal": (-0.002, 0.015), "vision": (-0.05, 0.3), "language": (-0.05, 0.15)},
+            10: {"bimodal": (-0.002, 0.05), "vision": (-0.05, 0.5), "language": (-0.05, 0.3)},
+            5:  {"bimodal": (-0.002, 0.2),  "vision": (-0.05, 0.8), "language": (-0.1, 0.4)},
+        }
+        
+        # Infer n_sample from output_dir
+        n_sample = 20  # default
+        if output_dir:
+            if "_5" in output_dir or "/5" in output_dir or output_dir.endswith("5"):
+                n_sample = 5
+            elif "_10" in output_dir or "/10" in output_dir or output_dir.endswith("10"):
+                n_sample = 10
+            # else keep 20 as default
+        ylims = ylim_config[n_sample]
         
         # Extract SBERT baseline if present
         sbert_lang_Q = scores.pop("__sbert_lang_Q__", None)
@@ -900,14 +919,14 @@ class AutoLayer(ModularityCore):
             ax.set_title(title)
             ax.grid(alpha=0.3)
             
-            # Set y-axis limits based on metric type
+            # Set y-axis limits based on metric type (scaled by n_sample from output_dir)
             if key in ["bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"]:
-                ax.set_ylim(-0.01, 0.05)
+                ax.set_ylim(ylims["bimodal"])
             elif key in ["vision_Q", "pure_vision_Q"]:
-                ax.set_ylim(-0.05, 0.3)
+                ax.set_ylim(ylims["vision"])
             elif key in ["language_Q", "pure_language_Q"] and sbert_lang_Q is None:
                 # Set ylim when no SBERT baseline (symlog won't be triggered)
-                ax.set_ylim(-0.05, 0.15)
+                ax.set_ylim(ylims["language"])
             
             # Draw SBERT baseline on language Q plots
             if sbert_lang_Q is not None and key in ["language_Q", "pure_language_Q"]:
@@ -920,7 +939,7 @@ class AutoLayer(ModularityCore):
                     ax.set_yscale('symlog', linthresh=linthresh)
                 else:
                     # Set ylim only when not using symlog scale
-                    ax.set_ylim(-0.05, 0.15)
+                    ax.set_ylim(ylims["language"])
                 
                 # Handle both scalar and aggregated (dict with mean/std) formats
                 if isinstance(sbert_lang_Q, dict):
