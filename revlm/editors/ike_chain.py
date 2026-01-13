@@ -55,7 +55,7 @@ class IKE_CHAIN(nn.Module):
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
         self.hubness_knn = int(getattr(cfg, "hubness_knn", 30))
-        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 25))  # 0=disabled, e.g. at least one query-key distance shorter than 5 percentile of key-key distances
+        self.reject_threshold_pct = float(getattr(cfg, "reject_threshold_pct", 50))  # 0=disabled, e.g. at least one query-key distance shorter than 5 percentile of key-key distances
         # --- legacy params (not use) ---
         self.auto_k, self.auto_k_edit_after = getattr(cfg, "auto_k", False), int(getattr(cfg, "auto_k_edit_after", 50))                 # True = Grubbs adaptive, False = fixed
         self.cap_edits = int(getattr(cfg, "cap_edits", 0))                  # 0 = disabled, >0 = top edits for level-1 filtering
