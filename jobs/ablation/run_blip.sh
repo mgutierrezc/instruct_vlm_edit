@@ -7,7 +7,7 @@ echo "=========================================="
 echo "Submitting InstructBLIP-7B ablation jobs"
 echo "=========================================="
 
-for PARAM in cap_keys mode radius_area_pct pair_rationale_w aug_as_keys reject_threshold_pct; do
+for PARAM in cap_keys mode radius_area_pct pair_rationale_w reject_threshold_pct; do
   SBATCH="aokvqa/$PARAM/blip.sbatch"
   if [[ -f "$SBATCH" ]]; then
     echo "Submitting $SBATCH"

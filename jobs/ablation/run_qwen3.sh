@@ -7,7 +7,7 @@ echo "=========================================="
 echo "Submitting Qwen3-VL-8B ablation jobs"
 echo "=========================================="
 
-for PARAM in cap_keys mode radius_area_pct pair_rationale_w aug_as_keys reject_threshold_pct; do
+for PARAM in cap_keys mode radius_area_pct pair_rationale_w reject_threshold_pct; do
   SBATCH="aokvqa/$PARAM/qwen3.sbatch"
   if [[ -f "$SBATCH" ]]; then
     echo "Submitting $SBATCH"

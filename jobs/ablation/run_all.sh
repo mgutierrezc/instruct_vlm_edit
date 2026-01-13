@@ -7,7 +7,7 @@ echo "=========================================="
 echo "Submitting all IKE_CHAIN ablation studies"
 echo "=========================================="
 
-for PARAM in cap_keys mode radius_area_pct pair_rationale_w aug_as_keys reject_threshold_pct; do
+for PARAM in cap_keys mode radius_area_pct pair_rationale_w reject_threshold_pct; do
   echo ""
   echo "=== Submitting $PARAM ablation jobs ==="
   (cd "aokvqa/$PARAM" && bash run.sh)
