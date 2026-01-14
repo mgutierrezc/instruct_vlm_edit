@@ -228,7 +228,7 @@ class AutoLayer(ModularityCore):
         same_text = (text_labels.unsqueeze(0) == text_labels.unsqueeze(1))
         
         if mode == "and":
-            target = (same_img & same_text).float() * 2  # Weight 2 for strict AND
+            target = (same_img & same_text).float()  # Strict AND
         elif mode == "or":
             target = (same_img | same_text).float()
         elif mode == "and_or":
@@ -312,8 +312,13 @@ class AutoLayer(ModularityCore):
         return all_embs
 
     @torch.no_grad()
-    def _encode_bimodal(self, layers, n_aug, pbar=None):
+    def _encode_bimodal(self, layers, n_aug=None, pbar=None):
         """Encode full bi-modal set: anchors + augmentations + cross-combinations.
+        
+        For bimodal Q, each anchor has 2(n-1) positives:
+        - (n-1) same-image, different-text
+        - (n-1) same-text, different-image
+        So default n_aug = 2(n-1) to match community sizes.
         
         Returns:
             all_embs: Dict[layer, List[embeddings]]
@@ -325,6 +330,10 @@ class AutoLayer(ModularityCore):
         text_labels = []
         augmenter = self._get_augmenter()
         n = len(self._images)
+        
+        # Bimodal: 2(n-1) positives per anchor, so use 2(n-1) augmentations
+        if n_aug is None:
+            n_aug = 2 * (n - 1)
         
         # 1. Anchors + augmentations (same image, same text)
         for i in range(n):
@@ -416,7 +425,8 @@ class AutoLayer(ModularityCore):
         # Forward count
         n_entangled = n * n
         n_pure_per = n * (1 + n_aug)
-        n_bimodal = n * (1 + n_aug) + n * (n - 1) * (1 + n_aug)  # anchors+augs + cross-combos with augs
+        n_aug_bimodal = 2 * (n - 1)  # bimodal uses 2(n-1) augs to match 2(n-1) positives
+        n_bimodal = n * (1 + n_aug_bimodal) + n * (n - 1) * (1 + n_aug_bimodal)  # anchors+augs + cross-combos with augs
         n_forwards = n_entangled + 2 * n_pure_per + n_bimodal
         
         if verbose:
@@ -424,7 +434,7 @@ class AutoLayer(ModularityCore):
             print(f"            Entangled: {n}×{n} = {n_entangled} pairs")
             print(f"            Pure Vision: {n} × (1 + {n_aug}) = {n_pure_per}")
             print(f"            Pure Language: {n} × (1 + {n_aug}) = {n_pure_per}")
-            print(f"            Bi-modality: {n}×(1+{n_aug}) + {n}×{n-1}×(1+{n_aug}) = {n_bimodal}")
+            print(f"            Bi-modality: {n}×(1+{n_aug_bimodal}) + {n}×{n-1}×(1+{n_aug_bimodal}) = {n_bimodal}")
             print(f"            Total: {n_forwards} forwards")
         
         # Hook all layers
@@ -481,7 +491,7 @@ class AutoLayer(ModularityCore):
         
         for layer in (tqdm(layers, desc="scoring") if verbose else layers):
             # Check minimum embeddings
-            n_bimodal_expected = n * (1 + n_aug) + n * (n - 1)
+            n_bimodal_expected = n * (1 + n_aug_bimodal) + n * (n - 1) * (1 + n_aug_bimodal)
             if len(entangled_embs[layer]) < n * n * 0.5:
                 continue
             if len(pure_vision_embs[layer]) < n * (1 + n_aug) * 0.5:
@@ -611,12 +621,20 @@ class AutoLayer(ModularityCore):
         model_name = getattr(getattr(self.config, "model", None), "name", "unknown")
         return (model_name.split("/")[-1] or "model").replace(" ", "_")
 
+    def _get_default_out_dir(self):
+        """Get default output directory based on pool_method.
+        
+        Returns:
+            results/auto_layer/{pool_method}/auto_layer_{n_samples}
+        """
+        return f"results/auto_layer/{self.pool_method}/auto_layer_{self.n_samples}"
+
     def save_results(self, best, scores, run_id=None, out_dir=None):
         """Save best layers and scores to JSON."""
         import json
         import os
         
-        out_dir = out_dir or f"results/auto_layer_{self.n_samples}"
+        out_dir = out_dir or self._get_default_out_dir()
         model_tag = self._get_model_tag()
         os.makedirs(out_dir, exist_ok=True)
         
@@ -627,6 +645,7 @@ class AutoLayer(ModularityCore):
             "model_tag": model_tag,
             "n_samples": self.n_samples,
             "n_aug": self.n_aug,
+            "pool_method": self.pool_method,
             "blank_image_size": self.blank_image_size if isinstance(self.blank_image_size, str) else list(self.blank_image_size),
             "run_id": run_id,
             "best": best,
@@ -644,7 +663,7 @@ class AutoLayer(ModularityCore):
         import json
         import os
         
-        out_dir = out_dir or f"results/auto_layer_{self.n_samples}"
+        out_dir = out_dir or self._get_default_out_dir()
         model_tag = self._get_model_tag()
         suffix = f"_run{run_id}" if run_id is not None else ""
         in_path = os.path.join(out_dir, f"{model_tag}{suffix}.json")
@@ -665,7 +684,7 @@ class AutoLayer(ModularityCore):
         import os
         import glob
         
-        out_dir = out_dir or f"results/auto_layer_{self.n_samples}"
+        out_dir = out_dir or self._get_default_out_dir()
         pattern = os.path.join(out_dir, f"{self._get_model_tag()}_run*.json")
         files = sorted(glob.glob(pattern))
         
@@ -775,9 +794,9 @@ class AutoLayer(ModularityCore):
         
         # Y-limits by n_sample (extracted from output_dir)
         ylim_config = {
-            20: {"bimodal": (-0.002, 0.015), "vision": (-0.05, 0.3), "language": (-0.05, 0.15)},
-            10: {"bimodal": (-0.002, 0.05), "vision": (-0.05, 0.5), "language": (-0.05, 0.3)},
-            5:  {"bimodal": (-0.002, 0.2),  "vision": (-0.05, 0.8), "language": (-0.1, 0.4)},
+            20: {"bimodal": (-0.002, 0.01), "vision": (-0.05, 0.3), "language": (-0.05, 0.15)},
+            10: {"bimodal": (-0.002, 0.03), "vision": (-0.05, 0.5), "language": (-0.05, 0.3)},
+            5:  {"bimodal": (-0.002, 0.1),  "vision": (-0.05, 0.8), "language": (-0.1, 0.4)},
         }
         
         # Infer n_sample from output_dir

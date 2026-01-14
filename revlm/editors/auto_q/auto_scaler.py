@@ -151,7 +151,7 @@ class AutoScaler(ModularityCore):
         same_text = (text_labels.unsqueeze(0) == text_labels.unsqueeze(1))
         
         if mode == "and":
-            target = (same_img & same_text).float() * 5  # Weight 2 for strict AND
+            target = (same_img & same_text).float() # Strict AND
         elif mode == "or":
             target = (same_img | same_text).float()
         elif mode == "and_or":
@@ -165,6 +165,11 @@ class AutoScaler(ModularityCore):
     def _encode_bimodal(self, lang_scaler, verbose=True):
         """Encode full bi-modal set: anchors + augmentations + cross-combinations.
         
+        For bimodal Q, each anchor has 2(n-1) positives:
+        - (n-1) same-image, different-text
+        - (n-1) same-text, different-image
+        So we use n_aug = 2(n-1) to match community sizes.
+        
         Returns:
             embs: [N, dim] tensor
             img_labels: List of image labels
@@ -176,8 +181,11 @@ class AutoScaler(ModularityCore):
         img_labels = []
         text_labels = []
         
+        # Bimodal: 2(n-1) positives per anchor, so use 2(n-1) augmentations
+        n_aug = 2 * (n - 1)
+        
         # 1. Anchors + augmentations
-        pairs = [(i, aug_idx) for i in range(n) for aug_idx in range(1 + self.n_aug)]
+        pairs = [(i, aug_idx) for i in range(n) for aug_idx in range(1 + n_aug)]
         for i, aug_idx in (tqdm(pairs, desc="bimodal-aug", leave=False) if verbose else pairs):
             img, text = self._images[i], self._texts[i]
             if aug_idx == 0:
@@ -191,7 +199,7 @@ class AutoScaler(ModularityCore):
             text_labels.append(i)
         
         # 2. Cross-combinations: <img_i, text_j> for i != j (anchor + augmented images)
-        cross_pairs = [(i, j, aug_idx) for i in range(n) for j in range(n) if i != j for aug_idx in range(1 + self.n_aug)]
+        cross_pairs = [(i, j, aug_idx) for i in range(n) for j in range(n) if i != j for aug_idx in range(1 + n_aug)]
         for i, j, aug_idx in (tqdm(cross_pairs, desc="bimodal-cross", leave=False) if verbose else cross_pairs):
             if aug_idx == 0:
                 # Anchor cross-combination
