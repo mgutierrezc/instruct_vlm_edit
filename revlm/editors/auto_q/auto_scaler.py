@@ -198,19 +198,13 @@ class AutoScaler(ModularityCore):
             img_labels.append(i)
             text_labels.append(i)
         
-        # 2. Cross-combinations: <img_i, text_j> for i != j (anchor + augmented images)
-        cross_pairs = [(i, j, aug_idx) for i in range(n) for j in range(n) if i != j for aug_idx in range(1 + n_aug)]
-        for i, j, aug_idx in (tqdm(cross_pairs, desc="bimodal-cross", leave=False) if verbose else cross_pairs):
-            if aug_idx == 0:
-                # Anchor cross-combination
-                emb = self._encode_dual(self._images[i], self._texts[j], lang_scaler)
-            else:
-                # Augmented image cross-combination: <aug_img_i, text_j>
-                aug_img = augmenter.image(self._images[i])
-                emb = self._encode_dual(aug_img, self._texts[j], lang_scaler)
+        # 2. Cross-combinations: <img_i, text_j> for i != j (NO augmentations per paper)
+        cross_pairs = [(i, j) for i in range(n) for j in range(n) if i != j]
+        for i, j in (tqdm(cross_pairs, desc="bimodal-cross", leave=False) if verbose else cross_pairs):
+            emb = self._encode_dual(self._images[i], self._texts[j], lang_scaler)
             embs.append(emb)
-            img_labels.append(i)  # Same image label (original or augmented)
-            text_labels.append(j)  # Different text label
+            img_labels.append(i)
+            text_labels.append(j)
         
         return torch.cat(embs, dim=0), img_labels, text_labels
 
