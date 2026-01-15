@@ -40,7 +40,7 @@ ABLATION_DEFAULTS = {
     "mode": "dual_sbert",
     "pool_method": "mean",
     "cap_keys": 3,
-    "radius_area_pct": 0.9,
+    "merge_keys": True,
     "pair_rationale_w": "patch",
     "aug_as_keys": True,
     "reject_threshold_pct": 0,
@@ -60,7 +60,7 @@ def detect_ablation(args) -> tuple:
         return "mode", combined_value
     
     # Check other params - return if explicitly set (even if matches default)
-    for param in ["cap_keys", "radius_area_pct", "pair_rationale_w", "aug_as_keys", "reject_threshold_pct"]:
+    for param in ["cap_keys", "merge_keys", "pair_rationale_w", "aug_as_keys", "reject_threshold_pct"]:
         cli_val = getattr(args, param, None)
         if cli_val is not None:
             return param, cli_val
@@ -134,8 +134,8 @@ def run_ablation(args):
         config.editor.pool_method = args.pool_method
     if args.cap_keys is not None:
         config.editor.cap_keys = args.cap_keys
-    if args.radius_area_pct is not None:
-        config.editor.radius_area_pct = args.radius_area_pct
+    if args.merge_keys is not None:
+        config.editor.merge_keys = args.merge_keys
     if args.pair_rationale_w is not None:
         config.editor.pair_rationale_w = args.pair_rationale_w
     if args.aug_as_keys is not None:
@@ -330,8 +330,8 @@ if __name__ == "__main__":
                         help="Pooling method (use with --mode)")
     parser.add_argument("--cap_keys", type=int, default=None,
                         help="Max KNN keys to retrieve")
-    parser.add_argument("--radius_area_pct", type=float, default=None,
-                        help="Augmentation strength for radius estimation")
+    parser.add_argument("--merge_keys", type=lambda x: x.lower() == 'true',
+                        default=None, help="Merge overlapping keys (True/False)")
     parser.add_argument("--pair_rationale_w", type=str, default=None,
                         choices=["orig", "patch", "both"],
                         help="Pair rationale with: orig, patch, or both")

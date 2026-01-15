@@ -529,8 +529,147 @@ class AutoScaler(ModularityCore):
         sample_val = results["scalers"][sample_scaler]["vision_Q"]
         return isinstance(sample_val, dict) and "mean" in sample_val
 
-    def plot(self, results, figsize=(10, 5), 
-             metrics=["vision_Q", "language_Q", "harmonic", "bimodal_and_Q"]):
+    # def plot(self, results, figsize=(10, 5), 
+    #          metrics=["vision_Q", "language_Q", "harmonic", "bimodal_and_Q"]):
+    #     """Plot results with optional error bars for aggregated results.
+        
+    #     Args:
+    #         results: Results dict from search()
+    #         figsize: Figure size
+    #         metrics: List of metrics to plot. Options:
+    #             - "vision_Q", "language_Q", "harmonic"
+    #             - "bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"
+    #     """
+    #     import matplotlib.pyplot as plt
+    #     import numpy as np
+        
+    #     scalers = results["scalers"]
+    #     baselines = results.get("baselines", {})
+    #     shift_mode = results.get("shift_mode", "global")
+    #     is_agg = self._is_aggregated(results)
+        
+    #     x_values = sorted(scalers.keys())
+        
+    #     # Determine which Q values and harmonic to plot based on shift_mode
+    #     sample_scaler = x_values[0]
+    #     has_shifted = "harmonic_shifted" in scalers[sample_scaler]
+        
+    #     # Labels adapt to shift_mode
+    #     if shift_mode == "none":
+    #         harm_key = "harmonic"
+    #         harm_label = "Harmonic (raw)"
+    #     elif shift_mode == "langq_only":
+    #         harm_key = "harmonic_shifted" if has_shifted else "harmonic"
+    #         harm_label = "Harmonic (lang shifted)"
+    #     else:  # "global"
+    #         harm_key = "harmonic_shifted" if has_shifted else "harmonic"
+    #         harm_label = "Harmonic (shifted)"
+        
+    #     fig, ax = plt.subplots(figsize=figsize)
+        
+    #     # Define all available metrics with their plot settings
+    #     metric_config = {
+    #         "vision_Q": ("vision_Q", "green", "o", "Vision Q"),
+    #         "language_Q": ("language_Q", "blue", "o", "Language Q"),
+    #         "harmonic": (harm_key, "red", "s", harm_label),
+    #         "bimodal_and_Q": ("bimodal_and_Q", "orange", "^", "Bimodal AND"),
+    #         "bimodal_or_Q": ("bimodal_or_Q", "purple", "v", "Bimodal OR"),
+    #         "bimodal_and_or_Q": ("bimodal_and_or_Q", "brown", "d", "Bimodal AND/OR"),
+    #     }
+        
+    #     # Store values for markers
+    #     plotted_data = {}
+        
+    #     for metric in metrics:
+    #         if metric not in metric_config:
+    #             continue
+    #         key, color, marker, label = metric_config[metric]
+    #         if key not in scalers[sample_scaler]:
+    #             continue
+            
+    #         if is_agg:
+    #             vals = np.array([scalers[x][key]["mean"] for x in x_values])
+    #             stds = np.array([scalers[x][key]["std"] for x in x_values])
+    #             lw = 2 if metric == "harmonic" else 1.5
+    #             ms = 6 if metric == "harmonic" else 5
+    #             ax.errorbar(x_values, vals, yerr=stds, fmt=f'{marker}-', color=color, 
+    #                        label=label, ms=ms, lw=lw, capsize=3)
+    #         else:
+    #             vals = np.array([scalers[x][key] for x in x_values])
+    #             lw = 2 if metric == "harmonic" else 1.5
+    #             ms = 6 if metric == "harmonic" else 5
+    #             ax.plot(x_values, vals, f'{marker}-', color=color, label=label, ms=ms, lw=lw)
+            
+    #         plotted_data[metric] = vals
+        
+    #     ax.set_xscale('log')
+        
+    #     # Mark best harmonic (if plotted)
+    #     if "harmonic" in plotted_data:
+    #         harm_vals = plotted_data["harmonic"]
+    #         best_idx = np.argmax(harm_vals)
+    #         ax.scatter([x_values[best_idx]], [harm_vals[best_idx]], c='red', s=150, marker='*',
+    #                    zorder=5, edgecolors='black', label=f'Best H ({x_values[best_idx]})')
+        
+    #     # Mark where Language Q crosses zero (if plotted)
+    #     if "language_Q" in plotted_data:
+    #         lang_Q_arr = plotted_data["language_Q"]
+    #         zero_cross_idx = None
+    #         for i in range(len(lang_Q_arr) - 1):
+    #             if lang_Q_arr[i] < 0 and lang_Q_arr[i + 1] >= 0:
+    #                 zero_cross_idx = i + 1  # First non-negative point
+    #                 break
+    #         if zero_cross_idx is not None:
+    #             cross_x = x_values[zero_cross_idx]
+    #             cross_y = lang_Q_arr[zero_cross_idx]
+    #             ax.axvline(x=cross_x, color='blue', linestyle=':', lw=1.5, alpha=0.7)
+    #             ax.scatter([cross_x], [cross_y], c='blue', s=100, marker='D', 
+    #                       zorder=5, edgecolors='black', label=f'Lang Q≥0 ({cross_x})')
+        
+    #     # Mark Bimodal AND peak (if plotted)
+    #     if "bimodal_and_Q" in plotted_data:
+    #         bimodal_and_vals = plotted_data["bimodal_and_Q"]
+    #         bimodal_and_peak_idx = np.argmax(bimodal_and_vals)
+    #         ax.scatter([x_values[bimodal_and_peak_idx]], [bimodal_and_vals[bimodal_and_peak_idx]], 
+    #                   c='orange', s=150, marker='*', zorder=5, edgecolors='black', 
+    #                   label=f'Bimodal AND peak ({x_values[bimodal_and_peak_idx]})')
+        
+    #     # Baselines - plot all three metrics for each baseline
+    #     if baselines:
+    #         xmin, xmax = x_values[0], x_values[-1]
+    #         for bl_key, style, lbl in [("vision_layer", "--", "VisLayer"), ("lang_layer", ":", "LangLayer")]:
+    #             if bl_key in baselines:
+    #                 bl = baselines[bl_key]
+    #                 if is_agg:
+    #                     v_val = bl["vision_Q"]["mean"]
+    #                     l_val = bl["language_Q"]["mean"]
+    #                     h_val = bl["harmonic"]["mean"]
+    #                 else:
+    #                     v_val = bl["vision_Q"]
+    #                     l_val = bl["language_Q"]
+    #                     h_val = bl["harmonic"]
+    #                 # Plot Vision Q baseline (green)
+    #                 ax.hlines(v_val, xmin, xmax, colors='green', linestyles=style, lw=1.5, alpha=0.5)
+    #                 # Plot Language Q baseline (blue) 
+    #                 ax.hlines(l_val, xmin, xmax, colors='blue', linestyles=style, lw=1.5, alpha=0.5)
+    #                 # Plot Harmonic baseline (gray)
+    #                 ax.hlines(h_val, xmin, xmax, colors='gray', linestyles=style, lw=1.5, alpha=0.7)
+    #                 # Legend entry
+    #                 ax.plot([], [], style, color='gray', lw=1.5, label=f'{lbl} (H={h_val:.3f})')
+        
+    #     ax.set_xlabel('lang_scaler')
+    #     ax.set_ylabel('Modularity Q (↑)')
+    #     title = f'Vision Q vs Language Q Trade-off (shift={shift_mode})'
+    #     ax.set_title(title)
+    #     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
+    #     ax.grid(alpha=0.3)
+        
+    #     plt.tight_layout()
+    #     plt.show()
+
+    def plot(self, results, figsize=(7, 6), 
+             metrics=["vision_Q", "language_Q", "harmonic", "bimodal_and_Q"],
+             show=True):
         """Plot results with optional error bars for aggregated results.
         
         Args:
@@ -539,6 +678,11 @@ class AutoScaler(ModularityCore):
             metrics: List of metrics to plot. Options:
                 - "vision_Q", "language_Q", "harmonic"
                 - "bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"
+            show: If True, call plt.show(). If False, return (fig, ax).
+        
+        Returns:
+            If show=False: (fig, ax) tuple
+            If show=True: None
         """
         import matplotlib.pyplot as plt
         import numpy as np
@@ -557,22 +701,20 @@ class AutoScaler(ModularityCore):
         # Labels adapt to shift_mode
         if shift_mode == "none":
             harm_key = "harmonic"
-            harm_label = "Harmonic (raw)"
         elif shift_mode == "langq_only":
             harm_key = "harmonic_shifted" if has_shifted else "harmonic"
-            harm_label = "Harmonic (lang shifted)"
         else:  # "global"
             harm_key = "harmonic_shifted" if has_shifted else "harmonic"
-            harm_label = "Harmonic (shifted)"
+        harm_label = "Harmonic"
         
-        fig, ax = plt.subplots(figsize=figsize)
+        fig, ax = plt.subplots(figsize=figsize, dpi=300)
         
         # Define all available metrics with their plot settings
         metric_config = {
             "vision_Q": ("vision_Q", "green", "o", "Vision Q"),
             "language_Q": ("language_Q", "blue", "o", "Language Q"),
             "harmonic": (harm_key, "red", "s", harm_label),
-            "bimodal_and_Q": ("bimodal_and_Q", "orange", "^", "Bimodal AND"),
+            "bimodal_and_Q": ("bimodal_and_Q", "orange", "^", "Bimodal Q"),
             "bimodal_or_Q": ("bimodal_or_Q", "purple", "v", "Bimodal OR"),
             "bimodal_and_or_Q": ("bimodal_and_or_Q", "brown", "d", "Bimodal AND/OR"),
         }
@@ -603,36 +745,24 @@ class AutoScaler(ModularityCore):
             plotted_data[metric] = vals
         
         ax.set_xscale('log')
+        ax.set_xlim(1, max(x_values))  # Start from 10^0
         
         # Mark best harmonic (if plotted)
         if "harmonic" in plotted_data:
             harm_vals = plotted_data["harmonic"]
             best_idx = np.argmax(harm_vals)
+            best_scaler = int(np.ceil(x_values[best_idx]))
             ax.scatter([x_values[best_idx]], [harm_vals[best_idx]], c='red', s=150, marker='*',
-                       zorder=5, edgecolors='black', label=f'Best H ({x_values[best_idx]})')
+                       zorder=5, edgecolors='black', label=f'Best Harmonic ({best_scaler})')
         
-        # Mark where Language Q crosses zero (if plotted)
-        if "language_Q" in plotted_data:
-            lang_Q_arr = plotted_data["language_Q"]
-            zero_cross_idx = None
-            for i in range(len(lang_Q_arr) - 1):
-                if lang_Q_arr[i] < 0 and lang_Q_arr[i + 1] >= 0:
-                    zero_cross_idx = i + 1  # First non-negative point
-                    break
-            if zero_cross_idx is not None:
-                cross_x = x_values[zero_cross_idx]
-                cross_y = lang_Q_arr[zero_cross_idx]
-                ax.axvline(x=cross_x, color='blue', linestyle=':', lw=1.5, alpha=0.7)
-                ax.scatter([cross_x], [cross_y], c='blue', s=100, marker='D', 
-                          zorder=5, edgecolors='black', label=f'Lang Q≥0 ({cross_x})')
-        
-        # Mark Bimodal AND peak (if plotted)
+        # Mark best Bimodal Q (if plotted)
         if "bimodal_and_Q" in plotted_data:
             bimodal_and_vals = plotted_data["bimodal_and_Q"]
             bimodal_and_peak_idx = np.argmax(bimodal_and_vals)
+            best_bimodal_scaler = int(np.ceil(x_values[bimodal_and_peak_idx]))
             ax.scatter([x_values[bimodal_and_peak_idx]], [bimodal_and_vals[bimodal_and_peak_idx]], 
                       c='orange', s=150, marker='*', zorder=5, edgecolors='black', 
-                      label=f'Bimodal AND peak ({x_values[bimodal_and_peak_idx]})')
+                      label=f'Best Bimodal Q ({best_bimodal_scaler})')
         
         # Baselines - plot all three metrics for each baseline
         if baselines:
@@ -652,20 +782,22 @@ class AutoScaler(ModularityCore):
                     ax.hlines(v_val, xmin, xmax, colors='green', linestyles=style, lw=1.5, alpha=0.5)
                     # Plot Language Q baseline (blue) 
                     ax.hlines(l_val, xmin, xmax, colors='blue', linestyles=style, lw=1.5, alpha=0.5)
-                    # Plot Harmonic baseline (gray)
-                    ax.hlines(h_val, xmin, xmax, colors='gray', linestyles=style, lw=1.5, alpha=0.7)
                     # Legend entry
-                    ax.plot([], [], style, color='gray', lw=1.5, label=f'{lbl} (H={h_val:.3f})')
+                    ax.plot([], [], style, color='gray', lw=1.5, label=f'{lbl}')
         
-        ax.set_xlabel('lang_scaler')
-        ax.set_ylabel('Modularity Q (↑)')
-        title = f'Vision Q vs Language Q Trade-off (shift={shift_mode})'
-        ax.set_title(title)
-        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8)
-        ax.grid(alpha=0.3)
+        ax.set_xlabel('lang_scaler', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Modularity Q (↑)', fontsize=12, fontweight='bold')
+        ax.set_title('Vision Q vs Language Q Trade-off', fontsize=14, fontweight='bold')
+        ax.tick_params(axis='both', labelsize=10)
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), ncol=4, fontsize=9)
         
         plt.tight_layout()
-        plt.show()
+        
+        if show:
+            plt.show()
+            return None
+        else:
+            return fig, ax
 
     @torch.no_grad()
     def visualize(self, scaler=1.0, mode="network"):

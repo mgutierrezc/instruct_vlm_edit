@@ -796,7 +796,7 @@ class AutoLayer(ModularityCore):
         ylim_config = {
             20: {"bimodal": (-0.002, 0.01), "vision": (-0.05, 0.3), "language": (-0.05, 0.15)},
             10: {"bimodal": (-0.002, 0.03), "vision": (-0.05, 0.5), "language": (-0.05, 0.3)},
-            5:  {"bimodal": (-0.002, 0.1),  "vision": (-0.05, 0.8), "language": (-0.1, 0.4)},
+            5:  {"bimodal": (-0.002, 0.1),  "vision": (-0.1, 0.8), "language": (-0.15, 0.5)},
         }
         
         # Infer n_sample from output_dir
@@ -843,7 +843,7 @@ class AutoLayer(ModularityCore):
         if figsize is None:
             figsize = (5 * n_cols, 4)
         
-        fig, axes = plt.subplots(1, n_cols, figsize=figsize)
+        fig, axes = plt.subplots(1, n_cols, figsize=figsize, dpi=300)
         
         # Column offset for Q plots (1 if bias, 0 otherwise)
         col_offset = 1 if bias_scores else 0
@@ -867,8 +867,8 @@ class AutoLayer(ModularityCore):
             bias_indices = np.arange(len(vis_bias))
             
             # Plot lines
-            ax_bias.plot(bias_indices, vis_bias, color='green', lw=1.5, alpha=0.8, label='vision_bias')
-            ax_bias.plot(bias_indices, txt_bias, color='blue', lw=1.5, alpha=0.8, label='text_bias')
+            ax_bias.plot(bias_indices, vis_bias, color='green', lw=1.5, alpha=0.8, label='vision')
+            ax_bias.plot(bias_indices, txt_bias, color='blue', lw=1.5, alpha=0.8, label='text')
             
             # Add error bands if aggregated
             if bias_is_agg:
@@ -891,11 +891,10 @@ class AutoLayer(ModularityCore):
             ax_bias.set_yscale('symlog', linthresh=10)
             ax_bias.yaxis.set_major_formatter(plt.ScalarFormatter())
             ax_bias.ticklabel_format(axis='y', style='plain')
-            ax_bias.set_xlabel('Layer Index')
-            ax_bias.set_ylabel('Bias')
-            ax_bias.set_title('Uni-modality Bias (↑ worse)')
-            ax_bias.grid(alpha=0.3, which='both')
-            ax_bias.legend(fontsize=8, loc='best')
+            ax_bias.set_xlabel('Layer Index', fontsize=12, fontweight='bold')
+            ax_bias.set_title('Uni-modality Bias (↑ worse)', fontsize=14, fontweight='bold')
+            ax_bias.tick_params(axis='both', labelsize=12)
+            ax_bias.legend(fontsize=10, loc='best')
         
         # Q score plots (skip pure scores if bias is included)
         if bias_scores:
@@ -933,10 +932,9 @@ class AutoLayer(ModularityCore):
             
             best_idx = np.argmax(vals)
             ax.scatter([best_idx], [vals[best_idx]], c='red', s=100, marker='*', zorder=5)
-            ax.set_xlabel('Layer Index')
-            ax.set_ylabel(f'{key} (↑)')
-            ax.set_title(title)
-            ax.grid(alpha=0.3)
+            ax.set_xlabel('Layer Index', fontsize=12, fontweight='bold')
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.tick_params(axis='both', labelsize=12)
             
             # Set y-axis limits based on metric type (scaled by n_sample from output_dir)
             if key in ["bimodal_and_Q", "bimodal_or_Q", "bimodal_and_or_Q"]:
@@ -972,14 +970,14 @@ class AutoLayer(ModularityCore):
                 else:
                     ax.axhline(y=sbert_lang_Q, color='red', linestyle='--', lw=1.5, 
                               label=f'SBERT ({sbert_lang_Q:.3f})')
-                ax.legend(fontsize=7, loc='best')
+                ax.legend(fontsize=10, loc='best')
         
         # Legend on first Q plot (or second if bias is present)
         legend_ax = axes[col_offset]
         legend_ax.scatter([], [], c='green', s=30, label='vision')
         legend_ax.scatter([], [], c='orange', s=30, label='merger')
         legend_ax.scatter([], [], c='blue', s=30, label='language')
-        legend_ax.legend(fontsize=8)
+        legend_ax.legend(fontsize=10)
         
         # Restore SBERT baseline to scores dict
         if sbert_lang_Q is not None:
