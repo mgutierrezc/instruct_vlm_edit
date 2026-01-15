@@ -82,9 +82,9 @@ class IKE_CHAIN(nn.Module):
         # Patchification
         self._grid_size = int(getattr(cfg, "grid_size", 3))  # 3 or 4
         self.p_yes_threshold = float(getattr(cfg, "p_yes_threshold", 0.5))
+        self.fast_p_yes = getattr(cfg, "fast_p_yes", True)  # True=single forward, False=2-call NLL
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # top k nll patches per sentence (Route 2)
         self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "both")  # "orig", "patch", "both"
-        self.keep_ties = getattr(cfg, "keep_ties", False)  # keep NLL/unit ties
         # --- legacy params (not used) only for viz ---
         self.aug_as_keys = getattr(cfg, "aug_as_keys", False)  # add augmented patch keys
         self.aug_orig_as_keys = getattr(cfg, "aug_orig_as_keys", False)  # add augmented original image keys
@@ -271,9 +271,16 @@ class IKE_CHAIN(nn.Module):
         """Compute p_yes for all patches."""
         p_yes = []
         for patch in patches:
-            nll_yes = self._get_nll(patch, vqa_q, "Yes")
-            nll_no = self._get_nll(patch, vqa_q, "No")
-            p_yes.append(1.0 / (1.0 + np.exp(nll_yes - nll_no)))
+            if self.fast_p_yes:
+                # Single forward pass - extract yes/no probs from logits
+                probs = self.wrapper.get_next_token_probs(patch, vqa_q, ["yes", "no"])
+                p = probs["yes"] / (probs["yes"] + probs["no"] + 1e-8)
+            else:
+                # Old behavior - 2 forward passes for NLL
+                nll_yes = self._get_nll(patch, vqa_q, "yes")
+                nll_no = self._get_nll(patch, vqa_q, "no")
+                p = 1.0 / (1.0 + np.exp(nll_yes - nll_no))
+            p_yes.append(p)
         return p_yes
 
     def _compute_nll_probs(self, patches: List, sentence: str) -> np.ndarray:
@@ -288,9 +295,8 @@ class IKE_CHAIN(nn.Module):
         3. If none pass → return []
         4. Compute NLL for PASSED patches only
 
-        Route 1 (keep_ties=True):  ALL with smallest unit
-        Route 1 (keep_ties=False): smallest unit → tiebreak by best NLL
-        Route 2: top_k_patches by NLL (among passed)
+        Route 1: smallest unit → highest NLL prob (keep all ties)
+        Route 2: top_k_patches by NLL (among passed, any unit)
 
         Final Output: set(Route1) ∪ set(Route2)
         """
@@ -308,23 +314,17 @@ class IKE_CHAIN(nn.Module):
         nlls = self._compute_nll_probs([patches[i] for i in passed], sentence)
         nll = {i: nlls[j] for j, i in enumerate(passed)}
         
-        def pick(candidates, key1, key2=None):
-            """Pick by key1, optionally tie-break by key2."""
-            best1 = min(key1(i) for i in candidates)
-            c = [i for i in candidates if key1(i) == best1]
-            if key2 is not None:
-                best2 = min(key2(i) for i in c)
-                c = [i for i in c if key2(i) == best2]
-            return c
+        # Round NLL to 2 decimals for tie detection
+        nll_rounded = {i: round(nll[i], 2) for i in passed}
         
-        # Route 1: smallest unit (optionally tiebreak by NLL)
-        if self.keep_ties:
-            r1 = pick(passed, lambda i: units[i])
-        else:
-            r1 = pick(passed, lambda i: units[i], lambda i: nll[i])
+        # Route 1: smallest unit → highest NLL prob (keep all ties)
+        min_unit = min(units[i] for i in passed)
+        smallest_unit_patches = [i for i in passed if units[i] == min_unit]
+        best_nll = min(nll_rounded[i] for i in smallest_unit_patches)
+        r1 = [i for i in smallest_unit_patches if nll_rounded[i] == best_nll]
         
-        # Route 2: top k by NLL (among passed)
-        sorted_by_nll = sorted(passed, key=lambda i: nll[i])
+        # Route 2: top k by NLL (among passed, any unit)
+        sorted_by_nll = sorted(passed, key=lambda i: nll_rounded[i])
         r2 = sorted_by_nll[:self.top_k_patches]
         
         selected = set(r1 + r2)
@@ -952,22 +952,19 @@ class IKE_CHAIN(nn.Module):
             
             if passed:
                 nll = {i: nlls[i] for i in passed}
+                nll_rounded = {i: round(nll[i], 2) for i in passed}
                 
-                # Route 1: smallest unit (optionally tiebreak by NLL)
+                # Route 1: smallest unit → best NLL (keep all ties)
                 min_u = min(units[i] for i in passed)
                 r1 = [i for i in passed if units[i] == min_u]
-                if self.keep_ties:
-                    route1 = r1
-                    print(f"[Route1 - Smallest unit ({min_u})]: {[patch_names[i] for i in route1]}")
-                else:
-                    best_n = min(nll[i] for i in r1)
-                    route1 = [i for i in r1 if nll[i] == best_n]
-                    print(f"[Route1 - Smallest unit ({min_u}) → best NLL]: {[patch_names[i] for i in route1]}")
+                best_n = min(nll_rounded[i] for i in r1)
+                route1 = [i for i in r1 if nll_rounded[i] == best_n]
+                print(f"[Route1 - Smallest unit ({min_u}) → best NLL]: {[patch_names[i] for i in route1]}")
                 
-                # Route 2: best NLL (no tiebreak)
-                best_n = min(nll[i] for i in passed)
-                route2 = [i for i in passed if nll[i] == best_n]
-                print(f"[Route2 - Best NLL]: {[patch_names[i] for i in route2]}")
+                # Route 2: top k by NLL
+                sorted_by_nll = sorted(passed, key=lambda i: nll_rounded[i])
+                route2 = sorted_by_nll[:self.top_k_patches]
+                print(f"[Route2 - Top {self.top_k_patches} NLL]: {[patch_names[i] for i in route2]}")
                 
                 selected = set(route1 + route2)
                 print(f"[Selected]: {len(selected)} patches")

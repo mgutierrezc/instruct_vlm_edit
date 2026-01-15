@@ -260,3 +260,17 @@ class VQAModel(torch.nn.Module):
         model_inputs["labels"] = labels
 
         return model_inputs
+
+    @torch.no_grad()
+    def get_next_token_probs(self, image, prompt, candidate_labels):
+        """Get probabilities for candidate next tokens from a single forward pass."""
+        inputs = self.encode(image, prompt, tokenize=False)
+        outputs = self.model(**inputs)
+        logits = outputs.logits[:, -1, :]  # [1, vocab_size]
+        probs = torch.softmax(logits, dim=-1)
+        
+        result = {}
+        for label in candidate_labels:
+            token_ids = self.tokenizer.encode(label, add_special_tokens=False)
+            result[label] = float(probs[0, token_ids[0]].item())
+        return result
