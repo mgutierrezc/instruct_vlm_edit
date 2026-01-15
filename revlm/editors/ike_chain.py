@@ -1125,7 +1125,17 @@ class IKE_CHAIN(nn.Module):
         # ax.legend(loc='lower left', fontsize=6, frameon=False, handletextpad=0.1)
         
         dist_mode = "eff" if use_effective_dist else "raw"
-        ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {len(matched_local)} retrieved, {dist_mode})', fontsize=8)
+        if self.mode == "dual_sbert":
+            title = "Balanced Embedding"
+        elif self.mode in ["language", "language_last"]:
+            title = "Language-biased Embedding"
+        else:
+            title = "Vision-biased Embedding"
+
+        ax.set_title(title, fontsize=10)
+        # ax.set_title(f'Codebook ({len(edit_list)} edits, {n_keys} keys, {len(matched_local)} retrieved, {dist_mode})', fontsize=8)
         ax.axis('off')
-        plt.tight_layout()
+        ax.margins(0.05)
+        plt.tight_layout(pad=0.3)
+        plt.subplots_adjust(left=0.02, right=0.98, bottom=0.02, top=0.92)
         plt.show()
