@@ -755,19 +755,10 @@ class AutoScaler(ModularityCore):
             ax.scatter([x_values[best_idx]], [harm_vals[best_idx]], c='red', s=150, marker='*',
                        zorder=5, edgecolors='black', label=f'Best Harmonic ({best_scaler})')
         
-        # Mark best Bimodal Q (if plotted)
-        if "bimodal_and_Q" in plotted_data:
-            bimodal_and_vals = plotted_data["bimodal_and_Q"]
-            bimodal_and_peak_idx = np.argmax(bimodal_and_vals)
-            best_bimodal_scaler = int(np.ceil(x_values[bimodal_and_peak_idx]))
-            ax.scatter([x_values[bimodal_and_peak_idx]], [bimodal_and_vals[bimodal_and_peak_idx]], 
-                      c='orange', s=150, marker='*', zorder=5, edgecolors='black', 
-                      label=f'Best Bimodal Q ({best_bimodal_scaler})')
-        
         # Baselines - plot all three metrics for each baseline
         if baselines:
             xmin, xmax = x_values[0], x_values[-1]
-            for bl_key, style, lbl in [("vision_layer", "--", "VisLayer"), ("lang_layer", ":", "LangLayer")]:
+            for bl_key, style, lbl in [("vision_layer", "--", "Single VisLayer"), ("lang_layer", ":", "Single LangLayer")]:
                 if bl_key in baselines:
                     bl = baselines[bl_key]
                     if is_agg:

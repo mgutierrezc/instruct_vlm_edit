@@ -44,6 +44,7 @@ ABLATION_DEFAULTS = {
     "pair_rationale_w": "patch",
     "aug_as_keys": True,
     "reject_threshold_pct": 0,
+    "hubness_keys": True,
 }
 
 
@@ -60,7 +61,7 @@ def detect_ablation(args) -> tuple:
         return "mode", combined_value
     
     # Check other params - return if explicitly set (even if matches default)
-    for param in ["cap_keys", "merge_keys", "pair_rationale_w", "aug_as_keys", "reject_threshold_pct"]:
+    for param in ["cap_keys", "merge_keys", "pair_rationale_w", "aug_as_keys", "reject_threshold_pct", "hubness_keys"]:
         cli_val = getattr(args, param, None)
         if cli_val is not None:
             return param, cli_val
@@ -142,6 +143,8 @@ def run_ablation(args):
         config.editor.aug_as_keys = args.aug_as_keys
     if args.reject_threshold_pct is not None:
         config.editor.reject_threshold_pct = args.reject_threshold_pct
+    if args.hubness_keys is not None:
+        config.editor.hubness_keys = args.hubness_keys
     
     # Set config flags
     config.rationale = True
@@ -339,6 +342,8 @@ if __name__ == "__main__":
                         default=None, help="Add augmented keys (True/False)")
     parser.add_argument("--reject_threshold_pct", type=float, default=None,
                         help="Rejection percentile threshold")
+    parser.add_argument("--hubness_keys", type=lambda x: x.lower() == 'true',
+                        default=None, help="Enable hubness correction (True/False)")
     
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

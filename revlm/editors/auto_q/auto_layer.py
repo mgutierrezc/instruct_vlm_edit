@@ -867,8 +867,8 @@ class AutoLayer(ModularityCore):
             bias_indices = np.arange(len(vis_bias))
             
             # Plot lines
-            ax_bias.plot(bias_indices, vis_bias, color='green', lw=1.5, alpha=0.8, label='vision')
-            ax_bias.plot(bias_indices, txt_bias, color='blue', lw=1.5, alpha=0.8, label='text')
+            ax_bias.plot(bias_indices, vis_bias, color='green', lw=1.5, alpha=0.8, label='vision bias')
+            ax_bias.plot(bias_indices, txt_bias, color='blue', lw=1.5, alpha=0.8, label='language bias')
             
             # Add error bands if aggregated
             if bias_is_agg:
@@ -881,20 +881,20 @@ class AutoLayer(ModularityCore):
             for i, l in enumerate(layers):
                 if l in bias_scores:
                     if l in vis_layers:
-                        ax_bias.axvspan(i - 0.5, i + 0.5, color='green', alpha=0.05)
+                        ax_bias.axvspan(i - 0.5, i + 0.5, color='green', alpha=0.03)
                     elif l in merger_layers:
-                        ax_bias.axvspan(i - 0.5, i + 0.5, color='orange', alpha=0.15)
+                        ax_bias.axvspan(i - 0.5, i + 0.5, color='orange', alpha=0.08)
                     elif l in lang_layers:
-                        ax_bias.axvspan(i - 0.5, i + 0.5, color='blue', alpha=0.05)
+                        ax_bias.axvspan(i - 0.5, i + 0.5, color='blue', alpha=0.03)
             
             ax_bias.axhline(y=0, color='red', linestyle='--', lw=1.5, alpha=0.7)
             ax_bias.set_yscale('symlog', linthresh=10)
             ax_bias.yaxis.set_major_formatter(plt.ScalarFormatter())
             ax_bias.ticklabel_format(axis='y', style='plain')
             ax_bias.set_xlabel('Layer Index', fontsize=12, fontweight='bold')
-            ax_bias.set_title('Uni-modality Bias (↑ worse)', fontsize=14, fontweight='bold')
+            ax_bias.set_title('Uni-modality Bias (↑ worse)', fontsize=20, fontweight='bold')
             ax_bias.tick_params(axis='both', labelsize=12)
-            ax_bias.legend(fontsize=10, loc='best')
+            ax_bias.legend(fontsize=12, loc='best')
         
         # Q score plots (skip pure scores if bias is included)
         if bias_scores:
@@ -917,6 +917,15 @@ class AutoLayer(ModularityCore):
             ]
         
         for ax, key, title in plot_data:
+            # Mark layer type regions (background shading)
+            for i, l in enumerate(layers):
+                if l in vis_layers:
+                    ax.axvspan(i - 0.5, i + 0.5, color='green', alpha=0.03)
+                elif l in merger_layers:
+                    ax.axvspan(i - 0.5, i + 0.5, color='orange', alpha=0.08)
+                elif l in lang_layers:
+                    ax.axvspan(i - 0.5, i + 0.5, color='blue', alpha=0.03)
+            
             if is_agg:
                 vals = np.array([scores[l][key]["mean"] for l in layers])
                 stds = np.array([scores[l][key]["std"] for l in layers])
@@ -933,7 +942,7 @@ class AutoLayer(ModularityCore):
             best_idx = np.argmax(vals)
             ax.scatter([best_idx], [vals[best_idx]], c='red', s=100, marker='*', zorder=5)
             ax.set_xlabel('Layer Index', fontsize=12, fontweight='bold')
-            ax.set_title(title, fontsize=14, fontweight='bold')
+            ax.set_title(title, fontsize=20, fontweight='bold')
             ax.tick_params(axis='both', labelsize=12)
             
             # Set y-axis limits based on metric type (scaled by n_sample from output_dir)
@@ -970,14 +979,14 @@ class AutoLayer(ModularityCore):
                 else:
                     ax.axhline(y=sbert_lang_Q, color='red', linestyle='--', lw=1.5, 
                               label=f'SBERT ({sbert_lang_Q:.3f})')
-                ax.legend(fontsize=10, loc='best')
+                ax.legend(fontsize=12, loc='best')
         
         # Legend on first Q plot (or second if bias is present)
         legend_ax = axes[col_offset]
-        legend_ax.scatter([], [], c='green', s=30, label='vision')
-        legend_ax.scatter([], [], c='orange', s=30, label='merger')
-        legend_ax.scatter([], [], c='blue', s=30, label='language')
-        legend_ax.legend(fontsize=10)
+        legend_ax.scatter([], [], c='green', s=30, label='vision layers')
+        legend_ax.scatter([], [], c='orange', s=30, label='merger layers')
+        legend_ax.scatter([], [], c='blue', s=30, label='language layers')
+        legend_ax.legend(fontsize=12)
         
         # Restore SBERT baseline to scores dict
         if sbert_lang_Q is not None:

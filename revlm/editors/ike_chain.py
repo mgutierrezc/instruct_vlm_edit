@@ -50,7 +50,7 @@ class IKE_CHAIN(nn.Module):
         self.seed = getattr(cfg, "seed", None)
 
         # Core Retrieval
-        self.cap_keys = int(getattr(cfg, "cap_keys", 5))                    # final max keys to retrieve
+        self.cap_keys = int(getattr(config.model, "cap_keys", 5))                    # final max keys to retrieve
         self.hubness_keys = getattr(cfg, "hubness_keys", True)
         self.hubness_centroid = getattr(cfg, "hubness_centroid", True)  # apply hubness normalization to centroid distances
         self.hubness_eps = float(getattr(cfg, "hubness_eps", 1e-6))
@@ -921,6 +921,212 @@ class IKE_CHAIN(nn.Module):
         return stats
 
     # ==================== 6. VISUALIZATION ====================
+
+    def visualize_grid_overlay(self, image, question: str = None, answer: str = None, 
+                               cot: str = None, use_mosaic: bool = True,
+                               grid_color='dodgerblue', grid_linewidth=1.5, figsize=(10, 6), dpi=300):
+        """(1) Visualize original image with grid overlay + augmented version + Q/A/COT."""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+        from PIL import Image as PILImage
+        import textwrap
+        import re
+        
+        if isinstance(image, str):
+            image = PILImage.open(image).convert("RGB")
+        
+        fig, axes = plt.subplots(1, 2, figsize=figsize, dpi=dpi)
+        
+        # Left: Original with grid overlay
+        axes[0].imshow(image)
+        w, h = image.size
+        g = self.grid_size
+        cell_w, cell_h = w / g, h / g
+        for i in range(1, g):
+            axes[0].axvline(x=i * cell_w, color=grid_color, linewidth=grid_linewidth, alpha=0.9)
+            axes[0].axhline(y=i * cell_h, color=grid_color, linewidth=grid_linewidth, alpha=0.9)
+        axes[0].add_patch(Rectangle((0, 0), w-1, h-1, linewidth=grid_linewidth, 
+                                    edgecolor=grid_color, facecolor='none', alpha=0.9))
+        axes[0].set_title(f"Original ({g}×{g} grid)", fontsize=10)
+        axes[0].axis("off")
+        
+        # Right: Augmented (mosaic padding)
+        aug_img = self.augmenter.image(image, use_mosaic=use_mosaic)
+        axes[1].imshow(aug_img)
+        axes[1].set_title("Augmented (mosaic)", fontsize=10)
+        axes[1].axis("off")
+        
+        plt.tight_layout()
+        plt.show()
+        return fig
+
+    @torch.no_grad()
+    def visualize_patches_simple(self, image, sentence: str, n_cols: int = 8, dpi: int = 300):
+        """(2) Simple patch visualization: sentence on top, p(yes)/p(s) per patch, colored borders."""
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+        from scipy.special import softmax
+        
+        patches = self.patchifier.patchify_exclude_full(image)
+        patch_names = self.patchifier.get_patch_names(image)[:-1]
+        units = self.patchifier.get_patch_units(image)[:-1]
+        n_patches = len(patches)
+        
+        # Compute scores
+        vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
+        p_yes = self._compute_p_yes(patches, vqa_q)
+        nlls = self._compute_nll_probs(patches, sentence)
+        p_s = softmax(-nlls)  # lower NLL = higher prob
+        
+        passed = [i for i, p in enumerate(p_yes) if p > self.p_yes_threshold]
+        route1, route2 = [], []
+        if passed:
+            nll_rounded = {i: round(nlls[i], 2) for i in passed}
+            min_unit = min(units[i] for i in passed)
+            smallest = [i for i in passed if units[i] == min_unit]
+            best_nll = min(nll_rounded[i] for i in smallest)
+            route1 = [i for i in smallest if nll_rounded[i] == best_nll]
+            route2 = sorted(passed, key=lambda i: nll_rounded[i])[:self.top_k_patches]
+        
+        # Layout
+        n_rows = (n_patches + n_cols - 1) // n_cols
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(n_cols * 1.5, n_rows * 1.8), dpi=dpi)
+        axes = axes.flatten()
+        plt.subplots_adjust(wspace=0.02, hspace=0.35, top=0.90)
+        
+        for idx, ax in enumerate(axes):
+            if idx < n_patches:
+                ax.imshow(patches[idx])
+                # Thick colored border for selected patches
+                in_r1, in_r2 = idx in route1, idx in route2
+                if in_r1 or in_r2:
+                    color = 'limegreen' if (in_r1 and in_r2) else ('deepskyblue' if in_r1 else 'orange')
+                    ax.add_patch(Rectangle((0, 0), patches[idx].width-1, patches[idx].height-1,
+                                          linewidth=6, edgecolor=color, facecolor='none'))
+                # Title: kernel name (without _N suffix), p(yes), p(s)
+                kernel = patch_names[idx].split('_')[0]  # "1x1_0" -> "1x1"
+                ax.set_title(f"{kernel}\np(yes)={p_yes[idx]:.0%} p(s)={p_s[idx]:.0%}", fontsize=6, fontweight='bold')
+            ax.axis('off')
+        
+        fig.suptitle(f'"{sentence}"', fontsize=11, fontweight='bold', y=0.98)
+        plt.show()
+        return fig
+
+    @torch.no_grad()
+    def visualize_selected_patches(self, image, sentences: List[str], figsize_per_row=(6, 3)):
+        """(3) Visualize selected patches across ALL sentences in n×2 layout.
+        
+        A patch can be paired with multiple sentences. Shows merged view.
+        Each row: [patch image | list of (p_yes, p_s, sentence) for all paired sentences]
+        
+        Args:
+            image: Input image
+            sentences: List of sentences (e.g., from rationale)
+        """
+        import matplotlib.pyplot as plt
+        from scipy.special import softmax
+        
+        # Handle single sentence input
+        if isinstance(sentences, str):
+            sentences = [sentences]
+        
+        patches = self.patchifier.patchify_exclude_full(image)
+        patch_names = self.patchifier.get_patch_names(image)[:-1]
+        units = self.patchifier.get_patch_units(image)[:-1]
+        n_patches = len(patches)
+        
+        # Track which sentences select each patch: patch_idx -> [(sent_idx, p_yes, p_s), ...]
+        patch_to_sents = {i: [] for i in range(n_patches)}
+        
+        for sent_idx, sentence in enumerate(sentences):
+            # Compute p_yes for this sentence
+            vqa_q = f"Does the image show {sentence.lower().replace('.', '?')}"
+            p_yes_scores = self._compute_p_yes(patches, vqa_q)
+            
+            # Filter by p_yes threshold
+            passed = [i for i, p in enumerate(p_yes_scores) if p > self.p_yes_threshold]
+            if not passed:
+                continue
+            
+            # Compute NLL and p(s) for passed patches
+            nlls_all = self._compute_nll_probs(patches, sentence)
+            p_sent_all = softmax(-nlls_all)
+            
+            # Route 1: smallest unit → best NLL (keep ties)
+            min_unit = min(units[i] for i in passed)
+            smallest = [i for i in passed if units[i] == min_unit]
+            nll_rounded = {i: round(nlls_all[i], 2) for i in passed}
+            best_nll = min(nll_rounded[i] for i in smallest)
+            route1 = [i for i in smallest if nll_rounded[i] == best_nll]
+            
+            # Route 2: top k by NLL
+            sorted_by_nll = sorted(passed, key=lambda i: nll_rounded[i])
+            route2 = sorted_by_nll[:self.top_k_patches]
+            
+            # Union of selected for this sentence
+            selected = set(route1 + route2)
+            for idx in selected:
+                patch_to_sents[idx].append({
+                    'sent_idx': sent_idx,
+                    'sentence': sentence,
+                    'p_yes': p_yes_scores[idx],
+                    'p_s': p_sent_all[idx],
+                    'route1': idx in route1,
+                    'route2': idx in route2,
+                })
+        
+        # Get patches that were selected by at least one sentence
+        selected_patches = sorted([i for i in range(n_patches) if patch_to_sents[i]])
+        n_selected = len(selected_patches)
+        
+        if n_selected == 0:
+            print(f"[No patches selected across {len(sentences)} sentences]")
+            return None
+        
+        print(f"[Selected {n_selected} unique patches across {len(sentences)} sentences]")
+        
+        import textwrap
+        from PIL import Image as PILImage
+        
+        # Resize all patches to same height
+        target_h = 80
+        resized_patches = []
+        for idx in selected_patches:
+            p = patches[idx]
+            ratio = target_h / p.height
+            new_w = int(p.width * ratio)
+            resized_patches.append(p.resize((new_w, target_h), PILImage.Resampling.LANCZOS))
+        
+        # Create n×2 figure (image left, text right)
+        fig, axes = plt.subplots(n_selected, 2, figsize=(10, 0.9 * n_selected),
+                                 gridspec_kw={'width_ratios': [1, 5]}, dpi=150)
+        if n_selected == 1:
+            axes = axes.reshape(1, 2)
+        plt.subplots_adjust(wspace=0.02, hspace=0.05)
+        
+        for row, idx in enumerate(selected_patches):
+            patch = resized_patches[row]
+            sent_info = patch_to_sents[idx]
+            
+            # Left: patch image (no title, no border)
+            axes[row, 0].imshow(patch)
+            axes[row, 0].axis('off')
+            
+            # Right: p(yes), p(s), sentence with wrapping
+            axes[row, 1].axis('off')
+            text_lines = []
+            for info in sent_info:
+                s_idx = info['sent_idx'] + 1  # 1-indexed like s1, s2, s3
+                line = f"s{s_idx}: p(yes)={info['p_yes']:.0%}  p(s)={info['p_s']:.0%}  \"{info['sentence']}\""
+                text_lines.append(textwrap.fill(line, width=80))
+            
+            text_content = "\n\n".join(text_lines)
+            axes[row, 1].text(0.0, 0.5, text_content, transform=axes[row, 1].transAxes,
+                             fontsize=10, verticalalignment='center')
+        
+        plt.tight_layout()
+        plt.show()
+        return fig
 
     @torch.no_grad()
     def visualize_patches(self, image, sentence: str = None, figsize=(16, 10)):
