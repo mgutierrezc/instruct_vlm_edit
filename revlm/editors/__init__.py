@@ -7,6 +7,10 @@ from .balancedit import BalancEdit
 from .ike import IKE
 from .ike_cot import IKE_COT
 from .ike_chain import IKE_CHAIN
+# from .liveedit.liveedit import LiveEdit
+# from .liveedit.liveedit_cot import LiveEdit_COT
+# from .liveedit.liveedit_pretrain import LiveEditPretrain
+# from .liveedit.liveedit_pretrain_cot import LiveEditPretrainCOT
 from .auto_q import AutoLayer, AutoScaler, ModularityCore, BiasLayer  # Layer/scaler selection tools
 
 
@@ -46,6 +50,14 @@ def get_editor(config, model):
         editor = IKE_COT(config, model)
     elif editor_name == "ike_chain":
         editor = IKE_CHAIN(config, model)
+    elif editor_name == "liveedit":
+        editor = LiveEdit(config, model)
+    elif editor_name == "liveedit_cot":
+        editor = LiveEdit_COT(config, model)
+    elif editor_name == "liveedit_pretrain":
+        editor = LiveEditPretrain(config, model)
+    elif editor_name == "liveedit_pretrain_cot":
+        editor = LiveEditPretrainCOT(config, model)
     else:
         raise ValueError(f"Unknown editor: {editor_name}")
     

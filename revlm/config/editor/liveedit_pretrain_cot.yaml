@@ -1,0 +1,53 @@
+# LiveEdit Pretraining with COT Config
+# Based on original LiveEdit repo (CVPR 2025)
+# Includes sentence-level experts for chain-of-thought
+
+_name: liveedit_pretrain_cot
+
+# ========== Architecture (from original) ==========
+# Layer to edit
+edit_layer_i: 21
+llm_layer_tmp: null  # Auto-detect based on model
+
+# Model dimensions (auto-detect if null)
+llm_mid_dim: 4096
+
+# LoRA dimensions (from original retrieval_editor config)
+lora_rank: 4
+lora_scale: 5.0
+
+# Routing/retrieval parameters (from original retrieval_editor config)
+module_dim: 1024
+cross_att_head_n: 8
+eqe_n: 4  # Number of editing query representations
+
+# ========== Training Config (from original train_cfg) ==========
+# Learning rate for pretraining meta-learners
+lr: 1.e-4
+
+# Per-edit training parameters (inherited from LiveEdit base class)
+edit_lr: 1.e-3    # LR for per-edit LoRA training
+n_iter: 100       # Iterations per edit during pretraining
+early_stop_patience: 20
+
+# Step decay LR schedule (from original)
+lr_cut_it: [10000]  # Iterations at which to cut LR
+lr_cut_rate: 0.1    # Multiply LR by this factor at each cut
+
+# Loss weights (from original train_cfg)
+rel_lambda: 1.0       # Reliability loss weight
+gen_lambda: 1.0       # Generality loss weight  
+loc_lambda: 1.0       # Locality loss weight
+soft_routing_lambda: 1.0  # Soft routing contrastive loss weight
+hard_routing_lambda: 1.0  # Hard routing contrastive loss weight
+
+# Training epochs
+epochs: 1000
+
+# Logging
+save_ckpt_per_i: 1000
+log_per_i: 1
+ema_alpha: 0.1
+
+# ========== COT Specific ==========
+# Sentence-level experts are automatically trained for each COT sentence

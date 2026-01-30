@@ -171,8 +171,8 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
             tokens = model.prepare_training_batch(batch)
             # ft_retrain: do one single retrain on the full edit set (all-at-once).
             if editor_name != "ft_retrain":
-                if editor_name == "grace_cot":
-                    # GRACE_COT needs image and cot for sentence keys
+                if editor_name in {"grace_cot", "liveedit_cot"}:
+                    # GRACE_COT/LiveEdit_COT needs image and cot for sentence keys
                     idx = batch["idxs"][0]
                     ex = edit_ds.data[idx]
                     editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
@@ -251,7 +251,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
     """Edit sequentially, evaluating every `eval_every` batchess."""
     editor_name_check = getattr(config.editor, "_name", "").lower()
     # Retrieval-based editors don't modify weights - skip expensive deepcopy
-    retrieval_editors = ["ike", "ike_chain", "ike_cot"]
+    retrieval_editors = ["ike", "ike_chain", "ike_cot", "liveedit", "liveedit_cot"]
     if any(editor_name_check.startswith(name) for name in retrieval_editors):
         model_old = model  # Same reference, no copy needed
     else:
@@ -310,7 +310,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             if hasattr(model, "model"):
                 model.model.train()
             tokens = model.prepare_training_batch(batch)
-            if editor_name == "grace_cot":
+            if editor_name in {"grace_cot", "liveedit_cot"}:
                 idx = batch["idxs"][0]
                 ex = edit_ds_sofar.data[seen_idxs.index(idx)] if idx in seen_idxs else edit_ds.data[idx]
                 editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))

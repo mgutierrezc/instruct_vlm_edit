@@ -85,6 +85,7 @@ class IKE_CHAIN(nn.Module):
         self.fast_p_yes = getattr(cfg, "fast_p_yes", True)  # True=single forward, False=2-call NLL
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # top k nll patches per sentence (Route 2)
         self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "both")  # "orig", "patch", "both"
+        self.key_type = getattr(cfg, "key_type", "all")  # "all", "rationale", "answer"
         # --- legacy params (not used) only for viz ---
         self.aug_as_keys = getattr(cfg, "aug_as_keys", False)  # add augmented patch keys
         self.aug_orig_as_keys = getattr(cfg, "aug_orig_as_keys", False)  # add augmented original image keys
@@ -418,41 +419,45 @@ class IKE_CHAIN(nn.Module):
     def _add_edit(self, img, question: str, answer: str, rationale_sents: List[str], uid=None):
         """Add keys for one edit."""
         answer_value = f"The answer to '{question}' is {answer}." if answer else ""
+        rationale_value = " ".join(rationale_sents)
         
         new_entries, new_imgs, new_texts, new_is_question = [], [], [], []
         
-        # 1. Original image keys: <orig, question> and <orig, si>
+        # 1. Question key: <orig, question> -> value depends on key_type
+        # "answer" or "all": answer_value, "rationale": concatenated rationale
+        question_key_value = rationale_value if self.key_type == "rationale" else answer_value
         new_entries.append({
-            "value": answer_value, "is_patch": False, "edit_idx": self._edit_count,
+            "value": question_key_value, "is_patch": False, "edit_idx": self._edit_count,
             "key_text": question, "is_question": True
         })
         new_imgs.append(img)
         new_texts.append(question)
         new_is_question.append(True)
         
-        # 2. Rationale keys: "orig", "patch", or "both"
-        for sent in rationale_sents:
-            # Add original image keys if "orig" or "both"
-            if self.pair_rationale_w in ("orig", "both"):
-                new_entries.append({
-                    "value": sent, "is_patch": False, "edit_idx": self._edit_count,
-                    "key_text": sent, "is_question": False
-                })
-                new_imgs.append(img)
-                new_texts.append(sent)
-                new_is_question.append(False)
-            
-            # Add patch keys if "patch" or "both"
-            if self.pair_rationale_w in ("patch", "both"):
-                patches = self._select_patches_for_sentence(img, sent)
-                for patch in patches:
+        # 2. Rationale keys: skip only for "answer"
+        if self.key_type != "answer":
+            for sent in rationale_sents:
+                # Add original image keys if "orig" or "both"
+                if self.pair_rationale_w in ("orig", "both"):
                     new_entries.append({
-                        "value": sent, "is_patch": True, "edit_idx": self._edit_count,
+                        "value": sent, "is_patch": False, "edit_idx": self._edit_count,
                         "key_text": sent, "is_question": False
                     })
-                    new_imgs.append(patch)
+                    new_imgs.append(img)
                     new_texts.append(sent)
                     new_is_question.append(False)
+                
+                # Add patch keys if "patch" or "both"
+                if self.pair_rationale_w in ("patch", "both"):
+                    patches = self._select_patches_for_sentence(img, sent)
+                    for patch in patches:
+                        new_entries.append({
+                            "value": sent, "is_patch": True, "edit_idx": self._edit_count,
+                            "key_text": sent, "is_question": False
+                        })
+                        new_imgs.append(patch)
+                        new_texts.append(sent)
+                        new_is_question.append(False)
         
         self._edit_count += 1
         
@@ -1122,7 +1127,7 @@ class IKE_CHAIN(nn.Module):
             
             text_content = "\n\n".join(text_lines)
             axes[row, 1].text(0.0, 0.5, text_content, transform=axes[row, 1].transAxes,
-                             fontsize=10, verticalalignment='center')
+                             fontsize=16, verticalalignment='center')
         
         plt.tight_layout()
         plt.show()

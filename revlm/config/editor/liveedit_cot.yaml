@@ -1,0 +1,32 @@
+# LiveEdit_COT: LiveEdit with rationale sentence experts
+# Creates multiple LoRA experts per edit: one for answer + one per rationale sentence
+
+_name: liveedit_cot
+
+# Per-edit training parameters
+edit_lr: 1e-3
+n_iter: 1000
+early_stop_patience: 20
+retrain: false  # If true, train each expert on ALL accumulated edits (like ft_retrain)
+retrain_batch_size: 4  # Batch size for retrain mode (groups edits for gradient accumulation)
+
+# Layer to edit (auto-detected if not specified)
+edit_layer_i: 21
+llm_layer_tmp: null  # Auto-detect based on model (e.g., "model.layers.{}" for Qwen)
+
+# LoRA dimensions
+llm_mid_dim: 4096     # Model hidden size (auto-detect if null)
+lora_rank: 4          # LoRA rank
+lora_scale: 5.0       # Scaling factor
+
+# Routing/retrieval parameters  
+module_dim: 1024      # Routing feature dimension
+cross_att_head_n: 8   # Cross-attention heads for meta-learners
+eqe_n: 4              # Number of routing queries
+
+# Retrieval thresholds
+eps: 0.5              # Distance threshold for retrieval
+dist_fn: cos          # Distance function: cos, euc
+
+# Optional: pre-trained meta-learners checkpoint
+ckpt_path: null
