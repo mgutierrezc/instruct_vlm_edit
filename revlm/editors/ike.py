@@ -23,14 +23,12 @@ class IKE(torch.nn.Module):
         self.device = config.device
 
         editor_cfg = getattr(config, "editor", config)
-        self.k: int = int(getattr(editor_cfg, "k", 32))
+        self.k: int = int(getattr(editor_cfg, "k", 3))
         self.sentence_model_name: str = getattr(
             editor_cfg,
             "sentence_model_name",
             "sentence-transformers/all-MiniLM-L6-v2",
         )
-        self.self_retrieve: bool = getattr(editor_cfg, "self_retrieve", False)
-
         self.sentence_model = SentenceTransformer(self.sentence_model_name).to(
             self.device
         )
@@ -119,12 +117,11 @@ class IKE(torch.nn.Module):
         print(f"[IKE] corpus built: {len(sentences)} entries", flush=True)
 
     @torch.no_grad()
-    def retrieve_icl_examples(self, prompt: str, target: str) -> List[str]:
+    def retrieve_icl_examples(self, prompt: str, target: str = None) -> List[str]:
         """Retrieve up to k ICL examples for a new query prompt.
 
         - Query embedding is built from the prompt only (no gold label).
-        - Any retrieved corpus entry that clearly corresponds to the same
-          (prompt, target) pair is filtered out.
+        - Any retrieved corpus entry containing the same prompt is filtered out.
         """
         if self.corpus_embeddings is None or self.corpus_sentences is None:
             raise RuntimeError(
@@ -152,8 +149,8 @@ class IKE(torch.nn.Module):
         filtered_hits: List[Dict[str, Any]] = []
         for h in hit:
             s = self.corpus_sentences[h["corpus_id"]]
-            # Filter exact (prompt, target) match if self_retrieve=False
-            if not self.self_retrieve and prompt and target and (prompt in s and target in s):
+            # Filter exact prompt match to avoid self-retrieval
+            if prompt and prompt in s:
                 continue
             filtered_hits.append(h)
             if len(filtered_hits) >= self.k:
@@ -165,7 +162,7 @@ class IKE(torch.nn.Module):
         return icl_examples
 
     def augment_prompt(
-        self, prompt: str, target: str, train_ds: Any = None
+        self, prompt: str, target: str = None, train_ds: Any = None
     ) -> Tuple[str, List[str]]:
         """Return prompt prefixed with retrieved demonstrations."""
         self._ensure_corpus(train_ds)
@@ -188,15 +185,10 @@ class IKE(torch.nn.Module):
         retrieval_log: List[Dict[str, Any]] = []
         for ex in data:
             prompt = ex.get("prompt", "")
-            target = (
-                ex.get("gold", {}).get("label")
-                or ex.get("target", "")
-                or ex.get("target_new", "")
-            )
-            if not prompt or not target:
+            if not prompt:
                 continue
 
-            augmented_prompt, icl_examples = self.augment_prompt(prompt, target)
+            augmented_prompt, icl_examples = self.augment_prompt(prompt)
             ex.setdefault("prompt_orig", prompt)
             ex["prompt"] = augmented_prompt
             ex["icl_examples"] = icl_examples
@@ -205,7 +197,7 @@ class IKE(torch.nn.Module):
             )
 
         # Log summary and examples
-        print(f"[IKE] applied to {len(retrieval_log)}/{len(data)} examples (self_retrieve={self.self_retrieve}, k={self.k})", flush=True)
+        print(f"[IKE] applied to {len(retrieval_log)}/{len(data)} examples (k={self.k})", flush=True)
         # for i, ex in enumerate(data[:3]):
         #     print(f"  [{i}] q='{ex.get('question', '')[:50]}' target='{ex.get('gold', {}).get('label', '')}' icl_count={len(ex.get('icl_examples', []))}")
         #     if ex.get('icl_examples'):
