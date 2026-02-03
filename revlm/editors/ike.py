@@ -2,6 +2,8 @@ import torch
 from sentence_transformers import SentenceTransformer, util
 from typing import Dict, List, Any, Optional, Tuple
 
+from revlm.editors.utils import Augmenter
+
 
 class IKE(torch.nn.Module):
     """Simple in-context knowledge editor (IKE) for `revlm`.
@@ -32,6 +34,9 @@ class IKE(torch.nn.Module):
         self.sentence_model = SentenceTransformer(self.sentence_model_name).to(
             self.device
         )
+
+        # Text augmentation for corpus diversity
+        self.augmenter = Augmenter()
 
         self.corpus_sentences: Optional[List[str]] = None
         self.corpus_embeddings: Optional[torch.Tensor] = None
@@ -90,16 +95,18 @@ class IKE(torch.nn.Module):
 
     @torch.no_grad()
     def build_corpus_from_dataset(self, train_ds) -> None:
-        """Build the retrieval corpus from (prompt, target) pairs."""
+        """Build the retrieval corpus from (prompt, target) pairs.
+        
+        If augment=True, each prompt is rephrased before adding to corpus.
+        """
         normalized_entries = self._normalize_dataset_entries(train_ds)
 
         sentences: List[str] = []
 
         for ex in normalized_entries:
-            prompt = ex["prompt"]
+            prompt =  self.augmenter.rephrase(ex["prompt"], mode="normalize")
             target = ex["target"]
             new_fact = f"{prompt} {target}"
-
             sentences.append(f"New Fact: {new_fact}\nPrompt: {new_fact}\n\n")
 
         if not sentences:

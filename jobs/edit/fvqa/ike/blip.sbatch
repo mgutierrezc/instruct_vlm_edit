@@ -38,6 +38,7 @@ for MODEL_NAME in "${MODELS[@]}"; do
       --dataset_name "${DATA}" \
       --task mc \
       --batch_size "${BATCH_SIZE}" \
+      --sequential \
       --overwrite
   done
 done

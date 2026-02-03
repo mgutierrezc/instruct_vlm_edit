@@ -427,7 +427,6 @@ class Augmenter:
             T.RandomRotation(10),
             T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
         ])
-        self.n_chain = 3
         self._llm = None
         self._llm_tok = None
         self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Smaller: 0.5B vs 1.5B
@@ -496,14 +495,21 @@ class Augmenter:
             instruction = "Ask a general question that can be answered by this sentence. Only output the question, nothing else."
             temp = 0.1  # Lower temp for question mode to reduce hallucination
             max_new_tokens = 32
+            n_chain = 1
+        elif mode == "normalize":
+            instruction = "Make this sentence more general. Only output the generalized sentence, nothing else."
+            temp = 1.0
+            max_new_tokens = 32
+            n_chain = 1
         else:  # rephrase
             instruction = "Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else."
             temp = 1.5
             max_new_tokens = 64
+            n_chain = 3
         
         for attempt in range(3):
             candidates = []
-            for c in range(self.n_chain):
+            for c in range(n_chain):
                 prev = candidates[-1] if candidates else text
                 messages = [{"role": "user", "content": f"{instruction}\n\n{prev}"}]
                 prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -534,13 +540,8 @@ class Augmenter:
         return aug_q
 
     def rationale(self, s):
-        """Augment a rationale sentence. "question" (turn statement into question)
-        """
-        n_chain_old = self.n_chain
-        self.n_chain = 1
-        aug_s = self.rephrase(s, mode="question")
-        self.n_chain = n_chain_old
-        return aug_s
+        """Augment a rationale sentence (turn statement into question)."""
+        return self.rephrase(s, mode="question")
     
     def visualize(self, img, text: str = None, use_mosaic: bool = True):
         """Visualize original vs augmented image (and text if provided)."""
