@@ -4,7 +4,7 @@ import json
 from huggingface_hub import snapshot_download
 import string
 
-def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = True):
+def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = False):
     """Load caption dataframe from HuggingFace dataset.
     
     Args:
@@ -38,7 +38,7 @@ def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = T
                 bad_sids = set(json.load(f))
             before_count = len(r_gen_df)
             r_gen_df = r_gen_df[~r_gen_df["sid"].astype(str).isin(bad_sids)]
-            print(f"[r_gen] After bad_sids filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids (removed {before_count - len(r_gen_df)})")
+            print(f"[r_gen] After bad_sids filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids (removed {before_count - len(r_gen_df)} rows)")
     
     # Filter by edit_ds uids if provided
     if edit_ds is not None:

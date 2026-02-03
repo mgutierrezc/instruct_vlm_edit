@@ -226,7 +226,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         related_images,
         related_r_gen_df,
         related_coe_df,
-        coe_pt=getattr(config, "coe_pt", False),
+        coe_pt=getattr(config, "coe_pt", True),
         edit_time=edit_time,
     )
     # add a job finish time
@@ -350,7 +350,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             batch_out_dict = editeval(
                 model_old, model, edit_ds_sofar, editor,
                 related_texts, related_images, related_r_gen_df, related_coe_df,
-                coe_pt=getattr(config, "coe_pt", False),
+                coe_pt=getattr(config, "coe_pt", True),
                 edit_subsample_size=None if is_last else 40,
                 edit_time=cumulative_edit_time,
             )

@@ -23,12 +23,13 @@ class IKE(torch.nn.Module):
         self.device = config.device
 
         editor_cfg = getattr(config, "editor", config)
-        self.k: int = int(getattr(editor_cfg, "k", 3))
+        self.k: int = int(getattr(editor_cfg, "k", 32))
         self.sentence_model_name: str = getattr(
             editor_cfg,
             "sentence_model_name",
             "sentence-transformers/all-MiniLM-L6-v2",
         )
+        self.self_retrieve: bool = getattr(editor_cfg, "self_retrieve", False)
 
         self.sentence_model = SentenceTransformer(self.sentence_model_name).to(
             self.device
@@ -115,6 +116,7 @@ class IKE(torch.nn.Module):
 
         self.corpus_sentences = sentences
         self.corpus_embeddings = embeddings
+        print(f"[IKE] corpus built: {len(sentences)} entries", flush=True)
 
     @torch.no_grad()
     def retrieve_icl_examples(self, prompt: str, target: str) -> List[str]:
@@ -150,7 +152,8 @@ class IKE(torch.nn.Module):
         filtered_hits: List[Dict[str, Any]] = []
         for h in hit:
             s = self.corpus_sentences[h["corpus_id"]]
-            if prompt and target and (prompt in s and target in s):
+            # Filter exact (prompt, target) match if self_retrieve=False
+            if not self.self_retrieve and prompt and target and (prompt in s and target in s):
                 continue
             filtered_hits.append(h)
             if len(filtered_hits) >= self.k:
@@ -201,6 +204,13 @@ class IKE(torch.nn.Module):
                 {"uid": ex.get("uid"), "icl_count": len(icl_examples)}
             )
 
+        # Log summary and examples
+        print(f"[IKE] applied to {len(retrieval_log)}/{len(data)} examples (self_retrieve={self.self_retrieve}, k={self.k})", flush=True)
+        # for i, ex in enumerate(data[:3]):
+        #     print(f"  [{i}] q='{ex.get('question', '')[:50]}' target='{ex.get('gold', {}).get('label', '')}' icl_count={len(ex.get('icl_examples', []))}")
+        #     if ex.get('icl_examples'):
+        #         print(f"       icl[0]: {ex['icl_examples'][0][:100]}...")
+
         return retrieval_log, dataset
 
     # -------------------------------------------------------------------------
@@ -226,9 +236,8 @@ class IKE(torch.nn.Module):
         # - If `train_ds` is provided, we treat it as the corpus source explicitly.
         corpus_source = train_ds if train_ds is not None else edit_ds
 
-        # Build corpus once from the corpus source, then reuse it.
-        if self.corpus_embeddings is None or self.corpus_sentences is None:
-            self.build_corpus_from_dataset(corpus_source)
+        # Always rebuild corpus from corpus_source to capture all edits
+        self.build_corpus_from_dataset(corpus_source)
 
         # Augment all prompts in-place on `edit_ds` and cache a retrieval log.
         self.last_retrieval_log, _ = self.apply_to_dataset(edit_ds, corpus_source)
