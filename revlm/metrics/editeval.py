@@ -81,7 +81,7 @@ def editeval(
 		related_images: Mapping[int, Sequence[Any]],
 		related_r_gen_df: pd.DataFrame,
 		related_coe_df: pd.DataFrame,
-		coe_pt: bool = True,
+		coe_pt: bool = False,
 		unrelated_ds=None,
 		loc_sample_size=100,
 		use_hard_locality: bool = True,

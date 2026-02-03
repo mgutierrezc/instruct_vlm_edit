@@ -821,8 +821,8 @@ class IKE_CHAIN(nn.Module):
         
         self.last_retrieval_log = log
         print(f"[IKE_CHAIN] applied facts to {applied}/{len(data)} examples", flush=True)
-        # for i, ex in enumerate(data[:3]):
-        #     print(f"  [{i}] q='{ex.get('question','')}' answer='{ex.get('answer','')}' prompt='{ex.get('prompt','')}'")
+        for i, ex in enumerate(data[:3]):
+            print(f"  [{i}] q='{ex.get('question','')}' answer='{ex.get('answer','')}' prompt='{ex.get('prompt','')}'")
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
         """Add edits to codebook."""

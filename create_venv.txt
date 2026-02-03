@@ -1,0 +1,17 @@
+# 1. Create fresh environment
+conda deactivate
+conda env remove -n revlm
+conda create -n revlm python=3.10 -y
+conda activate revlm
+
+# 2. Install PyTorch first with CUDA 12.8 wheels
+pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+
+# 3. Install the rest from requirements.txt (pip will skip torch/torchvision since already installed)
+pip install -r requirements.txt
+
+# 4. Install ipykernel for Jupyter
+conda install jupyterlab ipykernel notebook -y
+jupyter kernelspec uninstall revlm -y
+python -m ipykernel install --user --name revlm --display-name "revlm"
+jupyter kernelspec list
