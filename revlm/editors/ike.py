@@ -51,9 +51,8 @@ class IKE(torch.nn.Module):
         if uid in self._added_uids:
             return False
 
-        # Normalize prompt
         normalized = self.augmenter.rephrase(prompt, mode="normalize")
-        sentence = f"New Fact: {normalized} {target}\nPrompt: {normalized} {target}\n\n"
+        sentence = f"{normalized} {target}"
 
         # Encode
         emb = self.sentence_model.encode(sentence, convert_to_tensor=True, show_progress_bar=False)
@@ -75,8 +74,7 @@ class IKE(torch.nn.Module):
         if not self.corpus_sentences:
             return []
 
-        query = f"Prompt: {prompt}\n\n"
-        q_emb = self.sentence_model.encode(query, convert_to_tensor=True, show_progress_bar=False)
+        q_emb = self.sentence_model.encode(prompt, convert_to_tensor=True, show_progress_bar=False)
         q_emb = util.normalize_embeddings(q_emb.unsqueeze(0)).to(self.device)
 
         hits = util.semantic_search(q_emb, self.corpus_embeddings, score_function=util.dot_score, top_k=self.k)
@@ -115,8 +113,10 @@ class IKE(torch.nn.Module):
 
             facts = self._retrieve(prompt)
             if facts:
+                # Format: "New Fact: {q1} {a1}\n{q2} {a2}\n...\n{query}"
+                facts_str = "New Fact: " + "\n".join(facts) + "\n"
                 ex["prompt_orig"] = prompt
-                ex["prompt"] = "".join(facts) + prompt
+                ex["prompt"] = facts_str + prompt
                 applied += 1
 
         print(f"[IKE] applied to {applied}/{len(data)} examples (k={self.k})", flush=True)

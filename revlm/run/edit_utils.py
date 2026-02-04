@@ -199,8 +199,8 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         if hasattr(model, "model"):
             model.model.eval()
     edit_time = time.time() - t2  # capture edit time before generation
-    # Apply IKE/IKE_CHAIN retrieval once before generation (deferred from edit() for efficiency)
-    if editor_name in {"ike", "ike_chain"} and editor is not None and hasattr(editor, "apply_to_dataset"):
+    # Apply IKE/IKE_CHAIN/IKE_COT retrieval once before generation (deferred from edit() for efficiency)
+    if editor_name in {"ike", "ike_chain", "ike_cot"} and editor is not None and hasattr(editor, "apply_to_dataset"):
         editor.apply_to_dataset(edit_ds)
     edit_ds.task_generate(model, use_cache=False)
     print10(edit_ds, label="model_new")
@@ -334,8 +334,8 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         if should_eval:
             if hasattr(model, "model"):
                 model.model.eval()
-            # Apply IKE/IKE_CHAIN retrieval once before generation (deferred from edit() for efficiency)
-            if editor_name in {"ike", "ike_chain"} and editor is not None and hasattr(editor, "apply_to_dataset"):
+            # Apply IKE/IKE_CHAIN/IKE_COT retrieval once before generation (deferred from edit() for efficiency)
+            if editor_name in {"ike", "ike_chain", "ike_cot"} and editor is not None and hasattr(editor, "apply_to_dataset"):
                 editor.apply_to_dataset(edit_ds_sofar)
             edit_ds_sofar.task_generate(model, use_cache=False)
             # Print edit application stats inline (for GRACE/BalancEdit)
@@ -358,7 +358,7 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
                 model_old, model, edit_ds_sofar, editor,
                 related_texts, related_images, related_r_gen_df, related_coe_df,
                 coe_pt=getattr(config, "coe_pt", True),
-                edit_subsample_size=None if is_last else 40,
+                edit_subsample_size=None if is_last else 50,
                 edit_time=cumulative_edit_time,
             )
             batch_out_dict['batch_idx'] = batch_idx + 1
