@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=edit_aokvqa_ike_cot_blip
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=64G
-#SBATCH -t 72:00:00
+#SBATCH -t 48:00:00
 #SBATCH -A netlab
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
