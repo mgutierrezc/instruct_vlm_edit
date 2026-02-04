@@ -22,7 +22,7 @@ class IKE(torch.nn.Module):
         self.device = config.device
 
         editor_cfg = getattr(config, "editor", config)
-        self.k: int = int(getattr(editor_cfg, "k", 3))
+        self.k: int = int(getattr(editor_cfg, "k", 5))
         self.sentence_model = SentenceTransformer(
             getattr(editor_cfg, "sentence_model_name", "sentence-transformers/all-MiniLM-L6-v2")
         ).to(self.device)
