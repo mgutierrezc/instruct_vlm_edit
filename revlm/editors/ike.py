@@ -152,18 +152,7 @@ class IKE(torch.nn.Module):
         )
         assert len(hits) == 1
         hit = hits[0]
-
-        filtered_hits: List[Dict[str, Any]] = []
-        for h in hit:
-            s = self.corpus_sentences[h["corpus_id"]]
-            # Filter exact prompt match to avoid self-retrieval
-            if prompt and prompt in s:
-                continue
-            filtered_hits.append(h)
-            if len(filtered_hits) >= self.k:
-                break
-
-        final_hits = filtered_hits if filtered_hits else hit[: self.k]
+        final_hits = hit[: self.k]
 
         icl_examples = [self.corpus_sentences[h["corpus_id"]] for h in final_hits]
         return icl_examples

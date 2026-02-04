@@ -498,7 +498,7 @@ class Augmenter:
             n_chain = 1
         elif mode == "normalize":
             instruction = "Make this sentence more general. Only output the generalized sentence, nothing else."
-            temp = 1.0
+            temp = 0.5
             max_new_tokens = 32
             n_chain = 1
         else:  # rephrase
