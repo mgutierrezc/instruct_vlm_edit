@@ -466,14 +466,7 @@ def _maybe_apply_ike(
     cfg = getattr(train_ds, "config", None)
     editor_cfg = getattr(cfg, "editor", None)
     editor_name = getattr(editor_cfg, "_name", None) if editor_cfg is not None else None
-    if editor_name == "ike":
-        # IKE: build text corpus from train_ds, then augment prompts on edit_ds.
-        if hasattr(editor, "model") and hasattr(editor, "wrapper"):
-            # Ensure the inner model is in eval mode before generation.
-            if hasattr(editor.model, "eval"):
-                editor.model.eval()
-        editor.edit(cfg, edit_ds=edit_ds, train_ds=train_ds)
-    elif editor_name in ["ike_chain", "ike_cot"]:
+    if editor_name in ["ike", "ike_chain", "ike_cot"]:
         # IKE variants using apply_to_dataset without inplace flag
         if hasattr(editor, "model") and hasattr(editor, "wrapper"):
             if hasattr(editor.model, "eval"):
