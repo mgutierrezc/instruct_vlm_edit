@@ -51,7 +51,7 @@ class IKE(torch.nn.Module):
         if uid in self._added_uids:
             return False
 
-        normalized = self.augmenter.rephrase(prompt, mode="normalize")
+        normalized = prompt#self.augmenter.rephrase(prompt, mode="normalize")
         sentence = f"{normalized} {target}"
 
         # Encode
@@ -101,19 +101,39 @@ class IKE(torch.nn.Module):
         print(f"[IKE] +{n_added} edits, corpus={len(self.corpus_sentences)}", flush=True)
         return self.model
 
+    @torch.no_grad()
     def apply_to_dataset(self, dataset, train_ds=None, inplace=True):
-        """Retrieve and prepend to prompts."""
+        """Retrieve and prepend to prompts (batch optimized)."""
         data = getattr(dataset, "data", [])
+        if not data or not self.corpus_sentences:
+            print(f"[IKE] applied to 0/{len(data)} examples (k={self.k})", flush=True)
+            return [], dataset
+
+        # Collect all prompts
+        prompts = [ex.get("prompt_orig") or ex.get("prompt", "") for ex in data]
+        valid_mask = [bool(p) for p in prompts]
+
+        # Batch encode all queries at once
+        valid_prompts = [p for p, v in zip(prompts, valid_mask) if v]
+        if not valid_prompts:
+            print(f"[IKE] applied to 0/{len(data)} examples (k={self.k})", flush=True)
+            return [], dataset
+
+        q_embs = self.sentence_model.encode(valid_prompts, convert_to_tensor=True, batch_size=64, show_progress_bar=False)
+        q_embs = util.normalize_embeddings(q_embs).to(self.device)
+
+        # Batch semantic search
+        hits = util.semantic_search(q_embs, self.corpus_embeddings, score_function=util.dot_score, top_k=self.k)
+
+        # Apply results
         applied = 0
-
-        for ex in data:
-            prompt = ex.get("prompt_orig") or ex.get("prompt", "")
-            if not prompt:
+        hit_idx = 0
+        for ex, prompt, valid in zip(data, prompts, valid_mask):
+            if not valid:
                 continue
-
-            facts = self._retrieve(prompt)
+            facts = [self.corpus_sentences[h["corpus_id"]] for h in hits[hit_idx]]
+            hit_idx += 1
             if facts:
-                # Format: "New Fact: {q1} {a1}\n{q2} {a2}\n...\n{query}"
                 facts_str = "New Fact: " + "\n".join(facts) + "\n"
                 ex["prompt_orig"] = prompt
                 ex["prompt"] = facts_str + prompt

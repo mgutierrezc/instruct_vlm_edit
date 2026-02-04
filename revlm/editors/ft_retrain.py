@@ -54,7 +54,7 @@ class Finetune_retrain(torch.nn.Module):
         for p in self.model.parameters():
             p.requires_grad = p in train_params
         if train_params:
-            print(f"Finetuning module {layer} (incremental retrain on all edits)")
+            print(f"Finetuning module {layer} (incremental retrain on all edits)", flush=True)
 
     def generate(self, *args, **kwargs):
         return self.model.generate(*args, **kwargs)
@@ -89,7 +89,8 @@ class Finetune_retrain(torch.nn.Module):
         n_groups = (len(all_history) + retrain_batch_size - 1) // retrain_batch_size
         print(
             f"[ft_retrain] Retraining on {len(all_history)} edits (including current) "
-            f"| retrain_batch_size={retrain_batch_size} | groups={n_groups}"
+            f"| retrain_batch_size={retrain_batch_size} | groups={n_groups}",
+            flush=True
         )
         
         # Create scheduler for all optimizer steps (1 step per group, per epoch)
@@ -163,12 +164,13 @@ class Finetune_retrain(torch.nn.Module):
             else:
                 patience_counter += 1
                 if patience_counter >= early_stop_patience:
-                    print(f"[ft_retrain] epoch {epoch+1}/{n_iter} - early stop (patience)")
+                    print(f"[ft_retrain] epoch {epoch+1}/{n_iter} - early stop (patience)", flush=True)
                     break
 
             if (epoch + 1) % 10 == 0 or epoch == 0 or epoch == n_iter - 1:
                 print(
-                    f"[ft_retrain] epoch {epoch+1}/{n_iter} - avg_loss: {avg_epoch_loss:.4f}"
+                    f"[ft_retrain] epoch {epoch+1}/{n_iter} - avg_loss: {avg_epoch_loss:.4f}",
+                    flush=True
                 )
         
         self.loss = avg_epoch_loss if "avg_epoch_loss" in locals() else (loss if "loss" in locals() else None)
