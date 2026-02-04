@@ -497,9 +497,9 @@ class Augmenter:
             max_new_tokens = 32
             n_chain = 1
         elif mode == "normalize":
-            instruction = "Make this question more general while keeping the same meaning. Only output the generalized question, nothing else."
-            temp = 0.5
-            max_new_tokens = 32
+            instruction = "Simplify this text slightly, keeping the same meaning. Output only the simplified text."
+            temp = 0.1
+            max_new_tokens = 64
             n_chain = 1
         else:  # rephrase
             instruction = "Rephrase this sentence while keeping the same meaning. Only output the rephrased sentence, nothing else."

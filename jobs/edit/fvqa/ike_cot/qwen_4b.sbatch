@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH -t 48:00:00
-#SBATCH -A netlab
+#SBATCH -A hartvigsen_lab
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
 #SBATCH --error=log/slurm-%x.err
@@ -26,7 +26,7 @@ cd /scratch/jq2uw/MME/instruct_vlm_edit
 
 MODELS=("qwen3_4b")
 DATASETS=("fvqa")
-EDITOR="ike"
+EDITOR="ike_cot"
 BATCH_SIZE=1
 
 for MODEL_NAME in "${MODELS[@]}"; do
@@ -37,8 +37,8 @@ for MODEL_NAME in "${MODELS[@]}"; do
       --model_name "${MODEL_NAME}" \
       --dataset_name "${DATA}" \
       --task mc \
-      --rationale --cot \
       --batch_size "${BATCH_SIZE}" \
+      --sequential \
       --overwrite
   done
 done
