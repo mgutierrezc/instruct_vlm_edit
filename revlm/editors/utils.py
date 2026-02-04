@@ -497,7 +497,7 @@ class Augmenter:
             max_new_tokens = 32
             n_chain = 1
         elif mode == "normalize":
-            instruction = "Make this sentence more general. Only output the generalized sentence, nothing else."
+            instruction = "Make this question more general while keeping the same meaning. Only output the generalized question, nothing else."
             temp = 0.5
             max_new_tokens = 32
             n_chain = 1

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=edit_aokvqa_ft_retrain_blip
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=64G
 #SBATCH -t 72:00:00
@@ -38,7 +38,6 @@ for MODEL_NAME in "${MODELS[@]}"; do
       --dataset_name "${DATA}" \
       --task mc \
       --batch_size "${BATCH_SIZE}" \
-      --sequential \
       --overwrite
   done
 done
