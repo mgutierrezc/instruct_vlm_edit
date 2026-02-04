@@ -37,6 +37,7 @@ class IKE(torch.nn.Module):
 
         # Text augmentation for corpus diversity
         self.augmenter = Augmenter()
+        self._normalized_cache: Dict[str, str] = {}  # Cache normalized prompts
 
         self.corpus_sentences: Optional[List[str]] = None
         self.corpus_embeddings: Optional[torch.Tensor] = None
@@ -97,14 +98,22 @@ class IKE(torch.nn.Module):
     def build_corpus_from_dataset(self, train_ds) -> None:
         """Build the retrieval corpus from (prompt, target) pairs.
         
-        If augment=True, each prompt is rephrased before adding to corpus.
+        Prompts are normalized/simplified before adding to corpus (cached for speed).
         """
         normalized_entries = self._normalize_dataset_entries(train_ds)
 
         sentences: List[str] = []
+        n_cached = 0
 
         for ex in normalized_entries:
-            prompt =  self.augmenter.rephrase(ex["prompt"], mode="normalize")
+            orig_prompt = ex["prompt"]
+            # Use cached normalized prompt if available
+            if orig_prompt in self._normalized_cache:
+                prompt = self._normalized_cache[orig_prompt]
+                n_cached += 1
+            else:
+                prompt = self.augmenter.rephrase(orig_prompt, mode="normalize")
+                self._normalized_cache[orig_prompt] = prompt
             target = ex["target"]
             new_fact = f"{prompt} {target}"
             sentences.append(f"New Fact: {new_fact}\nPrompt: {new_fact}\n\n")
@@ -121,7 +130,7 @@ class IKE(torch.nn.Module):
 
         self.corpus_sentences = sentences
         self.corpus_embeddings = embeddings
-        print(f"[IKE] corpus built: {len(sentences)} entries", flush=True)
+        print(f"[IKE] corpus built: {len(sentences)} entries ({n_cached} cached)", flush=True)
 
     @torch.no_grad()
     def retrieve_icl_examples(self, prompt: str, target: str = None) -> List[str]:

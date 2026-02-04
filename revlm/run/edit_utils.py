@@ -121,6 +121,13 @@ def find_errors(config):
 
 def edit_n_eval_all(config, model, edit_ds, out_path):
     """Edit and evaluate - apply edits, then evaluate the edited model."""
+    # Cap the number of edits if specified
+    n_edit_cap = getattr(config, "n_edit_cap", None)
+    if n_edit_cap is not None and n_edit_cap > 0 and len(edit_ds.data) > n_edit_cap:
+        print(f"Capping edit set from {len(edit_ds.data)} to {n_edit_cap} examples", flush=True)
+        edit_ds.data = random.sample(edit_ds.data, n_edit_cap)
+        edit_ds.set_dataloader()
+
     # Create a snapshot of the model before editing for comparison.
     # NOTE: deepcopy(model) on GPU can OOM for large VLMs (it temporarily doubles VRAM),
     # so we snapshot on CPU and keep model_old on CPU for metrics.

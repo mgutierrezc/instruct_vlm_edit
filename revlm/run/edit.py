@@ -73,6 +73,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default=None, choices=["vision", "language", "language_last", "dual_sbert"], help="Embedding mode for IKE_CHAIN")
     parser.add_argument("--pool_method", type=str, default=None, choices=["mean", "last"], help="Pooling method for IKE_CHAIN")
     parser.add_argument("--no_coe_pt", action="store_true", help="Disable COE question perturbation (default: enabled)")
+    parser.add_argument("--n_edit_cap", type=int, default=None, help="Cap number of edits (subsample edit set before training)")
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -98,4 +99,5 @@ if __name__ == "__main__":
     config.pred_path = args.pred_path
     config.overwrite = args.overwrite
     config.coe_pt = not args.no_coe_pt
+    config.n_edit_cap = args.n_edit_cap
     run_edit(config, sequential=args.sequential)

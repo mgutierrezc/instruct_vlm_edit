@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=edit_aokvqa_ft_retrain_qwen
 #SBATCH -p gpu
-#SBATCH --gres=gpu:a6000:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=64G
-#SBATCH -t 72:00:00
+#SBATCH -t 48:00:00
 #SBATCH -A hartvigsen_lab
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
@@ -38,6 +38,7 @@ for MODEL_NAME in "${MODELS[@]}"; do
       --dataset_name "${DATA}" \
       --task mc \
       --batch_size "${BATCH_SIZE}" \
+      --n_edit_cap 1000 \
       --overwrite
   done
 done
