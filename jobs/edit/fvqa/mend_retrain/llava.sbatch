@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=edit_aokvqa_ft_retrain_blip
+#SBATCH --job-name=edit_fvqa_mend_retrain_llava
 #SBATCH -p gpu
 #SBATCH --gres=gpu:a100:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=64G
 #SBATCH -t 48:00:00
-#SBATCH -A hartvigsen_lab
+#SBATCH -A netlab
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
 #SBATCH --error=log/slurm-%x.err
@@ -24,9 +24,9 @@ export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 cd /scratch/jq2uw/MME/instruct_vlm_edit
 
-MODELS=("blip")
-DATASETS=("aokvqa")
-EDITOR="ft_retrain"
+MODELS=("llava")
+DATASETS=("fvqa")
+EDITOR="mend_retrain"
 BATCH_SIZE=1
 
 for MODEL_NAME in "${MODELS[@]}"; do
@@ -41,4 +41,3 @@ for MODEL_NAME in "${MODELS[@]}"; do
       --overwrite
   done
 done
-

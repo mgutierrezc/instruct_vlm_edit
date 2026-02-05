@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=64G
 #SBATCH -t 48:00:00
-#SBATCH -A hartvigsen_lab
+#SBATCH -A cama
 #SBATCH --export=NONE
 #SBATCH --output=log/slurm-%x.out
 #SBATCH --error=log/slurm-%x.err

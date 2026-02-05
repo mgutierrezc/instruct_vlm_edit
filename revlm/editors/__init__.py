@@ -1,6 +1,7 @@
 from .ft import Finetune
 from .ft_retrain import Finetune_retrain
 from .mend import MEND
+from .mend_retrain import MEND_retrain
 from .grace import GRACE
 from .grace_cot import GRACE_COT
 from .balancedit import BalancEdit
@@ -38,6 +39,9 @@ def get_editor(config, model):
     elif editor_name == "mend":
         tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
         editor = MEND(config, model, tokenizer, device)
+    elif editor_name == "mend_retrain":
+        tokenizer = model.tokenizer if hasattr(model, 'tokenizer') else None
+        editor = MEND_retrain(config, model, tokenizer, device)
     elif editor_name == "grace":
         editor = GRACE(config, model)
     elif editor_name == "grace_cot":

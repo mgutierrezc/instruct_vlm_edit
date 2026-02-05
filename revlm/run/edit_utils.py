@@ -176,8 +176,8 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
         batch_history = []
         for batch_idx, batch in enumerate(edit_ds.loader):
             tokens = model.prepare_training_batch(batch)
-            # ft_retrain: do one single retrain on the full edit set (all-at-once).
-            if editor_name != "ft_retrain":
+            # ft_retrain/mend_retrain: do one single retrain on the full edit set (all-at-once).
+            if editor_name not in {"ft_retrain", "mend_retrain"}:
                 if editor_name in {"grace_cot", "liveedit_cot"}:
                     # GRACE_COT/LiveEdit_COT needs image and cot for sentence keys
                     idx = batch["idxs"][0]
@@ -194,7 +194,7 @@ def edit_n_eval_all(config, model, edit_ds, out_path):
             if (batch_idx + 1) % 10 == 0:
                 print(f"Edited {batch_idx + 1} batches", flush=True)
 
-        if editor_name == "ft_retrain" and batch_history:
+        if editor_name in {"ft_retrain", "mend_retrain"} and batch_history:
             editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
         if hasattr(model, "model"):
             model.model.eval()
@@ -317,12 +317,14 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             if hasattr(model, "model"):
                 model.model.train()
             tokens = model.prepare_training_batch(batch)
-            if editor_name in {"grace_cot", "liveedit_cot"}:
-                idx = batch["idxs"][0]
-                ex = edit_ds_sofar.data[seen_idxs.index(idx)] if idx in seen_idxs else edit_ds.data[idx]
-                editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
-            else:
-                editor.edit(config, tokens, batch_history=batch_history)
+            # ft_retrain/mend_retrain: skip per-batch editing, just accumulate history
+            if editor_name not in {"ft_retrain", "mend_retrain"}:
+                if editor_name in {"grace_cot", "liveedit_cot"}:
+                    idx = batch["idxs"][0]
+                    ex = edit_ds_sofar.data[seen_idxs.index(idx)] if idx in seen_idxs else edit_ds.data[idx]
+                    editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
+                else:
+                    editor.edit(config, tokens, batch_history=batch_history)
             tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
             batch_history.append(tokens_copy)
             del tokens
@@ -332,6 +334,9 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
         is_last = ( (total_batches is not None and (batch_idx + 1) == total_batches) or (max_batches is not None and (batch_idx + 1) == max_batches) )
         should_eval = ( (eval_every is None) or (eval_every <= 0) or ((batch_idx + 1) % int(eval_every) == 0) or is_last )
         if should_eval:
+            # ft_retrain/mend_retrain: do one retrain on all accumulated history before eval
+            if editor_name in {"ft_retrain", "mend_retrain"} and batch_history:
+                editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
             if hasattr(model, "model"):
                 model.model.eval()
             # Apply IKE/IKE_CHAIN/IKE_COT retrieval once before generation (deferred from edit() for efficiency)
