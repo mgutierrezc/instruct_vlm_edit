@@ -124,6 +124,7 @@ def configure_args(args, config_path=None):
     cfg['batch_size'] = args.batch_size if getattr(args, "batch_size", None) else cfg.get("batch_size", 1)
     cfg['n_iter'] = args.n_iter if getattr(args, "n_iter", None) else cfg.get("n_iter", 100)
     cfg['max_n_edits'] = args.max_n_edits if getattr(args, "max_n_edits", None) else cfg.get("max_n_edits", 5000)
+    cfg['max_new_tokens'] = args.max_new_tokens if getattr(args, "max_new_tokens", None) else cfg.get("max_new_tokens", 10)
     cfg['seed'] = args.seed if getattr(args, "seed", None) else cfg.get("seed", 42)
     cfg['device'] = args.device if getattr(args, "device", None) else cfg.get("device", "cuda")
     cfg['ckpt_dir'] = args.ckpt_dir if getattr(args, "ckpt_dir", None) else cfg.get("ckpt_dir", None)
@@ -144,6 +145,7 @@ def configure_args(args, config_path=None):
         "batch_size": cfg['batch_size'],
         "n_iter": cfg['n_iter'],
         "max_n_edits": cfg['max_n_edits'],
+        "max_new_tokens": cfg['max_new_tokens'],
         "seed": cfg['seed'],
         "device": cfg['device'],
         "ckpt_dir": cfg['ckpt_dir'],
@@ -197,6 +199,7 @@ def update_config(config, *, config_path=None, **overrides):
         "batch_size": overrides.get("batch_size", config.batch_size),
         "n_iter": overrides.get("n_iter", config.n_iter),
         "max_n_edits": overrides.get("max_n_edits", config.max_n_edits),
+        "max_new_tokens": overrides.get("max_new_tokens", getattr(config, "max_new_tokens", 10)),
         "seed": overrides.get("seed", config.seed),
         "device": overrides.get("device", config.device),
         "ckpt_dir": overrides.get("ckpt_dir", config.ckpt_dir),

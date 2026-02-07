@@ -5,6 +5,7 @@
 batch_size: 1
 n_iter: 100
 max_n_edits: 5000
+max_new_tokens: 10  # Max tokens for VLM generation (increase for longer answers, e.g., 100)
 seed: 42
 device: cuda
 ckpt_dir: null  # Set to path like "./ckpts" to enable checkpointing

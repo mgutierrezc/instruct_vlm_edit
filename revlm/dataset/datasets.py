@@ -157,7 +157,9 @@ class VQADataset(Dataset):
     #     for idx, a in zip(batch["idxs"], outs):
     #         self.task_engineer.eng_preds(self.data[idx], a, model)
 
-    def task_generate(self, model, use_cache=False):
+    def task_generate(self, model, use_cache=False, max_new_tokens=None):
+        if max_new_tokens is None:
+            max_new_tokens = getattr(self.config, "max_new_tokens", 10)
         for batch in self.loader:
             # Skip empty batches (all images failed to load, e.g., corrupted/truncated images)
             if not batch["images"] or not batch["prompts"]:
@@ -176,7 +178,7 @@ class VQADataset(Dataset):
                     rope_owner.rope_deltas = None
             except Exception:
                 pass
-            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=10, use_cache=use_cache) # use_cache = False
+            outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=max_new_tokens, use_cache=use_cache)
             for idx, a in zip(batch["idxs"], outs):
                 self.task_engineer.eng_preds(self.data[idx], a, model)
     
