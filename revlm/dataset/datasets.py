@@ -25,6 +25,7 @@ class VQADataset(Dataset):
             df = pd.read_parquet("./data_raw/midas/midas_share.parquet")
             df["uid"] = df["uid"].astype(str)
             df["cot"] = df["rationale"]
+            df["question"] = df["question"] + " Provide your reasoning."
             return df
         
         if self.config.experiment.dataset_name == "fvqa":
