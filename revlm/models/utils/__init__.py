@@ -18,7 +18,7 @@ def cache_dir():
     This is where downloaded models are stored/read from, NOT where finetuned weights are saved.
     For saving finetuned checkpoints, use config.ckpt_dir in finetune.py instead.
     """
-    path = "/scratch/jq2uw/MME/instruct_vlm_edit/ckpts/"
+    path = os.path.join(".", "ckpts")
     os.makedirs(path, exist_ok=True)
     return path
 
