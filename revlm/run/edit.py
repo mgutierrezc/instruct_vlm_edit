@@ -2,6 +2,7 @@ import argparse
 import copy
 import json
 import os
+import pickle as pkl
 import random
 import sys
 from pathlib import Path
@@ -19,11 +20,15 @@ from revlm import *
 from revlm.config_utils import configure_args
 from .edit_utils import *
 
-def run_edit(config, sequential=False, eval_every=200):
+def run_edit(config, sequential=False, eval_every=200, subsample_path="", biases_path=""):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
     
     # Enable wandb if sequential mode is used
     config.wandb = sequential
+
+    # for replicability
+    seed = getattr(config, "seed", 42)
+    random.seed(seed)
 
     # early return if edit evaluation result already exists
     out_path = os.path.join(config.edit_dir, config.fname)
@@ -41,13 +46,34 @@ def run_edit(config, sequential=False, eval_every=200):
         print(f"Subsampling edit set from {len(edit_ds.data)} to {subsample_edits} examples", flush=True)
         edit_ds.data = random.sample(edit_ds.data, subsample_edits)
         edit_ds.set_dataloader()
+    
+    # storing subsample
+    if subsample_path != "":
+        
+        # creating parent dir if it doesn't exist
+        parent_dir = os.path.dirname(subsample_path)
+        os.makedirs(parent_dir, exist_ok=True)
+        print(f"created parent_dir: {parent_dir}")
 
+        if not os.path.exists(subsample_path):
+            with open(subsample_path, "w") as f:
+                json.dump(edit_ds.data, f, indent=2)
+                print("stored edit_ds")
+    exit()
+
+    # loading biases subsample
+    if biases_path != "":
+        with open(biases_path, "r") as f:
+            biases_data = json.load(f)
+            edit_ds.data = biases_data
+            edit_ds.set_dataloader()
+            print(f"Loaded {len(edit_ds.data)} entries from {biases_path}", flush=True)
+        
     # Step 2-3: Edit and Evaluate on all errors
     if sequential:
         out_dict = edit_n_eval_seq(config, model, edit_ds, out_path, eval_every=eval_every)
     else:
         out_dict = edit_n_eval_all(config, model, edit_ds, out_path)
-
 
 
 if __name__ == "__main__":
