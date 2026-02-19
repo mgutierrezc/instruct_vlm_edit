@@ -57,7 +57,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, required=True)
     parser.add_argument("--dataset_name", type=str, required=True)
-    parser.add_argument("--no_coe_pt", action="store_true")
+    parser.add_argument("--coe_pt", action="store_true")
     
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     args.cot = False
     
     config = configure_args(args, config_path="revlm/config/config.yaml")
-    config.coe_pt = not args.no_coe_pt
+    config.coe_pt = args.coe_pt
     config.overwrite = False
     config.subsample = 0
     config.rationale = False

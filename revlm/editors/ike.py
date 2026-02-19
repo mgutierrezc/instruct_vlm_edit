@@ -51,7 +51,7 @@ class IKE(torch.nn.Module):
         if uid in self._added_uids:
             return False
 
-        normalized = prompt#self.augmenter.rephrase(prompt, mode="normalize")
+        normalized = self.augmenter.rephrase(prompt, mode="normalize")#prompt#
         sentence = f"{normalized} {target}"
 
         # Encode

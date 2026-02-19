@@ -35,6 +35,13 @@ def run_edit(config, sequential=False, eval_every=200):
     # Step 1: Find errors
     model, edit_ds = find_errors(config)
 
+    # Subsample edit set if requested
+    subsample_edits = getattr(config, "subsample_edits", 0)
+    if subsample_edits and len(edit_ds.data) > subsample_edits:
+        print(f"Subsampling edit set from {len(edit_ds.data)} to {subsample_edits} examples", flush=True)
+        edit_ds.data = random.sample(edit_ds.data, subsample_edits)
+        edit_ds.set_dataloader()
+
     # Step 2-3: Edit and Evaluate on all errors
     if sequential:
         out_dict = edit_n_eval_seq(config, model, edit_ds, out_path, eval_every=eval_every)
@@ -72,7 +79,8 @@ if __name__ == "__main__":
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing results if they exist")
     parser.add_argument("--mode", type=str, default=None, choices=["vision", "language", "language_last", "dual_sbert"], help="Embedding mode for IKE_CHAIN")
     parser.add_argument("--pool_method", type=str, default=None, choices=["mean", "last"], help="Pooling method for IKE_CHAIN")
-    parser.add_argument("--no_coe_pt", action="store_true", help="Disable COE question perturbation (default: enabled)")
+    parser.add_argument("--coe_pt", action="store_true", help="Enable COE question perturbation (default: disabled)")
+    parser.add_argument("--subsample_edits", type=int, default=0, help="Subsample edit set to this many examples after error discovery (0=all)")
     parser.add_argument("--n_edit_cap", type=int, default=None, help="Cap number of edits (subsample edit set before training)")
     parser.add_argument("--max_new_tokens", type=int, default=None, help="Max new tokens for VLM generation (default from config.yaml)")
 
@@ -99,7 +107,8 @@ if __name__ == "__main__":
     config.cot = args.cot
     config.pred_path = args.pred_path
     config.overwrite = args.overwrite
-    config.coe_pt = not args.no_coe_pt
+    config.coe_pt = args.coe_pt
+    config.subsample_edits = args.subsample_edits
     config.n_edit_cap = args.n_edit_cap
     if args.max_new_tokens is not None:
         config.max_new_tokens = args.max_new_tokens
