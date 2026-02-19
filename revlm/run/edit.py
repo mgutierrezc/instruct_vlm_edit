@@ -49,7 +49,6 @@ def run_edit(config, sequential=False, eval_every=200, subsample_path="", biases
     
     # storing subsample
     if subsample_path != "":
-        
         # creating parent dir if it doesn't exist
         parent_dir = os.path.dirname(subsample_path)
         os.makedirs(parent_dir, exist_ok=True)
@@ -59,7 +58,7 @@ def run_edit(config, sequential=False, eval_every=200, subsample_path="", biases
             with open(subsample_path, "w") as f:
                 json.dump(edit_ds.data, f, indent=2)
                 print("stored edit_ds")
-    exit()
+    # exit()
 
     # loading biases subsample
     if biases_path != "":

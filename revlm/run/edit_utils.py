@@ -348,7 +348,8 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
                 editor.print_stats()
             if hasattr(editor, "reset_counters"):
                 editor.reset_counters()
-            print10(edit_ds_sofar, label="model_new")
+            # print(edit_ds_sofar, label="model_new")
+            print(f"model_new: {edit_ds_sofar}")
             print(f"Edit time (batch): {batch_edit_time:.2f}s, (cumulative): {cumulative_edit_time:.2f}s", flush=True)
 
             # Evaluate
