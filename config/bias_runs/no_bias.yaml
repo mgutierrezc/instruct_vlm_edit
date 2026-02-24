@@ -1,0 +1,22 @@
+# @package _global_
+hydra:
+  sweeper:
+    params:
+      +current_step: "ltr" 
+      +log_filename: "lambdarank_nc_k_case_study" # log file name
+
+      # paths
+      +repo_root: /home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit
+      +biases_path: ""
+      +subsample_path: /home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit/aux_files/subsample_edits/aokvqa.json
+
+      # editing parameters
+      +editor_name: ike_chain
+      +model_name: qwen3_4b
+      +dataset_name: aokvqa
+      +task: mc
+      +subsample: 0
+      +subsample_edits: 500
+
+      # general parameters
+      +namespace_config_path: "/home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit/revlm/config/config.yaml"
