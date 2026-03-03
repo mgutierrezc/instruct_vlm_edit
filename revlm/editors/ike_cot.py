@@ -1,6 +1,12 @@
 """IKE_COT: IKE with rationale sentences in corpus.
 
-Extends IKE by also storing each rationale sentence as a separate entry.
+Extends IKE by storing rationale/CoT sentences as corpus entries.
+
+cot_only (default True):
+  - Only rationale sentences are stored — no answer leakage.
+  - Retrieval returns reasoning text that gets prepended to the prompt.
+cot_only=False (legacy):
+  - Also stores the main (prompt, answer) entry, which leaks the answer.
 """
 
 import re
@@ -12,8 +18,12 @@ from .ike import IKE
 class IKE_COT(IKE):
     """IKE extended with rationale sentences."""
 
-    def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):
-        """Add edits to corpus, including rationale sentences."""
+    def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None, cot_only=True):
+        """Add edits to corpus, including rationale sentences.
+        
+        cot_only=True:  only rationale sentences, no answer leakage.
+        cot_only=False: also stores (prompt, answer) entries (legacy).
+        """
         if edit_ds is None:
             return self.model
 
@@ -26,11 +36,10 @@ class IKE_COT(IKE):
             prompt = ex.get("prompt_orig") or ex.get("prompt", "")
             target = ex.get("gold", {}).get("label", "")
 
-            # 1. Add main (prompt, target) entry
-            if prompt and target and self._add_edit(prompt, target, uid):
-                n_added += 1
+            if not cot_only:
+                if prompt and target and self._add_edit(prompt, target, uid):
+                    n_added += 1
 
-            # 2. Add rationale sentences (sentence, "") entries
             rationale = ex.get("cot") or ex.get("rationale", "")
             if rationale:
                 sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', rationale.strip()) if s.strip()]
@@ -39,5 +48,6 @@ class IKE_COT(IKE):
                     if self._add_edit(sent, "", sent_uid):
                         n_sentences += 1
 
-        print(f"[IKE_COT] +{n_added} edits, +{n_sentences} sentences, corpus={len(self.corpus_sentences)}", flush=True)
+        mode = "cot_only" if cot_only else "cot+answer"
+        print(f"[IKE_COT] ({mode}) +{n_added} edits, +{n_sentences} sentences, corpus={len(self.corpus_sentences)}", flush=True)
         return self.model
