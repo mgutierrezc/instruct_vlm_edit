@@ -21,14 +21,14 @@ def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = F
     )
     r_gen_df = pd.read_parquet(os.path.join(local_root, "r_gen", "qa", f"{dataset_name}.parquet"))
     r_gen_df = to_mc_format(r_gen_df)
-    print(f"[r_gen] Loaded: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids")
+    print(f"[r_gen] Loaded: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids", flush=True)
     
     # filter rows where rationale has at least s sentences
     if s > 0:
         r = r_gen_df["rationale"].fillna("").astype(str)
         n = r.str.split(r"[.!?]+\s*").apply(lambda x: len([p for p in x if p.strip()]))
         r_gen_df = r_gen_df[n >= int(s)]
-        print(f"[r_gen] After s>={s} filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids")
+        print(f"[r_gen] After s>={s} filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids", flush=True)
     
     # Filter out bad sids if requested
     if filter_bad:
@@ -38,13 +38,13 @@ def get_r_gen_input(dataset_name, edit_ds=None, s: int = 0, filter_bad: bool = F
                 bad_sids = set(json.load(f))
             before_count = len(r_gen_df)
             r_gen_df = r_gen_df[~r_gen_df["sid"].astype(str).isin(bad_sids)]
-            print(f"[r_gen] After bad_sids filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids (removed {before_count - len(r_gen_df)} rows)")
+            print(f"[r_gen] After bad_sids filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids (removed {before_count - len(r_gen_df)} rows)", flush=True)
     
     # Filter by edit_ds uids if provided
     if edit_ds is not None:
         edit_uids = [str(ex["uid"]) for ex in edit_ds.data]
         r_gen_df = r_gen_df[r_gen_df["uid"].isin(edit_uids)]
-        print(f"[r_gen] After edit_ds filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids")
+        print(f"[r_gen] After edit_ds filter: {len(r_gen_df)} rows, {r_gen_df['uid'].nunique()} uids", flush=True)
     
     # Derive image_path directly from sid (deterministic path pattern)
     r_gen_df["image_path"] = f"data/r_gen/image/{dataset_name}/" + r_gen_df["sid"].astype(str) + ".png"
