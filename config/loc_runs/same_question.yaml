@@ -2,20 +2,19 @@
 hydra:
   sweeper:
     params:
-      +log_filename: "no_bias_run" # log file name
+      +run_name: "locality_run" 
+      +log_filename: "locality_run" # log file name
 
       # paths
       +repo_root: /home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit
-      +biases_path: ""
-      +subsample_path: /home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit/aux_files/subsample_edits/aokvqa.json
+      +loc_sample_path: /home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit/aux_files/locality_eval/wrong_edit_same_q.pkl
 
       # editing parameters
-      +editor_name: ike_chain
+      +editor_name: ike # ike_chain
       +model_name: qwen3_4b
       +dataset_name: aokvqa
       +task: mc
-      +subsample: 0
-      +subsample_edits: 500
+      +q_index: 1 # 0, 1, 2, 3, 4, 5, 6, 7
 
       # general parameters
       +namespace_config_path: "/home/sgw3fy/jobs/model_editing_jobs/repos/instruct_vlm_edit/revlm/config/config.yaml"

@@ -110,11 +110,18 @@ class MCTaskEngineer(TaskIOEngineer):
             ex['gold']['label_train'] = target
     
     def eng_prompt(self, ex):
+        # NOTE: this might be causing a bug that makes locality not use the edited prompts when calling model_new/ds_new
         # sys_prompt = "Choose the correct answer from the options."
         # base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
         sys_prompt = ""
         base = f"{sys_prompt}{ex['question']}".strip()
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if (self.with_rationale and self.rationale_in_prompt) else base
+    
+    def eng_prompt_aux(self, ex):
+        # sys_prompt = "Choose the correct answer from the options."
+        # base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
+        sys_prompt = ""
+        ex["prompt"] = f"{sys_prompt}{ex['prompt']}".strip()
 
     def eng_preds(self, ex, a: str, model):
         """ example s: 
@@ -411,7 +418,7 @@ class QATaskEngineer(TaskIOEngineer):
         sys_prompt = "Answer the question in one word or phrase."
         base = f"{sys_prompt} {ex['question']}".strip()     
         ex["prompt"] = f"{base} {ex.get('rationale','')}".strip() if self.with_rationale and self.rationale_in_prompt else base
-    
+        
     def eng_preds(self, ex, a: str, model):
         ex['pred'] = {}
         ex['pred']['answer'] = a

@@ -39,7 +39,7 @@ def run_edit(config, sequential=False, eval_every=200, subsample_path="", biases
 
     # Step 1: Find errors
     model, edit_ds = find_errors(config)
-
+    
     # Subsample edit set if requested
     subsample_edits = getattr(config, "subsample_edits", 0)
     if subsample_edits and len(edit_ds.data) > subsample_edits:
@@ -73,6 +73,49 @@ def run_edit(config, sequential=False, eval_every=200, subsample_path="", biases
         out_dict = edit_n_eval_seq(config, model, edit_ds, out_path, eval_every=eval_every)
     else:
         out_dict = edit_n_eval_all(config, model, edit_ds, out_path)
+
+def run_edit_locality(config, sequential=False, eval_every=200, loc_sample_path=""):
+    """Universal edit runner: find errors, edit with chosen editor, report reliability."""
+    
+    # Enable wandb if sequential mode is used
+    config.wandb = sequential
+
+    q_index = config.q_index
+
+    # for replicability
+    seed = getattr(config, "seed", 42)
+    random.seed(seed)
+
+    # early return if edit evaluation result already exists
+    out_path = os.path.join(config.edit_dir, config.fname)
+    if os.path.exists(out_path) and not config.overwrite:
+        print(f"Edit evaluation result already exists at {out_path}. Skipping edit evaluation.", flush=True)
+        print("-"*50, flush=True)
+        return
+
+    # Step 1: Find errors
+    model, edit_ds = find_errors(config)
+    
+    # loading subsample
+    with open(loc_sample_path, "rb") as f:
+        ## edit sample
+        loc_sample = pkl.load(f)
+        loc_sample = loc_sample[f"q{q_index}"]
+        edit_sample_data = loc_sample["edit"]
+        edit_sample_data = edit_sample_data.to_dict(orient="records")
+        edit_ds.data = edit_sample_data
+        edit_ds.set_dataloader()
+        print(f"Loaded {len(edit_ds.data)} entries from {loc_sample_path}", flush=True)
+
+        ## locality sample
+        unrelated_ds = copy.deepcopy(edit_ds)
+        unrelated_sample_data = loc_sample["unrelated"]
+        unrelated_sample_data = unrelated_sample_data.to_dict(orient="records")
+        unrelated_ds.data = unrelated_sample_data
+        unrelated_ds.set_dataloader()
+        print(f"Loaded {len(unrelated_ds.data)} entries from {loc_sample_path}", flush=True)
+
+    out_dict = edit_n_eval_all_loc(config, model, edit_ds, unrelated_ds, out_path)
 
 
 if __name__ == "__main__":

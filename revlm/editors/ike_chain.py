@@ -85,7 +85,7 @@ class IKE_CHAIN(nn.Module):
         self.fast_p_yes = getattr(cfg, "fast_p_yes", True)  # True=single forward, False=2-call NLL
         self.top_k_patches = int(getattr(cfg, "top_k_patches", 1))  # top k nll patches per sentence (Route 2)
         self.pair_rationale_w = getattr(cfg, "pair_rationale_w", "both")  # "orig", "patch", "both"
-        self.key_type = getattr(cfg, "key_type", "all")  # "all", "rationale", "answer"
+        self.key_type = getattr(cfg, "key_type", "answer")  # "all", "rationale", "answer"
         # --- legacy params (not used) only for viz ---
         self.aug_as_keys = getattr(cfg, "aug_as_keys", False)  # add augmented patch keys
         self.aug_orig_as_keys = getattr(cfg, "aug_orig_as_keys", False)  # add augmented original image keys
@@ -801,6 +801,7 @@ class IKE_CHAIN(nn.Module):
         applied = 0
         log = []
         data = getattr(dataset, "data", [])
+        # print(f"data: {data}")
         
         for ex in data:
             prompt_orig = ex.get("prompt_orig") or ex.get("prompt", "")
@@ -821,7 +822,8 @@ class IKE_CHAIN(nn.Module):
         
         self.last_retrieval_log = log
         print(f"[IKE_CHAIN] applied facts to {applied}/{len(data)} examples", flush=True)
-        for i, ex in enumerate(data[:3]):
+        # for i, ex in enumerate(data[:3]):
+        for i, ex in enumerate(data):
             print(f"  [{i}] q='{ex.get('question','')}' answer='{ex.get('answer','')}' prompt='{ex.get('prompt','')}'")
 
     def edit(self, config, tokens=None, batch_history=None, edit_ds=None, train_ds=None):

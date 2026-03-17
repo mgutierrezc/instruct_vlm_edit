@@ -49,6 +49,7 @@ def cuda_gc() -> None:
 # output: 
 # - list of (target, prediction) pairs. 
 def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
+	print("running generation")
 	edit_ds.task_generate(model, use_cache=True)
 	edit_set: List[Dict[str, Any]] = []
 	pred_set: List[Dict[str, Any]] = []
@@ -69,6 +70,7 @@ def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
 				"text": ex.get("prompt", ""),
 				"pred": pred.get("label_maxprob", ""),
 			})
+	print("ending generation")
 	return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
 
 
@@ -269,6 +271,7 @@ def locality(
 
     # Apply IKE / IKE_CLIP retrieval only to the "new" dataset
     _maybe_apply_ike(editor, ds_new, edit_ds)
+    print(f"ds_new.data: {ds_new.data}")
 
     # Get target device from config, default to cuda
     target_device = getattr(edit_ds.config, "device", "cuda")
@@ -280,27 +283,34 @@ def locality(
     cuda_gc()
     
     # Evaluate model_old: move to GPU, generate, then move back to CPU
+    print("--starting generation old--")
     move_model_device(model_old, target_device)
     pairs_old = generation(model_old, ds_old)
     move_model_device(model_old, "cpu")
     cuda_gc()
+    print("--ending generation old--")
     
     # Filter to samples where old model is correct
+    # NOTE: this part causes a bug that resets the prompts of the dataset
     correct_indices, targets = _filter_correct(pairs_old)
     if not correct_indices:
         move_model_device(model_new, target_device)
         return 0.0
     ds_new.data = [ds_new.data[i] for i in correct_indices]
     ds_new.set_dataloader(shuffle_choices=False)
+    print(f"ds_new.data (after filtering): {ds_new.data}")
     
     # Evaluate model_new: move to GPU, generate on filtered samples
+    print("--starting generation new--")
     move_model_device(model_new, target_device)
     pairs_new = generation(model_new, ds_new)
     move_model_device(model_new, "cpu")
     cuda_gc()
+    print("--ending generation new--")
     
     # Locality = how many does new model still get correct
     preds_new = [p for _, p in pairs_new]
+    print(f"preds_new: {preds_new}")
     correct = sum(1 for t, p in zip(targets, preds_new) if str(t).strip().lower() == str(p).strip().lower())
     loc = correct / len(correct_indices)
 
@@ -312,6 +322,7 @@ def locality(
 def _filter_correct(pairs: List[Tuple[str, str]]) -> Tuple[List[int], List[str]]:
     """Filter to indices where prediction matches target. Returns (indices, targets)."""
     indices = [i for i, (t, p) in enumerate(pairs) if str(t).strip().lower() == str(p).strip().lower()]
+    # indices = [i for i, (t, p) in enumerate(pairs)]
     targets = [pairs[i][0] for i in indices]
     return indices, targets
 

@@ -56,7 +56,7 @@ def process_sample(model: Any, ex: Dict) -> Dict:
             flag, p_yes, p_no = verify_sentence(model, ex['image'], statement)
             subsets.append({'indices': list(indices), 'error': flag, 'p_yes': p_yes, 'p_no': p_no})
     
-    ex['coe_pred'] = {'sentences': sentences, 'subsets': subsets}
+    ex[cf] = {'sentences': sentences, 'subsets': subsets}
     return ex
 
 

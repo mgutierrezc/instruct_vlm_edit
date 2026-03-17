@@ -114,7 +114,8 @@ class VQADataset(Dataset):
         for i, ex in enumerate(self.data): # ex is a reference to the dict stored in self.data
             ex['idx'] = i
             self.task_engineer.eng_golds(ex)
-            self.task_engineer.eng_prompt(ex)
+            # self.task_engineer.eng_prompt(ex) # NOTE: causes prompt to not use updated prompt
+            self.task_engineer.eng_prompt_aux(ex) 
         self.loader = DataLoader(self, batch_size=batch_size, shuffle=False, num_workers=0, pin_memory=True, collate_fn=self.image_collate)
         
     def _resize_image(self, img, max_side=800):
@@ -161,6 +162,7 @@ class VQADataset(Dataset):
     def task_generate(self, model, use_cache=False, max_new_tokens=None):
         if max_new_tokens is None:
             max_new_tokens = getattr(self.config, "max_new_tokens", 10)
+        print(f"len(self.loader): {len([batch for batch in self.loader])}")
         for batch in self.loader:
             # Skip empty batches (all images failed to load, e.g., corrupted/truncated images)
             if not batch["images"] or not batch["prompts"]:
@@ -179,7 +181,9 @@ class VQADataset(Dataset):
                     rope_owner.rope_deltas = None
             except Exception:
                 pass
+            print(f"batch: {batch}")
             outs = model.generate(batch["images"], batch["prompts"], max_new_tokens=max_new_tokens, use_cache=use_cache)
+            print(f"outs: {outs}")
             for idx, a in zip(batch["idxs"], outs):
                 self.task_engineer.eng_preds(self.data[idx], a, model)
     
