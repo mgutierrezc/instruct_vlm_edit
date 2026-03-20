@@ -8,8 +8,10 @@ import sys
 from pathlib import Path
 
 import torch
+from tqdm import tqdm
 import time
 import numpy as np
+import pandas as pd
 
 # Add project root to path so we can run as a module or script
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -18,7 +20,7 @@ os.chdir(PROJECT_ROOT)
 
 from revlm import *
 from revlm.config_utils import configure_args
-from .edit_utils import *
+from .edit_utils import edit_n_eval_seq, edit_n_eval_all, edit_n_eval_all_loc, edit_n_eval_indep_all, find_errors
 
 def run_edit(config, sequential=False, eval_every=200, subsample_path="", biases_path=""):
     """Universal edit runner: find errors, edit with chosen editor, report reliability."""
@@ -116,6 +118,82 @@ def run_edit_locality(config, sequential=False, eval_every=200, loc_sample_path=
         print(f"Loaded {len(unrelated_ds.data)} entries from {loc_sample_path}", flush=True)
 
     out_dict = edit_n_eval_all_loc(config, model, edit_ds, unrelated_ds, out_path)
+
+def run_edit_indep(config):
+    """Universal edit runner: find errors, edit with chosen editor, report reliability."""
+    
+    # we need a run that goes across indexes
+
+    # for replicability
+    seed = getattr(config, "seed", 42)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    # setting up model and datasets
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+    eval_ds = VQADataset(config)
+    
+    # loading dataframes
+    eval_df = pd.read_pickle(config.eval_df_path)
+    correct_edit_df = pd.read_pickle(config.correct_edit_path)
+    wrong_edit_df = pd.read_pickle(config.wrong_edit_path)
+
+    def parse_range(s):
+        if "-" in str(s):
+            return s.split("-")
+        else:
+            return [s]
+    
+    ouputs = []
+
+    indices_parsed = parse_range(config.indices)
+    print(f"indices_parsed: {indices_parsed}")
+    for index in tqdm(indices_parsed):
+        model = VQAModel(config)
+        
+        # keeping current index rows
+        print(f"current index: {index}")
+        num_index = int(index)
+        eval_df_filtered = eval_df[eval_df["qa_id"] == num_index]
+        correct_edit_df_filtered = correct_edit_df[correct_edit_df["qa_id"] == num_index]
+        wrong_edit_df_filtered = wrong_edit_df[wrong_edit_df["qa_id"] == num_index]
+        print(f"filtered dsets, current length: {len(eval_df_filtered)}")
+
+        # formatting for assignment
+        eval_df_filtered = eval_df_filtered.to_dict(orient="records")
+        correct_edit_df_filtered = correct_edit_df_filtered.to_dict(orient="records")
+        wrong_edit_df_filtered = wrong_edit_df_filtered.to_dict(orient="records")
+        print("formatted dfs for assignment")
+
+        # setting dfs as data attribute for editing + eval
+        eval_ds.data = eval_df_filtered
+        eval_ds.set_dataloader()
+
+        correct_edit_ds = copy.deepcopy(eval_ds)
+        correct_edit_ds.data = correct_edit_df_filtered
+        correct_edit_ds.set_dataloader()
+
+        wrong_edit_ds = copy.deepcopy(eval_ds)
+        wrong_edit_ds.data = wrong_edit_df_filtered
+        wrong_edit_ds.set_dataloader()
+        print("assigned dfs to ds.data attribute")
+
+        current_outputs = edit_n_eval_indep_all(config, model, wrong_edit_ds, correct_edit_ds, eval_ds)
+        current_outputs["qa_pair"] = num_index
+        pd.DataFrame([current_outputs]).to_excel(config.output_path + str(index) + ".xlsx", index=False)
+
+        # freeing up memory after every update
+        del model
+
+        import gc
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
 
 
 if __name__ == "__main__":

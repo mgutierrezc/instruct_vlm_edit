@@ -9,7 +9,7 @@ Key structure: [<image/patch, text>, value]
 - Total per edit: (1 + n) + n × k keys max
 """
 
-import re
+import os, re
 import numpy as np
 import torch
 import torch.nn as nn
@@ -201,11 +201,36 @@ class IKE_CHAIN(nn.Module):
                 return act.mean(dim=0, keepdim=True).expand(batch_size, -1)
         raise RuntimeError(f"Expected 2D or 3D activation, got {act.shape}")
 
+    # def _get_sbert(self):
+    #     """Lazy load sentence-transformers model."""
+    #     if self._sbert is None:
+    #         from sentence_transformers import SentenceTransformer
+    #         self._sbert = SentenceTransformer("sentence-transformers/paraphrase-mpnet-base-v2")
+    #         self._sbert.to(self.device)
+    #     return self._sbert
     def _get_sbert(self):
-        """Lazy load sentence-transformers model."""
         if self._sbert is None:
             from sentence_transformers import SentenceTransformer
-            self._sbert = SentenceTransformer("sentence-transformers/paraphrase-mpnet-base-v2")
+            from huggingface_hub import snapshot_download
+            from huggingface_hub.utils import LocalEntryNotFoundError
+
+            try:
+                print("loading snapshot sbert")
+                local_path = snapshot_download(
+                    repo_id="sentence-transformers/paraphrase-mpnet-base-v2",
+                    cache_dir=os.path.join(".", "ckpts"),
+                    local_files_only=True,
+                )
+            except:
+                print("downloading snapshot sbert")
+                local_path = snapshot_download(
+                    repo_id="sentence-transformers/paraphrase-mpnet-base-v2",
+                    cache_dir=os.path.join(".", "ckpts"),
+                    local_files_only=False,
+                    resume_download=True,
+                )
+
+            self._sbert = SentenceTransformer(local_path)
             self._sbert.to(self.device)
         return self._sbert
 
@@ -842,6 +867,7 @@ class IKE_CHAIN(nn.Module):
                 continue
             rat = ex.get("cot") or ex.get("rationale") or ""
             if not rat or ex.get("image") is None:
+                print(f"not rat or not image")
                 continue
             sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", rat.strip()) if s.strip()]
             if sents:

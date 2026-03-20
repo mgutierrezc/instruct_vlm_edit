@@ -121,7 +121,7 @@ class MCTaskEngineer(TaskIOEngineer):
         # sys_prompt = "Choose the correct answer from the options."
         # base = f"{sys_prompt} {ex['question']} Options: {ex['gold']['choices']['str']}".strip()
         sys_prompt = ""
-        ex["prompt"] = f"{sys_prompt}{ex['prompt']}".strip()
+        ex["prompt"] = f"{sys_prompt}{ex['question']}".strip()
 
     def eng_preds(self, ex, a: str, model):
         """ example s: 

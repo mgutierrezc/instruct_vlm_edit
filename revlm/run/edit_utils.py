@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(PROJECT_ROOT)
 
 from revlm import *  # noqa: F401,F403
+from revlm.metrics.editeval import generation, _maybe_apply_ike
 from revlm.editors import get_editor
 from revlm.metrics.editeval import move_model_device, cuda_gc
 
@@ -244,6 +245,159 @@ def edit_n_eval_all_loc(config, model, edit_ds, unrelated_ds, out_path):
     print("="*50, flush=True)
     
     return out_dict
+
+def edit_n_eval_indep_all(config, model, wrong_edit_ds, correct_edit_ds, eval_ds):
+    """
+    Runs editing for current samples in the following cases
+    - without editing
+    - with wrong edit (same edit_n_eval_indep function)
+    - with good edit (same edit_n_eval_indep function)
+    """
+    # corresponding indices
+    # need output path based on input file name (not input path) and indices
+    # for each index, obtain generations 
+
+    # no editing generation
+    pred_pairs = generation(model, eval_ds)
+    print(f"no edit preds: {pred_pairs}")
+
+    # wrong edit predictions
+    wrong_edit_pairs = edit_n_eval_indep(config, model, wrong_edit_ds, eval_ds)
+    print(f"wrong edit preds: {wrong_edit_pairs}")
+
+    # model = VQAModel(config) # resetting the model
+
+    # correct edit predictions
+    correct_edit_pairs = edit_n_eval_indep(config, model, correct_edit_ds, eval_ds)
+    print(f"correct edit preds: {correct_edit_pairs}")
+
+    outputs = {
+               "target": pred_pairs[0][0],
+               "pred_no_edit": pred_pairs[0][1],
+               "gen_no_edit": pred_pairs[0][2],
+               "pred_wrong_edit": wrong_edit_pairs[0][1],
+               "gen_wrong_edit": wrong_edit_pairs[0][2],
+               "pred_correct_edit": correct_edit_pairs[0][1],
+               "gen_correct_edit": correct_edit_pairs[0][2],
+              }
+    
+    return outputs
+
+
+def edit_n_eval_indep(config, model, edit_ds, custom_sample_ds):
+    """Edit model on a single sample and evaluate the edited model
+       on corresponding sample per edit."""
+    # TODO: parametrize deployment so we only run an edit for a custom range of edits
+    # the edited model should only be applied to the corresponding eval
+
+    # Create a snapshot of the model before editing for comparison.
+    # NOTE: deepcopy(model) on GPU can OOM for large VLMs (it temporarily doubles VRAM),
+    # so we snapshot on CPU and keep model_old on CPU for metrics.
+    
+    # setting up device
+    orig_device = getattr(config, "device", None)
+    if torch.cuda.is_available() and orig_device is not None:
+        config.device = orig_device
+        if hasattr(model, "device"):
+            model.device = config.device
+        move_model_device(model, config.device)
+
+    # (IKE-style editors mutate prompts in-place).
+    t_job = time.time()
+
+    # editing model
+    print("="*50, flush=True)
+    print("Step 2 (editing)", flush=True)
+    t2 = time.time()
+    editor_name = getattr(config.editor, "_name", "")
+
+    # for baseline, we skip constructing an editor and performing any edits; the model and prompts stay unchanged.
+    editor = None
+    if editor_name != "baseline":
+        editor = get_editor(config, model)
+        editor.generate = model.model.generate if hasattr(model, "model") else model.generate
+
+    if editor_name == "baseline":
+        if hasattr(model, "model"):
+            model.model.eval()
+    elif editor_name in {"ike", "ike_cot", "ike_chain"}:
+        if hasattr(model, "model"):
+            model.model.eval()
+        editor.edit(config, edit_ds=edit_ds)
+    else:
+        if hasattr(model, "model"):
+            model.model.train()
+        print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
+        batch_history = []
+        for batch_idx, batch in enumerate(edit_ds.loader):
+            tokens = model.prepare_training_batch(batch)
+            # ft_retrain/mend_retrain: do one single retrain on the full edit set (all-at-once).
+            if editor_name not in {"ft_retrain", "mend_retrain"}:
+                if editor_name in {"grace_cot", "liveedit_cot"}:
+                    # GRACE_COT/LiveEdit_COT needs image and cot for sentence keys
+                    idx = batch["idxs"][0]
+                    ex = edit_ds.data[idx]
+                    editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
+                else:
+                    editor.edit(config, tokens, batch_history=batch_history)
+
+            # Keep a lightweight history copy for methods that need replay/regularization
+            tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
+            batch_history.append(tokens_copy)
+
+            del tokens
+            if (batch_idx + 1) % 10 == 0:
+                print(f"Edited {batch_idx + 1} batches", flush=True)
+
+        if editor_name in {"ft_retrain", "mend_retrain"} and batch_history:
+            editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
+        if hasattr(model, "model"):
+            model.model.eval()
+    
+    # NOTE: I probably don't need this snippet as I don't care about edit accuracy
+    # Apply IKE/IKE_CHAIN/IKE_COT retrieval once before generation (deferred from edit() for efficiency)
+    # if editor_name in {"ike", "ike_chain", "ike_cot"} and editor is not None and hasattr(editor, "apply_to_dataset"):
+    #     editor.apply_to_dataset(edit_ds)
+    # edit_ds.task_generate(model, use_cache=False)
+    # print10(edit_ds, label="model_new")
+    # print(f"Edit time: {edit_time:.2f}s", flush=True)
+    # TODO: instead, replace with generations on the custom sample dset
+
+    # Snap post-edit predictions on the edit set to a separate folder, analogous to `pred`.
+    # `configure_args` already guarantees `config.pred_postedit_dir` is a valid directory,
+    # so we can join directly here.
+    # pred_postedit_snapshot = os.path.join(config.pred_postedit_dir, config.fname)
+    # edit_ds.snap(out_path=pred_postedit_snapshot)
+    # print(f"Post-edit predictions saved to {pred_postedit_snapshot}", flush=True)
+
+    # Step 3: evaluate the edited model
+    print("="*50, flush=True)
+    print("Step 3 (evaluation)", flush=True)
+    
+    dataset_name = config.experiment.dataset_name
+    model_name = config.model.name
+
+    # TODO: replace with actual run on data
+    # loc = locality(
+    #         model_old,
+    #         model_new,
+    #         edit_ds,
+    #         unrelated_ds=unrelated_ds,
+    #         # sample_size=None,
+    #         editor=editor,
+    #     )
+    # out_dict = {"locality": loc}
+    # print(f"[Timing] locality: {time.time() - t3:.2f}s", flush=True)
+    # print(f"Locality: {loc:.4f}", flush=True)
+    # updating prompts of custom_sample_ds accordingly
+    _maybe_apply_ike(editor, custom_sample_ds, edit_ds)
+    print(f"ds_new.data: {custom_sample_ds.data}")
+
+    # generations for custom_sample_ds
+    pred_pairs = generation(model, custom_sample_ds)
+    print(f"pred_pairs: {pred_pairs}")
+    
+    return pred_pairs
 
 
 def edit_n_eval_all(config, model, edit_ds, out_path):

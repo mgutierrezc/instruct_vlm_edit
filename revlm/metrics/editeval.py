@@ -48,7 +48,7 @@ def cuda_gc() -> None:
 # - edit_ds: VQADataset (or your structured dataset that has samples of <"image", "prompt", "target">)
 # output: 
 # - list of (target, prediction) pairs. 
-def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
+def generation(model: Any, edit_ds: Any, return_gen=True) -> List[Tuple[str, str]]:
 	print("running generation")
 	edit_ds.task_generate(model, use_cache=True)
 	edit_set: List[Dict[str, Any]] = []
@@ -69,9 +69,13 @@ def generation(model: Any, edit_ds: Any) -> List[Tuple[str, str]]:
 				"image": ex.get("image"),
 				"text": ex.get("prompt", ""),
 				"pred": pred.get("label_maxprob", ""),
+                "gen": pred.get("answer", "")
 			})
 	print("ending generation")
-	return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
+	if return_gen:
+		return [(e["target"], p["pred"], p["gen"]) for e, p in zip(edit_set, pred_set)]
+	else:
+		return [(e["target"], p["pred"]) for e, p in zip(edit_set, pred_set)]
 
 
 def editeval(

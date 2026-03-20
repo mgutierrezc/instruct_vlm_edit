@@ -16,7 +16,6 @@ def set_seed(seed: int):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-
 # ============================================================================
 # Background Cache & Mosaic Padding
 # ============================================================================
@@ -431,16 +430,56 @@ class Augmenter:
         self._llm_tok = None
         self._llm_name = "Qwen/Qwen2.5-1.5B-Instruct"  # Smaller: 0.5B vs 1.5B
 
+    # def _get_llm(self):
+    #     """Lazy load small LLM for text augmentation."""
+    #     if self._llm is None:
+    #         from transformers import AutoModelForCausalLM, AutoTokenizer
+    #         print(f"[Augmenter] Loading {self._llm_name}...")
+    #         self._llm_tok = AutoTokenizer.from_pretrained(self._llm_name)
+    #         self._llm = AutoModelForCausalLM.from_pretrained(
+    #             self._llm_name, torch_dtype=torch.float16, device_map="auto"
+    #         )
+    #         self._llm.eval()
+    #     return self._llm, self._llm_tok
     def _get_llm(self):
         """Lazy load small LLM for text augmentation."""
         if self._llm is None:
             from transformers import AutoModelForCausalLM, AutoTokenizer
+            from huggingface_hub import snapshot_download
+            from huggingface_hub.utils import LocalEntryNotFoundError
+
             print(f"[Augmenter] Loading {self._llm_name}...")
-            self._llm_tok = AutoTokenizer.from_pretrained(self._llm_name)
+
+            try:
+                print("loading llm for Augmenter")
+                local_path = snapshot_download(
+                    repo_id=self._llm_name,
+                    cache_dir=os.path.join(".", "ckpts"),
+                    local_files_only=True,
+                )
+            except:
+                print("downloading llm for Augmenter")
+                local_path = snapshot_download(
+                    repo_id=self._llm_name,
+                    cache_dir=os.path.join(".", "ckpts"),
+                    local_files_only=False,
+                    resume_download=True,
+                )
+
+            self._llm_tok = AutoTokenizer.from_pretrained(
+                local_path,
+                local_files_only=True,
+                trust_remote_code=True,
+            )
             self._llm = AutoModelForCausalLM.from_pretrained(
-                self._llm_name, torch_dtype=torch.float16, device_map="auto"
+                local_path,
+                local_files_only=True,
+                trust_remote_code=True,
+                torch_dtype=torch.float16,
+                device_map="auto",
             )
             self._llm.eval()
+
         return self._llm, self._llm_tok
 
     def image(self, img, use_mosaic: bool = None, max_size: int = 512, area_pct: float = None, n_tiles: int = 4):

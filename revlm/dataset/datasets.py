@@ -28,6 +28,7 @@ class VQADataset(Dataset):
             df["question"] = df["question"] + " Provide your reasoning."
             return df
         
+        # if self.config.experiment.dataset_name != "reasonvqa":
         if self.config.experiment.dataset_name == "fvqa":
             path_in_repo = "FVQA"
         elif self.config.experiment.dataset_name == "aokvqa":
@@ -41,6 +42,9 @@ class VQADataset(Dataset):
             path_in_repo=path_in_repo,
         )
         df = data_load_split_df(split_paths.get(self.config.experiment.split))
+        # else:
+        #     df = pd.read_csv(config.dataset_path) # TODO: update config arg per corresponding run
+        
         if self.config.experiment.dataset_name == "fvqa":
             df["image_info_source"] = df["image_path"].str.extract(r'/(COCO|ILSVRC)', expand=False)
             df["image_info_split"] = df["image_path"].str.extract(r'_(train|val|test)', expand=False)
@@ -52,6 +56,13 @@ class VQADataset(Dataset):
             df["image_info_split"] = df["image_path"].str.extract(r'/(train|val)\d+', expand=False)
             df["image_info_id"] = df["image_path"].str.extract(r'/(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
             df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
+
+        # if self.config.experiment.dataset_name == "reasonvqa":
+        #     df["image_info_source"] = df["source"]
+        #     df["image_info_split"] = df["image_path"].str.extract(r'/(train|val)\d+', expand=False)
+        #     df["image_info_id"] = df["image_path"].str.extract(r'/(\d+)\.(jpg|jpeg|png|JPEG|JPG|PNG)$', expand=False)[0].astype(int)
+        #     df["image_info_id"] = df["image_info_split"] + "_" + df["image_info_id"].astype(str)
+
         df["uid"] = df["uid"].astype(str)
         
         # add cot

@@ -23,35 +23,79 @@ def cache_dir():
     return path
 
 
+# def get_processor(config):
+#     """Load vision-language processor with HPC timeout handling."""
+#     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
+#     if "blip" in name_lower:
+#         return get_processor_instructblip(config, cache_dir=cache_dir())
+    
+#     # Try local cache first, fallback to download
+#     model_name = config.model.name
+#     ckpt_cache = cache_dir()
+#     try:
+#         # First try local cache only (fast path if already downloaded)
+#         return transformers.AutoProcessor.from_pretrained(
+#             model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=True
+#         )
+#     except Exception as e:
+#         # If local cache load fails for any reason, fall back to allowing download.
+#         # This is needed when adding a new model like Qwen/Qwen3-VL-4B-Instruct
+#         # whose processor is not yet cached.
+#         original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
+#         os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+#         try:
+#             return transformers.AutoProcessor.from_pretrained(
+#                 model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=False
+#             )
+#         finally:
+#             if original_timeout is not None:
+#                 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
+#             elif "HF_HUB_DOWNLOAD_TIMEOUT" in os.environ:
+#                 del os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]
 def get_processor(config):
     """Load vision-language processor with HPC timeout handling."""
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import LocalEntryNotFoundError
+
     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
     if "blip" in name_lower:
         return get_processor_instructblip(config, cache_dir=cache_dir())
-    
-    # Try local cache first, fallback to download
-    model_name = config.model.name
+
+    provided_local_path = getattr(config.model, "pt", None)
     ckpt_cache = cache_dir()
-    try:
-        # First try local cache only (fast path if already downloaded)
-        return transformers.AutoProcessor.from_pretrained(
-            model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=True
-        )
-    except Exception as e:
-        # If local cache load fails for any reason, fall back to allowing download.
-        # This is needed when adding a new model like Qwen/Qwen3-VL-4B-Instruct
-        # whose processor is not yet cached.
-        original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
-        os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+
+    if provided_local_path:
+        local_path = provided_local_path
+    else:
         try:
-            return transformers.AutoProcessor.from_pretrained(
-                model_name, cache_dir=ckpt_cache, trust_remote_code=True, local_files_only=False
+            print("obtaining snapshot of processor")
+            local_path = snapshot_download(
+                repo_id=config.model.name,
+                cache_dir=ckpt_cache,
+                local_files_only=True,
             )
-        finally:
-            if original_timeout is not None:
-                os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
-            elif "HF_HUB_DOWNLOAD_TIMEOUT" in os.environ:
-                del os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]
+        except:
+            print("downloading snapshot of processor")
+            original_timeout = os.environ.get("HF_HUB_DOWNLOAD_TIMEOUT")
+            os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
+            try:
+                local_path = snapshot_download(
+                    repo_id=config.model.name,
+                    cache_dir=ckpt_cache,
+                    local_files_only=False,
+                    resume_download=True,
+                )
+            finally:
+                if original_timeout is not None:
+                    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = original_timeout
+                elif "HF_HUB_DOWNLOAD_TIMEOUT" in os.environ:
+                    del os.environ["HF_HUB_DOWNLOAD_TIMEOUT"]
+
+    return transformers.AutoProcessor.from_pretrained(
+        local_path,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
 
 
 
@@ -74,26 +118,88 @@ def get_model_class_for_name(model_name):
     return None  # Use auto mode
 
 
+# def get_hf_model(config):
+#     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
+#     if "blip" in name_lower:
+#         torch_dtype = torch.bfloat16 if torch.cuda.is_available() else None
+#         cache = None if getattr(config.model, "pt", None) else cache_dir()
+#         return get_hf_model_instructblip(config, cache_dir=cache, torch_dtype=torch_dtype)
+#     ModelClass = get_model_class_for_name(name_lower)
+#     model_path = getattr(config.model, "pt", None) or config.model.name
+#     load_kwargs = {
+#         "trust_remote_code": True,
+#         "low_cpu_mem_usage": True,
+#         "device_map": "auto",
+#     }
+#     load_kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else None
+#     if not config.model.pt:
+#         load_kwargs["cache_dir"] = cache_dir()
+#     model = ModelClass.from_pretrained(
+#         model_path,
+#         **{k: v for k, v in load_kwargs.items() if v is not None},
+#     )
+#     dropout = getattr(config, "dropout", None)
+#     if dropout is not None:
+#         for m in model.modules():
+#             if isinstance(m, nn.Dropout):
+#                 m.p = dropout
+#             elif hasattr(m, "dropout") and isinstance(m.dropout, float):
+#                 m.dropout = dropout
+#             elif hasattr(m, "activation_dropout") and isinstance(m.activation_dropout, float):
+#                 m.activation_dropout = dropout
+#     return model
+
+
 def get_hf_model(config):
+    from huggingface_hub import snapshot_download
+    from huggingface_hub.utils import LocalEntryNotFoundError
+
     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
+
     if "blip" in name_lower:
         torch_dtype = torch.bfloat16 if torch.cuda.is_available() else None
         cache = None if getattr(config.model, "pt", None) else cache_dir()
-        return get_hf_model_instructblip(config, cache_dir=cache, torch_dtype=torch_dtype)
+        return get_hf_model_instructblip(
+            config,
+            cache_dir=cache,
+            torch_dtype=torch_dtype,
+        )
+
     ModelClass = get_model_class_for_name(name_lower)
-    model_path = getattr(config.model, "pt", None) or config.model.name
-    load_kwargs = {
-        "trust_remote_code": True,
-        "low_cpu_mem_usage": True,
-        "device_map": "auto",
-    }
-    load_kwargs["torch_dtype"] = torch.bfloat16 if torch.cuda.is_available() else None
-    if not config.model.pt:
-        load_kwargs["cache_dir"] = cache_dir()
+
+    provided_local_path = getattr(config.model, "pt", None)
+    hf_cache_dir = cache_dir()
+
+    if provided_local_path:
+        model_path = provided_local_path
+    else:
+        try:
+            print("checking local snapshot")
+            model_path = snapshot_download(
+                repo_id=config.model.name,
+                cache_dir=hf_cache_dir,
+                local_files_only=True,
+            )
+            print("using cached snapshot:", model_path)
+        except:
+            print("snapshot not found locally, downloading")
+            model_path = snapshot_download(
+                repo_id=config.model.name,
+                cache_dir=hf_cache_dir,
+                local_files_only=False,
+                resume_download=True,
+            )
+            print("downloaded snapshot:", model_path)
+
     model = ModelClass.from_pretrained(
         model_path,
-        **{k: v for k, v in load_kwargs.items() if v is not None},
+        trust_remote_code=True,
+        low_cpu_mem_usage=True,
+        device_map="auto",
+        local_files_only=True,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else None,
     )
+
     dropout = getattr(config, "dropout", None)
     if dropout is not None:
         for m in model.modules():
@@ -103,6 +209,7 @@ def get_hf_model(config):
                 m.dropout = dropout
             elif hasattr(m, "activation_dropout") and isinstance(m.activation_dropout, float):
                 m.activation_dropout = dropout
+
     return model
 
 
