@@ -19,28 +19,38 @@ jupyter kernelspec list
 
 # Datasets
 
-Download images following the steps [here](data_raw/README.md). 
+Download ReasonVQA images using `main_cpu.py` and the configuration file from `config/downloader/gld.yaml`
 
-Benchmark dataset RationaleVQA (based on AOKVQA, FVQA datasets) can be downloaded/called from [here](https://huggingface.co/datasets/JJoy333/RationaleVQA). 
+`python main_cpu.py -m hydra/launcher=submitit_slurm +downloader=gld`
 
+- Change the `save_path` from the `gld.yaml` accordingly (NOTE: use `/scratch/` as we'll need around 1 TB for the images)
+- Change `config/config_cpu.yaml` accordingly, mainly
+    - `log_dir`
+    - `account`
 
-# Run
+After the download, run `python main_cpu.py -m hydra/launcher=submitit_slurm +downloader=gld_file_explorer` to create a dataframe with the paths to all images, but first update `config/downloader/gld_file_explorer.yaml` accordingly
 
-- Update each .sbatch with your account/partition/GPU, CUDA/module load and project path. 
+- `base_path`
+- `output_path` (probably scratch)
 
-- Note that **ike_chain** is the other name of **reasonedit** in the original implementation. 
+Then run `notebooks/reasonvqa.ipynb` from beginning to end to obtain the sample we need in the appropriate formats. Update the paths accordingly.
 
-- Batch job examples
-1. use ReasonEdit to edit 4 VLMs on AOKVQA
-```bash
-cd ./jobs/edit/aokvqa/ike_chain
-bash run.sh
-```
-2. use GRACE to edit 4 VLMs on AOKVQA
-```bash
-cd ./jobs/edit/aokvqa/grace
-bash run.sh
-```
+The main inputs can be obtained from [here](https://reasonvqa.duongtr.com/download), mainly from the Download Directly - Annotations section
+The core outputs from the notebook needed for a run are
 
+- `rvqa_correct_edit_df.pkl`
+- `rvqa_wrong_edit_df.pkl`
+- `eval_df.pkl`
 
+# Run evaluation
 
+Run `python main_gpu.py -m hydra/launcher=submitit_slurm +indep_runs=rvqa_sample_qwen3_4b`
+
+Update the following entries accordingly in `config/indep_runs/rvqa_sample_qwen3_4b.yaml`
+
+- `output_path`
+- `namespace_config_path`
+
+- Change `config/config_gpu.yaml` accordingly, mainly
+    - `log_dir`
+    - `account`
