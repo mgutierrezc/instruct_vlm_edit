@@ -33,6 +33,9 @@ class VQAModel(torch.nn.Module):
         self.model = get_hf_model(config)
         self.model.eval()
         self.processor = get_processor(config)
+        if getattr(self.processor, "num_query_tokens", None) is None:
+            self.processor.num_query_tokens = self.model.config.num_query_tokens
+
         self.tokenizer = get_tokenizer(config)
         self.preprocess = get_preprocess(config)
         

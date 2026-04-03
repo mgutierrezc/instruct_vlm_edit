@@ -3,6 +3,7 @@ import hydra
 import logging
 from tools.img_downloader import download_tar
 from tools.img_file_explorer import build_image_df
+from tools.img_copier import copier
 from omegaconf import DictConfig
 
 # in case of glibc++ bug
@@ -24,6 +25,8 @@ def main(hydra_config: DictConfig):
             download_tar(hydra_config)
         elif hydra_config.run_name == "file_explorer_images":
             build_image_df(hydra_config)
+        elif hydra_config.run_name == "img_copier":
+            copier(hydra_config)
         else:
             raise ValueError(f"wrong value for run_name: {hydra_config.run_name}")
         print("Finished successfully!")

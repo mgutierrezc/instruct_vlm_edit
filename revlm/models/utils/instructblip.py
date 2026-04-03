@@ -73,17 +73,31 @@ def get_tokenizer_instructblip(config, cache_dir=None):
     return get_processor_instructblip(config, cache_dir=cache_dir).tokenizer
 
 
-def preprocess_instructblip(images, prompts, processor, tokenize=False):
-    """InstructBLIP preprocessing with truncation to avoid QFormer position overflow.
+# def preprocess_instructblip(images, prompts, processor, tokenize=False):
+#     """InstructBLIP preprocessing with truncation to avoid QFormer position overflow.
     
-    QFormer has max_position_embeddings=512, so we truncate text to avoid:
-    RuntimeError: The size of tensor a (N) must match the size of tensor b (512)
-    """
-    return processor(
-        images=images, 
-        text=prompts, 
-        return_tensors="pt", 
+#     QFormer has max_position_embeddings=512, so we truncate text to avoid:
+#     RuntimeError: The size of tensor a (N) must match the size of tensor b (512)
+#     """
+#     return processor(
+#         images=images, 
+#         text=prompts, 
+#         return_tensors="pt", 
+#         padding=True,
+#         truncation=True,
+#         max_length=512,
+#     )
+
+def preprocess_instructblip(images, prompts, processor, tokenize=False):
+    kwargs = dict(
+        images=images,
+        text=prompts,
+        return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=512,
     )
+
+    if getattr(processor, "num_query_tokens", None) is not None:
+        kwargs["max_length"] = 512
+
+    return processor(**kwargs)
