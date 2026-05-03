@@ -18,7 +18,7 @@ def cache_dir():
     This is where downloaded models are stored/read from, NOT where finetuned weights are saved.
     For saving finetuned checkpoints, use config.ckpt_dir in finetune.py instead.
     """
-    path = os.path.join(".", "ckpts")
+    path = os.path.join("/scratch/xxxxx/instruct_vlm_edit", "ckpts")
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -152,7 +152,6 @@ def get_model_class_for_name(model_name):
 
 def get_hf_model(config):
     from huggingface_hub import snapshot_download
-    from huggingface_hub.utils import LocalEntryNotFoundError
 
     name_lower = getattr(getattr(config, "model", {}), "name", "").lower()
 
@@ -191,14 +190,35 @@ def get_hf_model(config):
             )
             print("downloaded snapshot:", model_path)
 
-    model = ModelClass.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        low_cpu_mem_usage=True,
-        device_map="auto",
-        local_files_only=True,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else None,
-    )
+    load_kwargs = {
+        "trust_remote_code": True,
+        "low_cpu_mem_usage": True,
+        "device_map": "auto",
+        "local_files_only": True,
+        "torch_dtype": torch.bfloat16 if torch.cuda.is_available() else None,
+    }
+    load_kwargs = {k: v for k, v in load_kwargs.items() if v is not None}
+
+    try:
+        model = ModelClass.from_pretrained(model_path, **load_kwargs)
+    except FileNotFoundError:
+        if provided_local_path:
+            raise
+
+        # On shared filesystems, many Slurm tasks can observe an incomplete HF
+        # snapshot while another task is still downloading shards. Re-download
+        # missing files under a lock, then retry local loading.
+        from filelock import FileLock
+
+        lock_path = os.path.join(hf_cache_dir, f"{config.model.name.replace('/', '--')}.download.lock")
+        with FileLock(lock_path, timeout=900):
+            model_path = snapshot_download(
+                repo_id=config.model.name,
+                cache_dir=hf_cache_dir,
+                local_files_only=False,
+                resume_download=True,
+            )
+        model = ModelClass.from_pretrained(model_path, **load_kwargs)
 
     dropout = getattr(config, "dropout", None)
     if dropout is not None:
@@ -342,4 +362,3 @@ def save_inner_params_to_ckpt(model, config, layer_idx=0):
 #     num_tokens = int(full_ids.shape[1] - prompt_len) * full_ids.shape[0]
 #     num_tokens = max(1, num_tokens)
 #     return avg_nll, avg_nll * num_tokens, num_tokens
-

@@ -1,3 +1,5 @@
+import os, sys
+from omegaconf import DictConfig
 
 def biased_run(hydra_config: DictConfig):
     from argparse import Namespace
@@ -232,6 +234,8 @@ def independent_run(hydra_config: DictConfig):
     output_path = hydra_config.output_path
 
     namespace_config_path = hydra_config.namespace_config_path
+    indep_mode = getattr(hydra_config, "indep_mode", "original")
+    max_fix_iters = int(getattr(hydra_config, "max_fix_iters", 2))
 
     # Map short model names to full HF model names used in results/pred/
     MODEL_NAME_MAP = {
@@ -309,7 +313,11 @@ def independent_run(hydra_config: DictConfig):
     config.wrong_edit_path = args.wrong_edit_path
     config.correct_edit_path = args.correct_edit_path
     config.output_path = args.output_path
+    config.indep_mode = indep_mode
+    config.max_fix_iters = max_fix_iters
     print(f"current indices: {config.indices}")
+    print(f"independent mode: {config.indep_mode}")
+    print(f"max fix iterations: {config.max_fix_iters}")
 
     config.plot_k_dist = True 
     run_edit_indep(config)
@@ -418,4 +426,3 @@ def no_edit_runs(hydra_config: DictConfig):
 
     config.plot_k_dist = True 
     run_edit_indep(config)
-

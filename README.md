@@ -54,3 +54,36 @@ Update the following entries accordingly in `config/indep_runs/rvqa_sample_qwen3
 - Change `config/config_gpu.yaml` accordingly, mainly
     - `log_dir`
     - `account`
+
+## Run all RVQA model/iteration results
+
+For the full RVQA result set across all 4 models and all iterations, use:
+
+```bash
+bash scripts/run_all_rvqa_reports_and_analysis.sh --submit
+```
+
+This submits report jobs for:
+
+```text
+qwen3_4b, qwen3_8b, llava, blip
+original, iterfix_1, iterfix_2, iterfix_3
+```
+
+To check whether every folder has 1000 reports:
+
+```bash
+bash scripts/run_all_rvqa_reports_and_analysis.sh --check-only
+```
+
+After reports are complete, run the analysis:
+
+```bash
+bash scripts/run_all_rvqa_reports_and_analysis.sh --analyze
+```
+
+Or do submit, wait, and analyze in one command:
+
+```bash
+bash scripts/run_all_rvqa_reports_and_analysis.sh --all
+```

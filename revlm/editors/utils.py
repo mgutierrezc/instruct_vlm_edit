@@ -454,14 +454,14 @@ class Augmenter:
                 print("loading llm for Augmenter")
                 local_path = snapshot_download(
                     repo_id=self._llm_name,
-                    cache_dir=os.path.join(".", "ckpts"),
+                    cache_dir=os.path.join("/scratch/xxxxx/instruct_vlm_edit", "ckpts"),
                     local_files_only=True,
                 )
             except:
                 print("downloading llm for Augmenter")
                 local_path = snapshot_download(
                     repo_id=self._llm_name,
-                    cache_dir=os.path.join(".", "ckpts"),
+                    cache_dir=os.path.join("/scratch/xxxxx/instruct_vlm_edit", "ckpts"),
                     local_files_only=False,
                     resume_download=True,
                 )

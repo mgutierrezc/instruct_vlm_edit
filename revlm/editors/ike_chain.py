@@ -218,14 +218,14 @@ class IKE_CHAIN(nn.Module):
                 print("loading snapshot sbert")
                 local_path = snapshot_download(
                     repo_id="sentence-transformers/paraphrase-mpnet-base-v2",
-                    cache_dir=os.path.join(".", "ckpts"),
+                    cache_dir=os.path.join("/scratch/xxxxx/instruct_vlm_edit", "ckpts"),
                     local_files_only=True,
                 )
             except:
                 print("downloading snapshot sbert")
                 local_path = snapshot_download(
                     repo_id="sentence-transformers/paraphrase-mpnet-base-v2",
-                    cache_dir=os.path.join(".", "ckpts"),
+                    cache_dir=os.path.join("/scratch/xxxxx/instruct_vlm_edit", "ckpts"),
                     local_files_only=False,
                     resume_download=True,
                 )

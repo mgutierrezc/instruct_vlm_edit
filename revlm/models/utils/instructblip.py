@@ -12,6 +12,13 @@ def get_hf_model_instructblip(config, cache_dir=None, torch_dtype=None):
     load_kwargs = {
         "trust_remote_code": True,
         "device_map": "auto",
+        # Salesforce/instructblip-vicuna-7b is published with PyTorch shard
+        # files on this setup; avoid intermittent attempts to resolve missing
+        # safetensors shards.
+        "use_safetensors": False,
+        # The published PyTorch shards can have a smaller language embedding
+        # matrix than the current config/tokenizer expects.
+        "ignore_mismatched_sizes": True,
     }
     if cache_dir is not None:
         load_kwargs["cache_dir"] = cache_dir

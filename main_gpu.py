@@ -2,7 +2,7 @@ import os, sys, traceback
 import hydra
 import logging
 from omegaconf import DictConfig
-from .tools import biased_run, locality_run, independent_run
+from tools.model_runs import biased_run, locality_run, independent_run
 
 # in case of glibc++ bug
 # NOTE: if error persists, run `export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH` in terminal

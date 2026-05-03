@@ -20,6 +20,8 @@ from revlm.metrics.editeval import generation, _maybe_apply_ike
 from revlm.editors import get_editor
 from revlm.metrics.editeval import move_model_device, cuda_gc
 
+INDEP_SELF_FIX_MAX_ITERS = 2
+
 
 def _fmt_dhms(total_seconds: float) -> str:
     total_seconds = int(round(float(total_seconds)))
@@ -49,6 +51,176 @@ def _wandb_job_name_from_edit_dir(edit_dir: str) -> str:
     job = str(rel).strip("/\\")
     job = job.replace("/", "_").replace("\\", "_")
     return job or None
+
+
+def _clone_ds(ds, answer=None):
+    ds = copy.deepcopy(ds)
+    if answer is not None and getattr(ds, "data", None):
+        ds.data[0]["answer"] = str(answer).strip()
+    ds.set_dataloader(shuffle_choices=False)
+    return ds
+
+
+def _judge_or_repair(model, ex, prompt: str, retrieved_facts, generated_answer: str, mode="judge", eval_question=""):
+    facts_text = " ".join(retrieved_facts).strip() if retrieved_facts else "None"
+    if mode == "judge":
+        choices = ex.get("gold", {}).get("choices", {}).get("ls", []) or ex.get("choices", "")
+        prompt = (
+            "You are checking whether a proposed answer is sensible for this sample.\n"
+            f"Question: {ex.get('question', '')}\n"
+            f"Choices: {choices if isinstance(choices, str) else '; '.join(map(str, choices))}\n"
+            f"Retrieved edit: {facts_text}\n"
+            f"Proposed answer: {generated_answer}\n"
+            "Does this answer make sense for the image and question? Answer Yes or No."
+        )
+        scores = model.score_choices_single(ex.get("image"), prompt, ["Yes", "No"])
+        yes_prob = float(scores["Yes"]["prob"])
+        no_prob = float(scores["No"]["prob"])
+        return {"decision": "Yes" if yes_prob >= no_prob else "No", "yes_prob": yes_prob, "no_prob": no_prob}
+
+    prompt = (
+        "A retrieved edit produced an implausible answer.\n"
+        f"Edit question: {prompt}\n"
+        f"Current edit answer: {ex.get('answer', '')}\n"
+        f"Evaluation question: {eval_question}\n"
+        f"Retrieved edit text: {facts_text}\n"
+        f"Bad generated answer: {generated_answer}\n"
+        "Replace the edit with a corrected short answer in at most 10 tokens. Return only the replacement answer."
+    )
+    raw = (model.generate(ex.get("image"), prompt, max_new_tokens=10, use_cache=True) or [""])[0].splitlines()[0].strip()
+    raw = raw.split(":", 1)[-1].strip().strip("\"'` ").rstrip(" .")
+    for prefix in ("the answer is ", "answer is ", "fixed answer is ", "correct answer is "):
+        if raw.lower().startswith(prefix):
+            raw = raw[len(prefix):].strip()
+            break
+    return {"raw": raw, "clean": " ".join(raw.split()[:10]).strip(), "prompt": prompt}
+
+
+def _run_indep_single_edit(config, model, edit_ds, custom_sample_ds):
+    # setting up device
+    orig_device = getattr(config, "device", None)
+    if torch.cuda.is_available() and orig_device is not None:
+        config.device = orig_device
+        if hasattr(model, "device"):
+            model.device = config.device
+        move_model_device(model, config.device)
+
+    print("=" * 50, flush=True)
+    print("Step 2 (editing)", flush=True)
+    editor_name = getattr(config.editor, "_name", "")
+
+    editor = None
+    if editor_name != "baseline":
+        editor = get_editor(config, model)
+        editor.generate = model.model.generate if hasattr(model, "model") else model.generate
+
+    if editor_name == "baseline":
+        if hasattr(model, "model"):
+            model.model.eval()
+    elif editor_name in {"ike", "ike_cot", "ike_chain"}:
+        if hasattr(model, "model"):
+            model.model.eval()
+        editor.edit(config, edit_ds=edit_ds)
+    else:
+        if hasattr(model, "model"):
+            model.model.train()
+        print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
+        batch_history = []
+        for batch_idx, batch in enumerate(edit_ds.loader):
+            tokens = model.prepare_training_batch(batch)
+            if editor_name not in {"ft_retrain", "mend_retrain"}:
+                if editor_name in {"grace_cot", "liveedit_cot"}:
+                    idx = batch["idxs"][0]
+                    ex = edit_ds.data[idx]
+                    editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
+                else:
+                    editor.edit(config, tokens, batch_history=batch_history)
+            tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
+            batch_history.append(tokens_copy)
+            del tokens
+            if (batch_idx + 1) % 10 == 0:
+                print(f"Edited {batch_idx + 1} batches", flush=True)
+
+        if editor_name in {"ft_retrain", "mend_retrain"} and batch_history:
+            editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
+        if hasattr(model, "model"):
+            model.model.eval()
+
+    print("=" * 50, flush=True)
+    print("Step 3 (evaluation)", flush=True)
+
+    eval_ds = _clone_ds(custom_sample_ds)
+    _maybe_apply_ike(editor, eval_ds, edit_ds)
+    print(f"ds_new.data: {eval_ds.data}")
+
+    pred_pairs = generation(model, eval_ds)
+    print(f"pred_pairs: {pred_pairs}")
+    retrieval_log = getattr(editor, "last_retrieval_log", []) if editor is not None else []
+    return {
+        "pred_pairs": pred_pairs,
+        "editor": editor,
+        "eval_ds": eval_ds,
+        "retrieval_log": retrieval_log,
+    }
+
+
+def _iterative_wrong_edit_run(config, model, wrong_edit_ds, eval_ds, max_fix_iters=INDEP_SELF_FIX_MAX_ITERS):
+    working_answer = str(wrong_edit_ds.data[0].get("answer", "")).strip()
+    history = []
+    final_result = None
+
+    for attempt_idx in range(max_fix_iters + 1):
+        iter_edit_ds = _clone_ds(wrong_edit_ds, working_answer)
+        result = _run_indep_single_edit(config, model, iter_edit_ds, eval_ds)
+        pred_pairs = result["pred_pairs"]
+        pair = pred_pairs[0] if pred_pairs else ("", "", "")
+
+        eval_ex = result["eval_ds"].data[0] if getattr(result["eval_ds"], "data", None) else {}
+        retrieved_facts = []
+        if result["retrieval_log"]:
+            retrieved_facts = result["retrieval_log"][0].get("facts", []) or []
+
+        judge = _judge_or_repair(model, eval_ex, iter_edit_ds.data[0].get("question", ""), retrieved_facts, pair[2], mode="judge")
+        step = {
+            "attempt": attempt_idx,
+            "candidate_answer": working_answer,
+            "pred": pair[1],
+            "gen": pair[2],
+            "retrieved_facts": retrieved_facts,
+            "judge_decision": judge["decision"],
+            "judge_yes_prob": judge["yes_prob"],
+            "judge_no_prob": judge["no_prob"],
+        }
+        history.append(step)
+        final_result = {
+            "pair": pair,
+            "candidate_answer": working_answer,
+            "history": history,
+            "accepted": judge["decision"] == "Yes",
+        }
+
+        if judge["decision"] == "Yes":
+            break
+
+        if attempt_idx == max_fix_iters:
+            break
+
+        repair = _judge_or_repair(
+            model,
+            iter_edit_ds.data[0],
+            iter_edit_ds.data[0].get("question", ""),
+            retrieved_facts,
+            pair[2],
+            mode="repair",
+            eval_question=eval_ex.get("question", ""),
+        )
+        step["repair_raw"] = repair["raw"]
+        step["repair_prompt"] = repair["prompt"]
+        step["repair_clean"] = repair["clean"]
+        if repair["clean"]:
+            working_answer = repair["clean"]
+
+    return final_result
 
 
 def find_errors(config):
@@ -261,11 +433,21 @@ def edit_n_eval_indep_all(config, model, wrong_edit_ds, correct_edit_ds, eval_ds
     pred_pairs = generation(model, eval_ds)
     print(f"no edit preds: {pred_pairs}")
 
-    # wrong edit predictions
-    wrong_edit_pairs = edit_n_eval_indep(config, model, wrong_edit_ds, eval_ds)
-    print(f"wrong edit preds: {wrong_edit_pairs}")
+    indep_mode = getattr(config, "indep_mode", "original")
+    wrong_edit_result = None
 
-    # model = VQAModel(config) # resetting the model
+    if indep_mode == "iterfix":
+        wrong_edit_result = _iterative_wrong_edit_run(
+            config,
+            model,
+            wrong_edit_ds,
+            eval_ds,
+            max_fix_iters=getattr(config, "max_fix_iters", INDEP_SELF_FIX_MAX_ITERS),
+        )
+        wrong_edit_pairs = [wrong_edit_result["pair"]]
+    else:
+        wrong_edit_pairs = edit_n_eval_indep(config, model, wrong_edit_ds, eval_ds)
+    print(f"wrong edit preds: {wrong_edit_pairs}")
 
     # correct edit predictions
     correct_edit_pairs = edit_n_eval_indep(config, model, correct_edit_ds, eval_ds)
@@ -280,6 +462,21 @@ def edit_n_eval_indep_all(config, model, wrong_edit_ds, correct_edit_ds, eval_ds
                "pred_correct_edit": correct_edit_pairs[0][1],
                "gen_correct_edit": correct_edit_pairs[0][2],
               }
+
+    if wrong_edit_result is not None:
+        history = wrong_edit_result.get("history", [])
+        first_attempt = history[0] if history else {}
+        outputs.update({
+            "pred_wrong_edit_initial": first_attempt.get("pred", ""),
+            "gen_wrong_edit_initial": first_attempt.get("gen", ""),
+            "wrong_edit_fixed_answer": wrong_edit_result.get("candidate_answer", ""),
+            "wrong_edit_accepted": wrong_edit_result.get("accepted", False),
+            "wrong_edit_attempts": len(history),
+            "wrong_edit_history": json.dumps(history),
+            "indep_mode": indep_mode,
+        })
+    else:
+        outputs["indep_mode"] = indep_mode
     
     return outputs
 
@@ -287,117 +484,8 @@ def edit_n_eval_indep_all(config, model, wrong_edit_ds, correct_edit_ds, eval_ds
 def edit_n_eval_indep(config, model, edit_ds, custom_sample_ds):
     """Edit model on a single sample and evaluate the edited model
        on corresponding sample per edit."""
-    # TODO: parametrize deployment so we only run an edit for a custom range of edits
-    # the edited model should only be applied to the corresponding eval
-
-    # Create a snapshot of the model before editing for comparison.
-    # NOTE: deepcopy(model) on GPU can OOM for large VLMs (it temporarily doubles VRAM),
-    # so we snapshot on CPU and keep model_old on CPU for metrics.
-    
-    # setting up device
-    orig_device = getattr(config, "device", None)
-    if torch.cuda.is_available() and orig_device is not None:
-        config.device = orig_device
-        if hasattr(model, "device"):
-            model.device = config.device
-        move_model_device(model, config.device)
-
-    # (IKE-style editors mutate prompts in-place).
-    t_job = time.time()
-
-    # editing model
-    print("="*50, flush=True)
-    print("Step 2 (editing)", flush=True)
-    t2 = time.time()
-    editor_name = getattr(config.editor, "_name", "")
-
-    # for baseline, we skip constructing an editor and performing any edits; the model and prompts stay unchanged.
-    editor = None
-    if editor_name != "baseline":
-        editor = get_editor(config, model)
-        editor.generate = model.model.generate if hasattr(model, "model") else model.generate
-
-    if editor_name == "baseline":
-        if hasattr(model, "model"):
-            model.model.eval()
-    elif editor_name in {"ike", "ike_cot", "ike_chain"}:
-        if hasattr(model, "model"):
-            model.model.eval()
-        editor.edit(config, edit_ds=edit_ds)
-    else:
-        if hasattr(model, "model"):
-            model.model.train()
-        print(f"Starting edits with editor='{config.editor._name}'...", flush=True)
-        batch_history = []
-        for batch_idx, batch in enumerate(edit_ds.loader):
-            tokens = model.prepare_training_batch(batch)
-            # ft_retrain/mend_retrain: do one single retrain on the full edit set (all-at-once).
-            if editor_name not in {"ft_retrain", "mend_retrain"}:
-                if editor_name in {"grace_cot", "liveedit_cot"}:
-                    # GRACE_COT/LiveEdit_COT needs image and cot for sentence keys
-                    idx = batch["idxs"][0]
-                    ex = edit_ds.data[idx]
-                    editor.edit(config, tokens, batch_history, image=ex["image"], cot=ex.get("cot") or ex.get("rationale", ""))
-                else:
-                    editor.edit(config, tokens, batch_history=batch_history)
-
-            # Keep a lightweight history copy for methods that need replay/regularization
-            tokens_copy = {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in tokens.items()}
-            batch_history.append(tokens_copy)
-
-            del tokens
-            if (batch_idx + 1) % 10 == 0:
-                print(f"Edited {batch_idx + 1} batches", flush=True)
-
-        if editor_name in {"ft_retrain", "mend_retrain"} and batch_history:
-            editor.edit(config, batch_history[-1], batch_history=batch_history[:-1])
-        if hasattr(model, "model"):
-            model.model.eval()
-    
-    # NOTE: I probably don't need this snippet as I don't care about edit accuracy
-    # Apply IKE/IKE_CHAIN/IKE_COT retrieval once before generation (deferred from edit() for efficiency)
-    # if editor_name in {"ike", "ike_chain", "ike_cot"} and editor is not None and hasattr(editor, "apply_to_dataset"):
-    #     editor.apply_to_dataset(edit_ds)
-    # edit_ds.task_generate(model, use_cache=False)
-    # print10(edit_ds, label="model_new")
-    # print(f"Edit time: {edit_time:.2f}s", flush=True)
-    # TODO: instead, replace with generations on the custom sample dset
-
-    # Snap post-edit predictions on the edit set to a separate folder, analogous to `pred`.
-    # `configure_args` already guarantees `config.pred_postedit_dir` is a valid directory,
-    # so we can join directly here.
-    # pred_postedit_snapshot = os.path.join(config.pred_postedit_dir, config.fname)
-    # edit_ds.snap(out_path=pred_postedit_snapshot)
-    # print(f"Post-edit predictions saved to {pred_postedit_snapshot}", flush=True)
-
-    # Step 3: evaluate the edited model
-    print("="*50, flush=True)
-    print("Step 3 (evaluation)", flush=True)
-    
-    dataset_name = config.experiment.dataset_name
-    model_name = config.model.name
-
-    # TODO: replace with actual run on data
-    # loc = locality(
-    #         model_old,
-    #         model_new,
-    #         edit_ds,
-    #         unrelated_ds=unrelated_ds,
-    #         # sample_size=None,
-    #         editor=editor,
-    #     )
-    # out_dict = {"locality": loc}
-    # print(f"[Timing] locality: {time.time() - t3:.2f}s", flush=True)
-    # print(f"Locality: {loc:.4f}", flush=True)
-    # updating prompts of custom_sample_ds accordingly
-    _maybe_apply_ike(editor, custom_sample_ds, edit_ds)
-    print(f"ds_new.data: {custom_sample_ds.data}")
-
-    # generations for custom_sample_ds
-    pred_pairs = generation(model, custom_sample_ds)
-    print(f"pred_pairs: {pred_pairs}")
-    
-    return pred_pairs
+    result = _run_indep_single_edit(config, model, edit_ds, custom_sample_ds)
+    return result["pred_pairs"]
 
 
 def edit_n_eval_all(config, model, edit_ds, out_path):
@@ -663,5 +751,3 @@ def edit_n_eval_seq(config, model, edit_ds, out_path, max_batches=None, eval_eve
             print(f"Eval time: {time.time() - t3:.2f}s | Saved to {out_path}", flush=True)
 
     return all_out_dicts
-
-
